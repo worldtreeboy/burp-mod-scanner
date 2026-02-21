@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+!build/libs/modular-scanner.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Java
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+!build/libs/modular-scanner.jar

