@@ -43,47 +43,35 @@
 
 ## How It Works
 
-```mermaid
-flowchart LR
-    A["HTTP Request"] --> B["OmniStrike"]
-
-    subgraph B["OmniStrike Engine"]
-        direction TB
-        D["Scope Filter"]
-        D --> E["Deduplication"]
-        E --> F["Module Router"]
-
-        subgraph parallel["Parallel Execution"]
-            direction TB
-            G["17 Active Scanners"]
-            H["4 Passive Analyzers"]
-            I["AI Analyzer"]
-        end
-
-        F --> parallel
-    end
-
-    parallel --> J["Deduplicated\nFindings Store"]
-    J --> K["Burp Dashboard"]
-    J --> L["OmniStrike Tab"]
-    J --> M["CSV / Markdown\nExport"]
-
-    style A fill:#1a1a2e,stroke:#e94560,color:#fff
-    style B fill:#0f3460,stroke:#e94560,color:#fff
-    style D fill:#16213e,stroke:#0f3460,color:#fff
-    style E fill:#16213e,stroke:#0f3460,color:#fff
-    style F fill:#16213e,stroke:#0f3460,color:#fff
-    style parallel fill:#1a1a2e,stroke:#e94560,color:#fff
-    style G fill:#e94560,stroke:#fff,color:#fff
-    style H fill:#0f3460,stroke:#fff,color:#fff
-    style I fill:#533483,stroke:#fff,color:#fff
-    style J fill:#16213e,stroke:#e94560,color:#fff
-    style K fill:#1a1a2e,stroke:#0f3460,color:#fff
-    style L fill:#1a1a2e,stroke:#0f3460,color:#fff
-    style M fill:#1a1a2e,stroke:#0f3460,color:#fff
 ```
-
-<p align="center"><em>One request in. Deduplicated, severity-rated findings out.</em></p>
+                                 OmniStrike Engine
+                        ┌─────────────────────────────────┐
+                        │                                 │
+  HTTP Request  ───────►│  Scope Filter                   │
+                        │       │                         │
+                        │       ▼                         │
+                        │  Deduplication                  │
+                        │       │                         │
+                        │       ▼                         │
+                        │  Module Router                  │
+                        │    ┌──┼──┐                      │
+                        │    ▼  ▼  ▼                      │
+                        │  ┌──────────────────────────┐   │
+                        │  │ 17 Active   4 Passive    │   │
+                        │  │ Scanners    Analyzers    │   │
+                        │  │        AI Analyzer       │   │
+                        │  └──────────┬───────────────┘   │
+                        │             │                   │
+                        │             ▼                   │
+                        │     Findings Store              │
+                        │    (deduplicated)               │
+                        └────────┬────────────────────────┘
+                                 │
+                    ┌────────────┼────────────┐
+                    ▼            ▼            ▼
+              Burp Dashboard  OmniStrike   CSV / Markdown
+                                Tab          Export
+```
 
 ---
 
@@ -162,37 +150,24 @@ A typical Burp setup for thorough testing requires 15-20 standalone extensions: 
 
 ---
 
-## Smart XSS: Filter Probing in Action
+## Smart XSS: Filter Probing
 
-Most scanners blindly fire 35+ payloads per parameter. OmniStrike probes the filter first:
+Most scanners blindly fire 35+ payloads per parameter. OmniStrike probes the filter first.
 
-```mermaid
-flowchart TD
-    A["Inject Canary\nxSsX7c4n4ry"] --> B{"Reflected?"}
-    B -- No --> Z["Skip parameter"]
-    B -- Yes --> C["Probe Filter\nSend: canary + &lt;&gt;&quot;'/()=;{}&#96;"]
-    C --> D["Analyze Survival\nPASS: &lt;&gt;&quot;=\nBLOCK: '()/"]
-    D --> E{"All chars\nblocked?"}
-    E -- Yes --> F["Report: All XSS chars filtered\nTry encoding XSS only"]
-    E -- No --> G["Skip 28 non-viable payloads"]
-    G --> H["Send 3-5 viable payloads"]
-    H --> I["Generate adaptive evasions\nParens blocked → alert&#96;1&#96;\nQuotes blocked → unquoted attrs"]
-    I --> J["3 requests instead of 35+"]
-
-    style A fill:#1a1a2e,stroke:#e94560,color:#fff
-    style B fill:#0f3460,stroke:#e94560,color:#fff
-    style C fill:#1a1a2e,stroke:#e94560,color:#fff
-    style D fill:#16213e,stroke:#e94560,color:#fff
-    style E fill:#0f3460,stroke:#e94560,color:#fff
-    style F fill:#533483,stroke:#fff,color:#fff
-    style G fill:#e94560,stroke:#fff,color:#fff
-    style H fill:#e94560,stroke:#fff,color:#fff
-    style I fill:#533483,stroke:#fff,color:#fff
-    style J fill:#16213e,stroke:#00b4d8,color:#fff
-    style Z fill:#333,stroke:#666,color:#999
+```
+  Step 1                Step 2                 Step 3                Step 4
+  Inject Canary         Probe Characters       Analyze Results       Adapt Payloads
+ ┌──────────────┐     ┌──────────────────┐   ┌──────────────────┐  ┌──────────────────┐
+ │ Send unique   │     │ Send canary with │   │ PASS: < > " =    │  │ Skip 28 payloads │
+ │ marker string │────►│ <>"'/(;)={}      │──►│ BLOCK: ' ( ) /   │─►│ that need ( ) '  │
+ │ xSsX7c4n4ry  │     │ appended         │   │                  │  │                  │
+ └──────┬───────┘     └──────────────────┘   └──────────────────┘  │ Generate 3-5     │
+        │                                                          │ adaptive evasions │
+   Not reflected?                                                  │ using < > " =    │
+   Skip parameter.                                                 └──────────────────┘
 ```
 
-<p align="center"><em>Fewer requests. Smarter payloads. Same detection rate.</em></p>
+**Example:** If `(` and `)` are blocked but backticks pass, OmniStrike generates `` alert`1` `` instead of `alert(1)`. If quotes are blocked, it uses unquoted attribute injection. Result: 3 requests instead of 35+.
 
 ---
 
@@ -254,7 +229,16 @@ Time-based blind (32 Unix `sleep` + 13 Windows `ping` payloads), output-based (3
 <details>
 <summary><strong>Deserialization Scanner</strong></summary>
 
-Java gadget chains (16 time-based: CommonsCollections 1-7, Spring1-2, BeanUtils, Groovy1, Hibernate1, C3P0, JRMPClient, ROME, BeanShell1, Myfaces1, Jdk7u21, Vaadin1, Click1; 32 vulnerable library signatures), .NET (12 BinaryFormatter + 15 JSON.NET + 7 XML serializer payloads), PHP (14 chains: WordPress, Magento, Laravel, Monolog, Drupal, ThinkPHP), Python (12 pickle/YAML/jsonpickle payloads). 38 suspect cookie name patterns. Time-based and OOB detection.
+**6-language coverage** with passive fingerprinting, active payload injection, and OOB confirmation:
+
+- **Java** — 16 time-based gadget chains (CommonsCollections 1-7, Spring1-2, BeanUtils, Groovy1, Hibernate1, C3P0, JRMPClient, ROME, BeanShell1, Myfaces1, Jdk7u21, Vaadin1, Click1), 32 vulnerable library signatures
+- **.NET** — 12 BinaryFormatter + 15 JSON.NET + 7 XML serializer payloads
+- **PHP** — 14 chains (WordPress, Magento, Laravel, Monolog, Drupal, ThinkPHP, CakePHP)
+- **Python** — 12 payloads (pickle, YAML `unsafe_load`, jsonpickle, subprocess pickle)
+- **Ruby** — 8 payloads (Marshal.load gadget chains, YAML/Psych `!!ruby/object` ERB template, `Gem::Installer`, `Gem::Requirement`, `Net::FTP`, `OpenURI`), 3 OOB payloads. Detects Marshal data in cookies and YAML object tags in responses.
+- **Node.js** — `node-serialize` IIFE/require/Buffer payloads, `cryo`, `funcster`, `js-yaml` detection, 3 OOB payloads (HTTP callback, nslookup, curl). Detects serialization library markers in responses.
+
+38 suspect cookie name patterns. Time-based, error-based, and OOB detection across all languages.
 </details>
 
 <details>
@@ -365,32 +349,18 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 
 ### OWASP Top 10 Coverage
 
-```mermaid
-block-beta
-  columns 2
-
-  A["A01 Broken Access Control\nAuth Bypass · CORS · IDOR via GraphQL"]:2
-  B["A02 Cryptographic Failures\nJWT Analysis · Cookie Flags · HSTS"]
-  C["A03 Injection\nSQLi · XSS · SSTI · CMDi · NoSQLi · CRLF · XXE"]
-  D["A04 Insecure Design\nGraphQL Schema · Endpoint Discovery"]
-  E["A05 Security Misconfiguration\nSecurity Headers · CORS · Cache Poisoning"]
-  F["A06 Vulnerable Components\nDeserialization Gadgets · Prototype Pollution"]
-  G["A07 Auth Failures\nAuth Bypass · Session Analysis"]
-  H["A08 Data Integrity\nDeserialization · SSRF · Host Header"]
-  I["A09 Logging Failures\nVerbose Error Detection · Debug Endpoints"]
-  J["A10 SSRF\nSSRF Scanner · Cloud Metadata · DNS Rebinding"]:2
-
-  style A fill:#e94560,stroke:#fff,color:#fff
-  style B fill:#0f3460,stroke:#fff,color:#fff
-  style C fill:#e94560,stroke:#fff,color:#fff
-  style D fill:#0f3460,stroke:#fff,color:#fff
-  style E fill:#e94560,stroke:#fff,color:#fff
-  style F fill:#0f3460,stroke:#fff,color:#fff
-  style G fill:#e94560,stroke:#fff,color:#fff
-  style H fill:#0f3460,stroke:#fff,color:#fff
-  style I fill:#e94560,stroke:#fff,color:#fff
-  style J fill:#0f3460,stroke:#fff,color:#fff
-```
+| OWASP Category | OmniStrike Modules |
+|---|---|
+| **A01 Broken Access Control** | Auth Bypass, CORS Misconfiguration, IDOR via GraphQL |
+| **A02 Cryptographic Failures** | Security Header Analyzer (cookie flags, HSTS) |
+| **A03 Injection** | SQLi, XSS, SSTI, CMDi, NoSQLi, CRLF, XXE, HPP |
+| **A04 Insecure Design** | GraphQL schema analysis, Hidden Endpoint Finder |
+| **A05 Security Misconfiguration** | Security Headers, CORS, Cache Poisoning, Host Header |
+| **A06 Vulnerable Components** | Deserialization gadget chains (Java/.NET/PHP/Python/Ruby/Node.js), Prototype Pollution |
+| **A07 Auth Failures** | Auth Bypass scanner, session cookie analysis |
+| **A08 Data Integrity** | Deserialization, SSRF, Host Header Injection |
+| **A09 Logging Failures** | Verbose error detection, debug endpoint discovery |
+| **A10 SSRF** | SSRF Scanner, cloud metadata, DNS rebinding, protocol smuggling |
 
 ---
 
