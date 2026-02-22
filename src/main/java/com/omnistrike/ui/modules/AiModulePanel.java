@@ -632,8 +632,22 @@ public class AiModulePanel extends JPanel {
                                     String url = rr.request().url();
                                     if (url == null) continue;
 
-                                    // Skip entries without a response body
-                                    if (rr.response() == null) continue;
+                                    // If response is null, the entry was discovered but never fetched.
+                                    // Actively fetch it if the URL looks like JS/HTML.
+                                    if (rr.response() == null) {
+                                        if (hasJsOrHtmlExtension(url)) {
+                                            try {
+                                                rr = api.http().sendRequest(rr.request());
+                                                api.logging().logToOutput("[Scrape] Fetched missing response: " + url);
+                                            } catch (Exception fetchEx) {
+                                                api.logging().logToOutput("[Scrape] Fetch failed: " + url);
+                                                continue;
+                                            }
+                                            if (rr.response() == null) continue;
+                                        } else {
+                                            continue;
+                                        }
+                                    }
                                     String body = rr.response().bodyToString();
                                     if (body == null || body.isEmpty()) continue;
 
@@ -754,6 +768,31 @@ public class AiModulePanel extends JPanel {
         }
 
         return false;
+    }
+
+    /**
+     * Checks whether a URL looks like a JS or HTML resource based on file extension
+     * or common JS bundle path patterns. Used to decide whether to actively fetch
+     * site map entries that were discovered but never proxied (response == null).
+     */
+    private static boolean hasJsOrHtmlExtension(String url) {
+        String path = url.toLowerCase();
+        int hashIdx = path.indexOf('#');
+        if (hashIdx > 0) path = path.substring(0, hashIdx);
+        int qIdx = path.indexOf('?');
+        if (qIdx > 0) path = path.substring(0, qIdx);
+        int semiIdx = path.indexOf(';');
+        if (semiIdx > 0) path = path.substring(0, semiIdx);
+
+        if (path.endsWith(".js") || path.endsWith(".jsx") || path.endsWith(".mjs")
+                || path.endsWith(".ts") || path.endsWith(".tsx")
+                || path.endsWith(".html") || path.endsWith(".htm")
+                || path.endsWith(".xhtml") || path.endsWith(".shtml")) {
+            return true;
+        }
+
+        return path.contains("/static/js/") || path.contains("/assets/js/")
+                || path.contains("/_next/static/") || path.contains("/dist/");
     }
 
     private static String formatSize(int chars) {
