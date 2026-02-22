@@ -34,16 +34,18 @@ public class OmniStrikeExtension implements BurpExtension {
     private TrafficInterceptor interceptor;
     private CollaboratorManager collaboratorManager;
     private volatile MainPanel mainPanel;
+    private volatile Audit persistentAudit;
 
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.11 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.12 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
         findingsStore.setErrorLogger(msg -> api.logging().logToError(msg));
-        findingsStore.addListener(new DashboardReporter(api)); // Report all findings to Burp Dashboard
+        DashboardReporter dashboardReporter = new DashboardReporter(api);
+        findingsStore.addListener(dashboardReporter); // Report all findings to Burp Dashboard
         DeduplicationStore dedup = new DeduplicationStore();
         executor = new ActiveScanExecutor(5);
         ScopeManager scopeManager = new ScopeManager();
@@ -169,29 +171,21 @@ public class OmniStrikeExtension implements BurpExtension {
         api.scanner().registerScanCheck(scanCheck);
         api.logging().logToOutput("Scanner integration registered (findings appear in Dashboard).");
 
-        // Bridge: async findings (AI analysis, OOB Collaborator callbacks) → deferred queue
-        // → Dashboard via ScanCheck pipeline.
-        // Only bridges findings from the AI module — these arrive asynchronously (after
-        // passiveAudit() has already returned). Non-AI module findings are returned
-        // synchronously from passiveAudit() and already appear in Dashboard.
-        findingsStore.addListener(finding -> {
-            if ("ai-vuln-analyzer".equals(finding.getModuleId()) && finding.getRequestResponse() != null) {
-                scanCheck.addDeferredFinding(finding);
-                // Re-trigger an active audit so Burp calls passiveAudit() and drains the queue.
-                // LEGACY_ACTIVE_AUDIT_CHECKS is what the context menu uses and reliably triggers
-                // the ScanCheck pipeline, making findings appear in Dashboard Issue Activity.
-                try {
-                    Audit audit = api.scanner().startAudit(
-                            AuditConfiguration.auditConfiguration(
-                                    BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS));
-                    audit.addRequestResponse(finding.getRequestResponse());
-                } catch (Exception e) {
-                    // Fallback: finding is still in Site Map via DashboardReporter
-                    api.logging().logToOutput("[OmniStrike] AI→Dashboard bridge: audit trigger failed, "
-                            + "finding still available via Site Map. " + e.getMessage());
-                }
-            }
-        });
+        // Create a single persistent Audit so ALL findings aggregate in one
+        // "OmniStrike" Dashboard task box (like Burp's built-in "Live audit").
+        // DashboardReporter feeds every finding into the deferred queue on
+        // OmniStrikeScanCheck, then pokes this audit to trigger passiveAudit()
+        // which drains the queue and returns AuditIssues into the task box.
+        try {
+            persistentAudit = api.scanner().startAudit(
+                    AuditConfiguration.auditConfiguration(
+                            BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS));
+            dashboardReporter.setDashboardBridge(scanCheck, persistentAudit);
+            api.logging().logToOutput("Persistent Dashboard task box created.");
+        } catch (Exception e) {
+            api.logging().logToOutput("Dashboard task box unavailable (findings still appear in Site Map): "
+                    + e.getMessage());
+        }
 
         // ==================== CONTEXT MENU ====================
         api.userInterface().registerContextMenuItemsProvider(
@@ -222,10 +216,13 @@ public class OmniStrikeExtension implements BurpExtension {
             if (collaboratorManager != null) {
                 collaboratorManager.shutdown();
             }
+            if (persistentAudit != null) {
+                try { persistentAudit.delete(); } catch (Exception ignored) {}
+            }
             api.logging().logToOutput("OmniStrike unloaded. Goodbye!");
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.11 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.12 ready ===");
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");
