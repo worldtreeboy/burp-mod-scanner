@@ -41,6 +41,52 @@
 
 ---
 
+## How It Works
+
+```mermaid
+flowchart LR
+    A["HTTP Request"] --> B["OmniStrike"]
+
+    subgraph B["OmniStrike Engine"]
+        direction TB
+        D["Scope Filter"]
+        D --> E["Deduplication"]
+        E --> F["Module Router"]
+
+        subgraph parallel["Parallel Execution"]
+            direction TB
+            G["17 Active Scanners"]
+            H["4 Passive Analyzers"]
+            I["AI Analyzer"]
+        end
+
+        F --> parallel
+    end
+
+    parallel --> J["Deduplicated\nFindings Store"]
+    J --> K["Burp Dashboard"]
+    J --> L["OmniStrike Tab"]
+    J --> M["CSV / Markdown\nExport"]
+
+    style A fill:#1a1a2e,stroke:#e94560,color:#fff
+    style B fill:#0f3460,stroke:#e94560,color:#fff
+    style D fill:#16213e,stroke:#0f3460,color:#fff
+    style E fill:#16213e,stroke:#0f3460,color:#fff
+    style F fill:#16213e,stroke:#0f3460,color:#fff
+    style parallel fill:#1a1a2e,stroke:#e94560,color:#fff
+    style G fill:#e94560,stroke:#fff,color:#fff
+    style H fill:#0f3460,stroke:#fff,color:#fff
+    style I fill:#533483,stroke:#fff,color:#fff
+    style J fill:#16213e,stroke:#e94560,color:#fff
+    style K fill:#1a1a2e,stroke:#0f3460,color:#fff
+    style L fill:#1a1a2e,stroke:#0f3460,color:#fff
+    style M fill:#1a1a2e,stroke:#0f3460,color:#fff
+```
+
+<p align="center"><em>One request in. Deduplicated, severity-rated findings out.</em></p>
+
+---
+
 ## Key Highlights
 
 **22 Modules, One JAR** &mdash; SQLi, XSS, SSRF, SSTI, RCE, XXE, deserialization, NoSQLi, GraphQL, CORS, cache poisoning, path traversal, CRLF, auth bypass, host header injection, HPP, prototype pollution, and more. All deduplicated, all in one place.
@@ -70,6 +116,83 @@ A typical Burp setup for thorough testing requires 15-20 standalone extensions: 
 | **Data sharing** | Extensions can't share intel | Shared data bus across modules |
 | **Updates** | Track 15+ repos for updates | One release, everything updated |
 | **AI integration** | None or per-extension | Unified AI layer across all modules |
+
+---
+
+## Example: What a Scan Looks Like
+
+> Scan a single request against `https://target.com/search?q=test` — here's what OmniStrike finds:
+
+```
+ CRITICAL  SQLi: Time-Based Blind (MySQL) — param 'q'
+           Payload: test' AND SLEEP(5)-- -
+           Baseline: 142ms (max of 3) → Injected: 5,203ms (+5,061ms)
+           DB: MySQL (fingerprinted via error pattern)
+
+ CRITICAL  Blind SSRF via Collaborator — param 'q'
+           Payload: https://<collaborator>.oastify.com
+           DNS interaction from 10.0.0.5 after 2.3s
+
+ HIGH      XSS Confirmed: img onerror in HTML_BODY — param 'q'
+           Filter probe: PASS=[<>"=] BLOCK=['()/]
+           Adaptive payload: <img src=x onerror=alert`1`>  (backtick call — parens blocked)
+
+ HIGH      SSTI: Jinja2 Detected — param 'q'
+           Probe: {{7*7}} → Response contains '49' (expression evaluated)
+           Engine confirmed via {{ config.items() }} error pattern
+
+ MEDIUM    CORS Misconfiguration: Reflected Origin
+           Origin: https://evil.com → Access-Control-Allow-Origin: https://evil.com
+           Access-Control-Allow-Credentials: true
+
+ MEDIUM    Security Headers Missing
+           ✗ Content-Security-Policy absent
+           ✗ X-Frame-Options absent
+           ✗ Strict-Transport-Security absent
+
+ LOW       DOM XSS: location.hash → .innerHTML (sanitizer detected)
+           Source: location.hash | Sink: .innerHTML
+           DOMPurify.sanitize() present — risk reduced
+
+ INFO      Hidden Endpoints Discovered (14 paths)
+           /api/v2/admin/users, /api/internal/debug, /graphql, ...
+```
+
+<p align="center"><em>Real finding format from OmniStrike. Severity-rated, deduplicated, with full evidence chains.</em></p>
+
+---
+
+## Smart XSS: Filter Probing in Action
+
+Most scanners blindly fire 35+ payloads per parameter. OmniStrike probes the filter first:
+
+```mermaid
+flowchart TD
+    A["Inject Canary\nxSsX7c4n4ry"] --> B{"Reflected?"}
+    B -- No --> Z["Skip parameter"]
+    B -- Yes --> C["Probe Filter\nSend: canary + &lt;&gt;&quot;'/()=;{}&#96;"]
+    C --> D["Analyze Survival\nPASS: &lt;&gt;&quot;=\nBLOCK: '()/"]
+    D --> E{"All chars\nblocked?"}
+    E -- Yes --> F["Report: All XSS chars filtered\nTry encoding XSS only"]
+    E -- No --> G["Skip 28 non-viable payloads"]
+    G --> H["Send 3-5 viable payloads"]
+    H --> I["Generate adaptive evasions\nParens blocked → alert&#96;1&#96;\nQuotes blocked → unquoted attrs"]
+    I --> J["3 requests instead of 35+"]
+
+    style A fill:#1a1a2e,stroke:#e94560,color:#fff
+    style B fill:#0f3460,stroke:#e94560,color:#fff
+    style C fill:#1a1a2e,stroke:#e94560,color:#fff
+    style D fill:#16213e,stroke:#e94560,color:#fff
+    style E fill:#0f3460,stroke:#e94560,color:#fff
+    style F fill:#533483,stroke:#fff,color:#fff
+    style G fill:#e94560,stroke:#fff,color:#fff
+    style H fill:#e94560,stroke:#fff,color:#fff
+    style I fill:#533483,stroke:#fff,color:#fff
+    style J fill:#16213e,stroke:#00b4d8,color:#fff
+    style Z fill:#333,stroke:#666,color:#999
+```
+
+<p align="center"><em>Fewer requests. Smarter payloads. Same detection rate.</em></p>
 
 ---
 
@@ -239,6 +362,35 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 | **WAF bypass** | Comment-as-space, newline injection, `$IFS` substitution, encoding variants, null bytes, and other techniques across all modules |
 | **OOB detection** | Blind SQLi, XXE, SSRF, RCE, and deserialization via Burp Collaborator callbacks |
 | **Deduplication** | Findings deduplicated by normalized URL with cross-module overlap prevention |
+
+### OWASP Top 10 Coverage
+
+```mermaid
+block-beta
+  columns 2
+
+  A["A01 Broken Access Control\nAuth Bypass · CORS · IDOR via GraphQL"]:2
+  B["A02 Cryptographic Failures\nJWT Analysis · Cookie Flags · HSTS"]
+  C["A03 Injection\nSQLi · XSS · SSTI · CMDi · NoSQLi · CRLF · XXE"]
+  D["A04 Insecure Design\nGraphQL Schema · Endpoint Discovery"]
+  E["A05 Security Misconfiguration\nSecurity Headers · CORS · Cache Poisoning"]
+  F["A06 Vulnerable Components\nDeserialization Gadgets · Prototype Pollution"]
+  G["A07 Auth Failures\nAuth Bypass · Session Analysis"]
+  H["A08 Data Integrity\nDeserialization · SSRF · Host Header"]
+  I["A09 Logging Failures\nVerbose Error Detection · Debug Endpoints"]
+  J["A10 SSRF\nSSRF Scanner · Cloud Metadata · DNS Rebinding"]:2
+
+  style A fill:#e94560,stroke:#fff,color:#fff
+  style B fill:#0f3460,stroke:#fff,color:#fff
+  style C fill:#e94560,stroke:#fff,color:#fff
+  style D fill:#0f3460,stroke:#fff,color:#fff
+  style E fill:#e94560,stroke:#fff,color:#fff
+  style F fill:#0f3460,stroke:#fff,color:#fff
+  style G fill:#e94560,stroke:#fff,color:#fff
+  style H fill:#0f3460,stroke:#fff,color:#fff
+  style I fill:#e94560,stroke:#fff,color:#fff
+  style J fill:#0f3460,stroke:#fff,color:#fff
+```
 
 ---
 
