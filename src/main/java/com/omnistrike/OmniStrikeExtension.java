@@ -15,16 +15,17 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike Extension — Entry Point
+ * OmniStrike v1.14 — Entry Point
  *
- * A pluggable scanning framework for Burp Suite with 20 modules:
- *   Recon (Passive): Endpoint Finder, Subdomain Collector, Security Header Analyzer
+ * A unified vulnerability scanning framework for Burp Suite with 22 modules:
+ *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
+ *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer
  *   Injection (Active): SQLi Detector, SSTI Scanner, SSRF Scanner, XSS Scanner,
  *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner, NoSQL Injection Scanner,
  *       CORS Misconfiguration, Cache Poisoning, Host Header Injection, Prototype Pollution, Path Traversal,
  *       CRLF Injection, Authentication Bypass, HTTP Parameter Pollution
  *
- * Uses the Montoya API exclusively.
+ * Built exclusively on the Montoya API.
  */
 public class OmniStrikeExtension implements BurpExtension {
 
@@ -39,7 +40,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.13 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.14 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -222,7 +223,7 @@ public class OmniStrikeExtension implements BurpExtension {
             api.logging().logToOutput("OmniStrike unloaded. Goodbye!");
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.13 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.14 ready ===");
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");
