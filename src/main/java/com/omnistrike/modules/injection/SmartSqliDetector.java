@@ -1146,6 +1146,11 @@ public class SmartSqliDetector implements ScanModule {
 
     private void fingerprintDb(HttpRequestResponse original, InjectionPoint ip,
                                 int columnCount, int reflectedCol, String quoteChar, String unionVariant) {
+        // Get baseline for comparison
+        HttpRequestResponse baselineResult = sendWithPayload(original, ip, ip.originalValue);
+        String baselineBody = (baselineResult != null && baselineResult.response() != null)
+                ? baselineResult.response().bodyToString() : "";
+        int baselineLength = baselineBody.length();
         String[][] dbProbes = {
                 {"MySQL", "version()"},
                 {"MySQL", "database()"},
@@ -1186,8 +1191,23 @@ public class SmartSqliDetector implements ScanModule {
                 HttpRequestResponse result = sendWithPayload(original, ip, payload);
                 if (result != null && result.response() != null) {
                     String body = result.response().bodyToString();
-                    // Look for version strings
-                    if (body.contains("MariaDB") || body.matches("(?s).*\\b\\d+\\.\\d+\\.\\d+.*")) {
+                    // Look for DB-specific version strings — NOT generic x.y.z which matches
+                    // JS libraries, CSS frameworks, etc. Only match if we see the UNION_MARKER
+                    // was consumed (marker NOT in response = UNION worked) AND version-like data appeared.
+                    boolean hasDbVersion = body.contains("MariaDB")
+                            || body.contains("PostgreSQL")
+                            || body.contains("Microsoft SQL Server")
+                            || body.contains("Oracle Database")
+                            || body.contains("SQLite")
+                            || body.contains("MySQL")
+                            || body.contains("CockroachDB")
+                            || body.contains("DB2")
+                            || body.contains("Firebird");
+                    // Also accept if the probe value itself appears (e.g., database() returns "mydb")
+                    // but only if the response differs from baseline body
+                    boolean responseChanged = !body.equals(baselineBody)
+                            && Math.abs(body.length() - baselineLength) > 20;
+                    if (hasDbVersion || (responseChanged && !body.contains(UNION_MARKER))) {
                         findingsStore.addFinding(Finding.builder("sqli-detector",
                                         "Database Fingerprint: " + probe[0],
                                         Severity.CRITICAL, Confidence.CERTAIN)

@@ -319,15 +319,19 @@ public class CachePoisonScanner implements ScanModule {
                     indicators.add("Age: " + h.value() + " (served from cache)");
                     break;
                 case "x-cache":
-                    if (value.contains("hit") || value.contains("miss")) {
+                    if (value.contains("hit")) {
                         cacheable = true;
-                        indicators.add("X-Cache: " + h.value());
+                        indicators.add("X-Cache: " + h.value() + " (cached)");
+                    } else if (value.contains("miss")) {
+                        indicators.add("X-Cache: " + h.value() + " (not cached)");
                     }
                     break;
                 case "cf-cache-status":
-                    if (value.contains("hit") || value.contains("miss") || value.contains("dynamic")) {
+                    if (value.contains("hit")) {
                         cacheable = true;
-                        indicators.add("CF-Cache-Status: " + h.value());
+                        indicators.add("CF-Cache-Status: " + h.value() + " (cached)");
+                    } else if (value.contains("miss") || value.contains("dynamic") || value.contains("bypass")) {
+                        indicators.add("CF-Cache-Status: " + h.value() + " (not cached)");
                     }
                     break;
                 case "x-cache-status":
@@ -378,6 +382,10 @@ public class CachePoisonScanner implements ScanModule {
     }
 
     private boolean isCanaryReflected(HttpRequestResponse response, String canary) {
+        // Skip error responses — servers often echo input in error pages
+        int statusCode = response.response().statusCode();
+        if (statusCode >= 400) return false;
+
         // Check response body
         String body = response.response().bodyToString();
         if (body != null && body.contains(canary)) return true;

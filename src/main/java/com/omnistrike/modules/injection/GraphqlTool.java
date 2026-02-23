@@ -146,11 +146,11 @@ public class GraphqlTool implements ScanModule {
 
     // Path traversal payloads
     private static final String[][] PATH_TRAVERSAL_PAYLOADS = {
-            {"../../../etc/passwd", "root:", "Unix /etc/passwd (3 levels)"},
-            {"....//....//....//etc/passwd", "root:", "Double-dot-slash bypass"},
-            {"..%2f..%2f..%2fetc%2fpasswd", "root:", "URL-encoded traversal"},
+            {"../../../etc/passwd", "root:x:0:0:", "Unix /etc/passwd (3 levels)"},
+            {"....//....//....//etc/passwd", "root:x:0:0:", "Double-dot-slash bypass"},
+            {"..%2f..%2f..%2fetc%2fpasswd", "root:x:0:0:", "URL-encoded traversal"},
             {"..\\..\\..\\windows\\win.ini", "[fonts]", "Windows win.ini"},
-            {"/etc/passwd", "root:", "Absolute path"},
+            {"/etc/passwd", "root:x:0:0:", "Absolute path"},
             {"....//....//....//windows/win.ini", "[fonts]", "Windows double-dot"},
     };
 
@@ -762,8 +762,15 @@ public class GraphqlTool implements ScanModule {
             String respBody = result.response().bodyToString();
             if (respBody == null) continue;
 
-            // Check for time-based (5+ second delay)
-            if (technique.contains("time") && elapsed > 4500) {
+            // Check for time-based — require delay significantly above baseline
+            long measuredBaselineTime = 0;
+            try {
+                long bstart = System.currentTimeMillis();
+                api.http().sendRequest(buildGqlRequest(originalRequest, path,
+                        new Gson().toJson(Map.of("query", buildQueryForArg(arg, "test123")))));
+                measuredBaselineTime = System.currentTimeMillis() - bstart;
+            } catch (Exception ignored) {}
+            if (technique.contains("time") && elapsed > measuredBaselineTime + 4000 && elapsed > 4500) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "GraphQL SQL Injection (Time-Based) via " + arg.argName,
                                 Severity.HIGH, Confidence.FIRM)
@@ -839,8 +846,9 @@ public class GraphqlTool implements ScanModule {
             }
 
             // Large response difference may indicate data exfil via operator injection
-            if (respBody.length() > baselineLen * 3 && respBody.length() > 500
-                    && result.response().statusCode() == 200) {
+            // Require 5x size increase and >1000 bytes to reduce false positives
+            if (respBody.length() > baselineLen * 5 && respBody.length() > 1000
+                    && baselineLen > 0 && result.response().statusCode() == 200) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "Potential GraphQL NoSQL Injection (Data Exfil) via " + arg.argName,
                                 Severity.MEDIUM, Confidence.TENTATIVE)
@@ -884,10 +892,14 @@ public class GraphqlTool implements ScanModule {
             String respBody = result.response().bodyToString();
             if (respBody == null) continue;
 
-            // Check for command output
-            if ((respBody.contains("uid=") && !baselineRespBody.contains("uid="))
-                    || (respBody.contains("root:") && !baselineRespBody.contains("root:"))
-                    || (respBody.contains("bin/") && !baselineRespBody.contains("bin/"))) {
+            // Skip error responses — servers echo input in error pages
+            if (result.response().statusCode() >= 400) continue;
+
+            // Check for command output — require specific patterns to avoid FPs
+            boolean hasIdOutput = respBody.contains("uid=") && respBody.contains("gid=")
+                    && !baselineRespBody.contains("uid=");
+            boolean hasPasswd = respBody.contains("root:x:0:0:") && !baselineRespBody.contains("root:x:0:0:");
+            if (hasIdOutput || hasPasswd) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "GraphQL OS Command Injection via " + arg.argName,
                                 Severity.CRITICAL, Confidence.CERTAIN)
@@ -944,7 +956,12 @@ public class GraphqlTool implements ScanModule {
             String respBody = result.response().bodyToString();
             if (respBody == null) continue;
 
-            if (respBody.contains(expected) && !baselineRespBody.contains(expected)) {
+            // Skip error responses and require the template expression was consumed
+            if (result.response().statusCode() >= 400) continue;
+            boolean resultInResponse = respBody.contains(expected) && !baselineRespBody.contains(expected);
+            // For numeric results like "49", verify the template syntax was consumed (not reflected raw)
+            boolean syntaxConsumed = !respBody.contains(payload);
+            if (resultInResponse && syntaxConsumed) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "GraphQL SSTI via " + arg.argName,
                                 Severity.HIGH, Confidence.FIRM)
@@ -1148,8 +1165,17 @@ public class GraphqlTool implements ScanModule {
                 if (respBody != null && result.response().statusCode() == 200
                         && respBody.contains("\"data\"") && !respBody.contains("\"errors\"")
                         && !respBody.contains("null")) {
-                    successCount++;
-                    accessibleIds.add(String.valueOf(i));
+                    // Verify data object actually contains fields (not empty {})
+                    try {
+                        JsonObject obj = JsonParser.parseString(respBody).getAsJsonObject();
+                        JsonObject data = obj.getAsJsonObject("data");
+                        if (data != null && data.size() > 0) {
+                            successCount++;
+                            accessibleIds.add(String.valueOf(i));
+                        }
+                    } catch (Exception ignored) {
+                        // Parse failed — skip this response
+                    }
                 }
             }
         }

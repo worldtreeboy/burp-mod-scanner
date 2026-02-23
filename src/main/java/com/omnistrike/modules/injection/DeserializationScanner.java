@@ -39,7 +39,7 @@ public class DeserializationScanner implements ScanModule {
     // ==================== PASSIVE DETECTION PATTERNS ====================
 
     // Java serialization indicators
-    private static final Pattern JAVA_MAGIC_BYTES_B64 = Pattern.compile("rO0AB[A-Za-z0-9+/=]");
+    private static final Pattern JAVA_MAGIC_BYTES_B64 = Pattern.compile("rO0AB[A-Za-z0-9+/=]{10,}");
     private static final Pattern JAVA_MAGIC_BYTES_HEX = Pattern.compile("(?i)ac\\s*ed\\s*00\\s*05");
     private static final Pattern JAVA_CONTENT_TYPE = Pattern.compile(
             "(?i)application/x-java-serialized-object|application/x-java-object");
@@ -82,8 +82,10 @@ public class DeserializationScanner implements ScanModule {
     private static final Pattern DOTNET_DOLLAR_TYPE = Pattern.compile(
             "\"\\$type\"\\s*:\\s*\"[^\"]+\"");
 
-    // PHP serialization indicators
-    private static final Pattern PHP_SERIALIZED = Pattern.compile("(?:[OaCis]):\\d+:");
+    // PHP serialization indicators — require fuller pattern to avoid false positives on
+    // short strings like "s:5:" appearing in normal text. Require opening brace or quoted string.
+    private static final Pattern PHP_SERIALIZED = Pattern.compile(
+            "(?:[OaCis]):\\d+:(?:\\{|\"[^\"]*\")");
     private static final Pattern PHP_PHAR = Pattern.compile("(?i)phar://");
     private static final Pattern PHP_SERIALIZED_FULL = Pattern.compile(
             "(?:[OaCis]):\\d+:(?:\\{|\"[^\"]*\")");
@@ -640,7 +642,7 @@ public class DeserializationScanner implements ScanModule {
                     deserPoints.add(new DeserPoint("cookie", param.name(), value, "Java", "Shiro rememberMe cookie"));
                     findings.add(Finding.builder("deser-scanner",
                                     "Shiro rememberMe cookie detected",
-                                    Severity.MEDIUM, Confidence.FIRM)
+                                    Severity.INFO, Confidence.FIRM)
                             .url(url).parameter(param.name())
                             .evidence("Cookie: " + param.name() + "=" + value.substring(0, Math.min(50, value.length())) + "...")
                             .description("Apache Shiro rememberMe cookie found. This is a known deserialization target. "
@@ -764,9 +766,12 @@ public class DeserializationScanner implements ScanModule {
             }
         }
 
-        // .NET TypeNameHandling
+        // .NET TypeNameHandling — skip if the page looks like documentation (contains code examples)
+        boolean looksLikeDocPage = bodyLower.contains("<code") || bodyLower.contains("```")
+                || bodyLower.contains("msdn.microsoft.com") || bodyLower.contains("docs.microsoft.com")
+                || bodyLower.contains("learn.microsoft.com") || bodyLower.contains("stackoverflow.com");
         Matcher tnm = DOTNET_TYPE_NAME_HANDLING.matcher(body);
-        if (tnm.find()) {
+        if (tnm.find() && !looksLikeDocPage) {
             findings.add(Finding.builder("deser-scanner",
                             ".NET JSON TypeNameHandling detected: " + tnm.group(1),
                             Severity.HIGH, Confidence.FIRM)
@@ -1235,15 +1240,14 @@ public class DeserializationScanner implements ScanModule {
         }
     }
 
-    /** Common .NET deserialization error patterns */
+    /** Common .NET deserialization error patterns — only serialization-specific errors.
+     *  Removed generic .NET exceptions (ObjectDisposedException, InvalidCastException,
+     *  FormatException, InvalidOperationException, SecurityException, TypeInitializationException,
+     *  FileLoadException, MissingMethodException) that can appear in non-deserialization contexts. */
     private boolean isDotNetDeserError(String body) {
-        return body.contains("BinaryFormatter") || body.contains("ObjectDisposedException")
-                || body.contains("SerializationException") || body.contains("InvalidCastException")
+        return body.contains("BinaryFormatter") || body.contains("SerializationException")
                 || body.contains("TypeLoadException") || body.contains("TargetInvocationException")
-                || body.contains("System.Runtime.Serialization") || body.contains("FormatException")
-                || body.contains("System.InvalidOperationException") || body.contains("BadImageFormatException")
-                || body.contains("System.Security.SecurityException") || body.contains("TypeInitializationException")
-                || body.contains("FileLoadException") || body.contains("MissingMethodException");
+                || body.contains("System.Runtime.Serialization") || body.contains("BadImageFormatException");
     }
 
     private void activeTestPhp(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
@@ -1258,9 +1262,11 @@ public class DeserializationScanner implements ScanModule {
             String body = result.response().bodyToString();
             int status = result.response().statusCode();
 
-            // PHP deserialization errors — confirmed, stop immediately
-            if (body.contains("unserialize()") || body.contains("__wakeup")
-                    || body.contains("__destruct") || body.contains("Serializable")) {
+            // PHP deserialization errors — require unserialize() function reference specifically;
+            // __wakeup, __destruct, and Serializable can appear in documentation or generic PHP error pages
+            if (body.contains("unserialize()")
+                    || (body.contains("__wakeup") && body.contains("unserialize"))
+                    || (body.contains("__destruct") && body.contains("unserialize"))) {
                 findingsStore.addFinding(Finding.builder("deser-scanner",
                                 "PHP Deserialization Processing Detected",
                                 Severity.HIGH, Confidence.FIRM)

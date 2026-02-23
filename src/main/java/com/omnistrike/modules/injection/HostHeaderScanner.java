@@ -180,13 +180,14 @@ public class HostHeaderScanner implements ScanModule {
                 int resultStatus = result.response().statusCode();
                 int resultLen = result.response().bodyToString().length();
 
-                // Different status code or significantly different body length suggests routing change
+                // Different status code AND significantly different body length suggests routing change
                 boolean statusChanged = resultStatus != baselineStatus;
-                boolean bodyChanged = Math.abs(resultLen - baselineLen) > 200;
+                boolean bodyChanged = Math.abs(resultLen - baselineLen) > 500;
 
-                if (resultStatus == 200 && (statusChanged || bodyChanged)) {
+                // Require BOTH indicators or very large body difference to avoid FPs from normal variance
+                if (resultStatus == 200 && statusChanged && bodyChanged) {
                     Severity sev = Severity.HIGH;
-                    Confidence conf = bodyChanged && statusChanged ? Confidence.CERTAIN : Confidence.FIRM;
+                    Confidence conf = Confidence.FIRM;
 
                     findingsStore.addFinding(Finding.builder("host-header",
                                     "Host Header Injection: Routing to Internal Host (" + internalHost + ")",
@@ -223,6 +224,16 @@ public class HostHeaderScanner implements ScanModule {
         }
         if (originalHost.isEmpty()) return;
 
+        // Get baseline to check if attacker string already exists
+        String baselineBody = "";
+        try {
+            HttpRequestResponse baseline = api.http().sendRequest(original.request());
+            if (baseline != null && baseline.response() != null) {
+                baselineBody = baseline.response().bodyToString();
+                if (baselineBody == null) baselineBody = "";
+            }
+        } catch (Exception e) { /* proceed with empty baseline */ }
+
         String attackerHost = "attacker.com";
         try {
             // Add a second Host header (keep the original, add attacker's)
@@ -232,8 +243,10 @@ public class HostHeaderScanner implements ScanModule {
             if (result == null || result.response() == null) return;
 
             String body = result.response().bodyToString();
-            // Check if the attacker host appears in the response (indicating the second Host was used)
-            if (body != null && body.contains(attackerHost)) {
+            // Check if the attacker host appears in the response but NOT in baseline
+            if (body != null && body.contains(attackerHost)
+                    && !baselineBody.contains(attackerHost)
+                    && result.response().statusCode() < 400) {
                 findingsStore.addFinding(Finding.builder("host-header",
                                 "Host Header Injection: Duplicate Host Header Accepted",
                                 Severity.MEDIUM, Confidence.FIRM)
@@ -259,6 +272,16 @@ public class HostHeaderScanner implements ScanModule {
     private void testOverrideHeaders(HttpRequestResponse original, String url) throws InterruptedException {
         String attackerValue = "attacker.com";
 
+        // Get baseline response for comparison
+        String baselineBody = "";
+        try {
+            HttpRequestResponse baseline = api.http().sendRequest(original.request());
+            if (baseline != null && baseline.response() != null) {
+                baselineBody = baseline.response().bodyToString();
+                if (baselineBody == null) baselineBody = "";
+            }
+        } catch (Exception e) { /* proceed with empty baseline */ }
+
         for (String header : OVERRIDE_HEADERS) {
             try {
                 // Test 1: Simple reflection test
@@ -272,7 +295,10 @@ public class HostHeaderScanner implements ScanModule {
                 HttpRequestResponse result = api.http().sendRequest(modified);
                 if (result != null && result.response() != null) {
                     String body = result.response().bodyToString();
-                    if (body != null && body.contains(attackerValue)) {
+                    // Only report if attacker value is NEW (not in baseline) and not an error response
+                    if (body != null && body.contains(attackerValue)
+                            && !baselineBody.contains(attackerValue)
+                            && result.response().statusCode() < 400) {
                         findingsStore.addFinding(Finding.builder("host-header",
                                         "Host Header Override via " + header,
                                         Severity.MEDIUM, Confidence.FIRM)

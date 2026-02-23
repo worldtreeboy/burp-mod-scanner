@@ -184,13 +184,14 @@ public class CrlfInjectionScanner implements ScanModule {
             HttpRequestResponse result = sendPayload(original, target, payload);
             if (result == null || result.response() == null) continue;
 
+            // Skip error responses — canary in error body is not response splitting
+            if (result.response().statusCode() >= 400) { perHostDelay(); continue; }
+
             String body = result.response().bodyToString();
             if (body != null && body.contains(splitCanary)) {
-                // Confirm: canary should appear before the expected HTML content
-                // (at the very beginning of the body, or before any <html> / <!DOCTYPE)
+                // Confirm: canary must appear at the very start of the body (true response splitting)
                 int canaryPos = body.indexOf(splitCanary);
-                int htmlPos = Math.max(body.indexOf("<html"), body.indexOf("<!DOCTYPE"));
-                boolean atStart = canaryPos < 50 || (htmlPos > 0 && canaryPos < htmlPos);
+                boolean atStart = canaryPos < 10;
 
                 if (atStart) {
                     findingsStore.addFinding(Finding.builder("crlf-injection",
@@ -230,6 +231,9 @@ public class CrlfInjectionScanner implements ScanModule {
                         .withAddedHeader(header, payload);
                 HttpRequestResponse result = api.http().sendRequest(modified);
                 if (result == null || result.response() == null) continue;
+
+                // Skip error responses — server may echo input in error pages, not actual CRLF
+                if (result.response().statusCode() >= 400) continue;
 
                 String injectedValue = getResponseHeader(result, "X-Injected");
                 if (injectedValue != null && injectedValue.contains(CANARY)) {

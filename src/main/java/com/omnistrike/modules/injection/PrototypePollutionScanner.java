@@ -139,19 +139,9 @@ public class PrototypePollutionScanner implements ScanModule {
             if (config.getBool("proto.cleanupEnabled", true)) {
                 cleanupPollution(original, canaryKey);
             }
-        } else if (sameRequestReflection) {
-            findingsStore.addFinding(Finding.builder("proto-pollution",
-                            "Potential Server-Side Prototype Pollution (__proto__ reflected)",
-                            Severity.MEDIUM, Confidence.TENTATIVE)
-                    .url(url).parameter("__proto__." + canaryKey)
-                    .evidence("Canary: " + canary + " | Reflected in same response (not confirmed persistent)")
-                    .description("The __proto__ canary was reflected in the response to the same request but "
-                            + "did not persist in a follow-up clean request. This may indicate prototype "
-                            + "pollution that only affects the current request context, or the persistence "
-                            + "check may not have targeted the right endpoint.")
-                    .requestResponse(result)
-                    .build());
         }
+        // Note: Same-request reflection without persistence is NOT reported — it's just
+        // normal JSON serialization echoing back the __proto__ object, not actual pollution.
         perHostDelay();
     }
 
@@ -218,6 +208,9 @@ public class PrototypePollutionScanner implements ScanModule {
         if (baseline == null || baseline.response() == null) return;
         int baselineStatus = baseline.response().statusCode();
 
+        // Skip if baseline already errors — can't distinguish pollution from existing issues
+        if (baselineStatus >= 400) return;
+
         // Inject __proto__.status = 510
         String pollutedBody = injectProtoPayload(original.request().bodyToString(),
                 "__proto__", "status", "510");
@@ -257,6 +250,24 @@ public class PrototypePollutionScanner implements ScanModule {
 
     private void testContentTypeGadget(HttpRequestResponse original, String url) throws InterruptedException {
         String marker = "text/omnistrike";
+
+        // Get baseline content-type for comparison
+        String baselineContentType = null;
+        try {
+            HttpRequestResponse baselineProbe = api.http().sendRequest(original.request());
+            if (baselineProbe != null && baselineProbe.response() != null) {
+                for (var h : baselineProbe.response().headers()) {
+                    if (h.name().equalsIgnoreCase("Content-Type")) {
+                        baselineContentType = h.value();
+                        break;
+                    }
+                }
+            }
+        } catch (Exception e) { /* proceed */ }
+
+        // If baseline already contains marker, skip (should never happen but guard)
+        if (baselineContentType != null && baselineContentType.contains(marker)) return;
+
         String pollutedBody = injectProtoPayload(original.request().bodyToString(),
                 "__proto__", "content-type", marker);
         if (pollutedBody == null) return;

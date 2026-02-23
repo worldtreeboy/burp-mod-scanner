@@ -350,9 +350,12 @@ public class PathTraversalScanner implements ScanModule {
         // php://filter base64 encoding — reads source code
         String filterPayload = "php://filter/convert.base64-encode/resource=index";
         HttpRequestResponse filterResult = sendPayload(original, target, filterPayload);
-        if (filterResult != null && filterResult.response() != null) {
+        if (filterResult != null && filterResult.response() != null
+                && filterResult.response().statusCode() == 200) {
             String body = filterResult.response().bodyToString();
-            if (body != null && !body.equals(baselineBody) && BASE64_PATTERN.matcher(body).find()) {
+            // Require response differs from baseline, contains long base64 block, and is significantly larger
+            if (body != null && !body.equals(baselineBody) && BASE64_PATTERN.matcher(body).find()
+                    && body.length() > baselineLen + 100) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "LFI via php://filter — Source Code Disclosure",
                                 Severity.CRITICAL, Confidence.CERTAIN)
@@ -374,7 +377,9 @@ public class PathTraversalScanner implements ScanModule {
         HttpRequestResponse dataResult = sendPayload(original, target, dataPayload);
         if (dataResult != null && dataResult.response() != null) {
             String body = dataResult.response().bodyToString();
-            if (body != null && PHP_INFO_PATTERN.matcher(body).find()) {
+            // Require phpinfo output AND it must NOT already exist in baseline
+            if (body != null && PHP_INFO_PATTERN.matcher(body).find()
+                    && (baselineBody == null || !PHP_INFO_PATTERN.matcher(baselineBody).find())) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "LFI to RCE via data:// Wrapper",
                                 Severity.CRITICAL, Confidence.CERTAIN)
@@ -415,7 +420,9 @@ public class PathTraversalScanner implements ScanModule {
         if (phpInputResult != null && phpInputResult.response() != null) {
             String body = phpInputResult.response().bodyToString();
             // php://input echoes back POST body content — detect if response changed significantly
-            if (body != null && !body.equals(baselineBody) && Math.abs(body.length() - baselineLen) > 50) {
+            // Require large difference (500+ bytes) to avoid FPs from normal response variance
+            if (body != null && !body.equals(baselineBody) && Math.abs(body.length() - baselineLen) > 500
+                    && phpInputResult.response().statusCode() == 200) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "LFI via php://input — Potential Code Execution",
                                 Severity.HIGH, Confidence.TENTATIVE)
@@ -436,8 +443,8 @@ public class PathTraversalScanner implements ScanModule {
         if (pharResult != null && pharResult.response() != null) {
             String body = pharResult.response().bodyToString();
             if (body != null && !body.equals(baselineBody)
-                    && pharResult.response().statusCode() != 404
-                    && body.length() > baselineLen + 20) {
+                    && pharResult.response().statusCode() == 200
+                    && body.length() > baselineLen + 200) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "LFI via phar:// Wrapper — Potential Deserialization",
                                 Severity.HIGH, Confidence.TENTATIVE)
@@ -478,8 +485,8 @@ public class PathTraversalScanner implements ScanModule {
         if (zipResult != null && zipResult.response() != null) {
             String body = zipResult.response().bodyToString();
             if (body != null && !body.equals(baselineBody)
-                    && zipResult.response().statusCode() != 404
-                    && body.length() > baselineLen + 20) {
+                    && zipResult.response().statusCode() == 200
+                    && body.length() > baselineLen + 200) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "LFI via zip:// Wrapper",
                                 Severity.HIGH, Confidence.TENTATIVE)
@@ -499,7 +506,7 @@ public class PathTraversalScanner implements ScanModule {
         HttpRequestResponse rot13Result = sendPayload(original, target, rot13Payload);
         if (rot13Result != null && rot13Result.response() != null) {
             String body = rot13Result.response().bodyToString();
-            if (body != null && !body.equals(baselineBody) && body.length() > baselineLen + 20
+            if (body != null && !body.equals(baselineBody) && body.length() > baselineLen + 200
                     && rot13Result.response().statusCode() == 200) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "LFI via php://filter (ROT13) — Source Code Disclosure",

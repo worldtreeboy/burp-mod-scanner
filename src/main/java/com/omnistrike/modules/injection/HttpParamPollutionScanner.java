@@ -139,6 +139,12 @@ public class HttpParamPollutionScanner implements ScanModule {
 
     private void testDuplicateCanary(HttpRequestResponse original, HppTarget target,
                                       String url, String urlPath) throws InterruptedException {
+        // Get baseline response for comparison
+        HttpRequestResponse baseline = sendRequest(original.request());
+        if (baseline == null || baseline.response() == null) return;
+        String baselineBody = baseline.response().bodyToString();
+        if (baselineBody == null) baselineBody = "";
+
         // Append duplicate parameter: param=original&param=canary
         HttpRequest modified = appendDuplicateParam(original.request(), target, CANARY);
         if (modified == null) return;
@@ -147,7 +153,9 @@ public class HttpParamPollutionScanner implements ScanModule {
         if (result == null || result.response() == null) return;
 
         String body = result.response().bodyToString();
-        if (body != null && body.contains(CANARY)) {
+        // Only report if canary appears in response but NOT in baseline, and not an error page
+        if (body != null && body.contains(CANARY) && !baselineBody.contains(CANARY)
+                && result.response().statusCode() < 400) {
             findingsStore.addFinding(Finding.builder("hpp",
                             "HTTP Parameter Pollution: Duplicate Parameter Accepted",
                             Severity.MEDIUM, Confidence.FIRM)
@@ -204,14 +212,15 @@ public class HttpParamPollutionScanner implements ScanModule {
         int modLen = getBodyLength(result);
         String modBody = result.response().bodyToString();
 
-        // Check if response changed meaningfully (different status, body length change, new content)
+        // Check if response changed meaningfully — require status code change to confirm
         boolean statusChanged = modStatus != baselineStatus;
-        boolean bodyLenChanged = baselineLen > 0 && Math.abs(modLen - baselineLen) > (baselineLen * 0.10);
-        boolean hasEscalationIndicator = modBody != null && (
-                modBody.contains("admin") || modBody.contains("privilege")
-                        || modBody.contains("granted") || modBody.contains("elevated"));
+        boolean bodyLenChanged = baselineLen > 0 && Math.abs(modLen - baselineLen) > (baselineLen * 0.20);
 
-        if (statusChanged || bodyLenChanged || hasEscalationIndicator) {
+        // Require status code upgrade (e.g., 403→200) to confirm actual escalation
+        // Status downgrade (200→403) is WAF/rejection, not escalation
+        boolean statusUpgrade = statusChanged && modStatus == 200 && baselineStatus >= 400;
+
+        if (statusUpgrade || (statusChanged && bodyLenChanged)) {
             findingsStore.addFinding(Finding.builder("hpp",
                             "HTTP Parameter Pollution: Potential Privilege Escalation",
                             Severity.HIGH, Confidence.FIRM)
@@ -253,7 +262,11 @@ public class HttpParamPollutionScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             String body = result.response().bodyToString();
-            if (body != null && body.contains(fullPayload)) {
+            // Skip error responses (WAF blocked it, not bypassed)
+            if (result.response().statusCode() >= 400) { perHostDelay(); continue; }
+            // Check payload is present and NOT HTML-escaped (escaped = safe)
+            if (body != null && body.contains(fullPayload)
+                    && !body.contains(fullPayload.replace("<", "&lt;"))) {
                 findingsStore.addFinding(Finding.builder("hpp",
                                 "HTTP Parameter Pollution: WAF Bypass via Payload Splitting",
                                 Severity.MEDIUM, Confidence.TENTATIVE)

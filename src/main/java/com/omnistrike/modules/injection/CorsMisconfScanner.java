@@ -635,14 +635,26 @@ public class CorsMisconfScanner implements ScanModule {
         if (acao == null || "*".equals(acao) || !probeOrigin.equals(acao)) { perHostDelay(); return; }
 
         boolean hasVaryOrigin = false;
+        boolean isCacheable = false;
         for (var h : result.response().headers()) {
-            if ("Vary".equalsIgnoreCase(h.name()) && h.value().toLowerCase().contains("origin")) {
+            String hname = h.name().toLowerCase();
+            String hval = h.value().toLowerCase();
+            if ("vary".equals(hname) && hval.contains("origin")) {
                 hasVaryOrigin = true;
-                break;
+            }
+            if ("cache-control".equals(hname) && (hval.contains("public") || hval.contains("max-age") || hval.contains("s-maxage"))) {
+                isCacheable = true;
+            }
+            if ("x-cache".equals(hname) && hval.contains("hit")) {
+                isCacheable = true;
+            }
+            if ("age".equals(hname)) {
+                isCacheable = true;
             }
         }
 
-        if (!hasVaryOrigin) {
+        // Only report missing Vary: Origin if the response is actually cacheable
+        if (!hasVaryOrigin && isCacheable) {
             findingsStore.addFinding(Finding.builder("cors-scanner",
                             "CORS Cache Poisoning: Missing Vary: Origin",
                             Severity.MEDIUM, Confidence.FIRM)
