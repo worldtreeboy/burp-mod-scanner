@@ -53,10 +53,18 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     }
 
     private void uiLog(String module, String message) {
-        api.logging().logToOutput("[" + module + "] " + message);
+        try {
+            api.logging().logToOutput("[" + module + "] " + message);
+        } catch (NullPointerException ignored) {
+            // Burp API proxy becomes null during extension unload — discard safely
+        }
         BiConsumer<String, String> logger = uiLogger;
         if (logger != null) {
-            logger.accept(module, message);
+            try {
+                logger.accept(module, message);
+            } catch (NullPointerException ignored) {
+                // UI may also be torn down during unload
+            }
         }
     }
 
@@ -176,6 +184,8 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(findings);
                     }
+                } catch (NullPointerException ignored) {
+                    // Burp API proxy becomes null during extension unload — discard safely
                 } catch (Exception e) {
                     uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()
                             + ": " + e.getMessage());
@@ -214,6 +224,8 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(findings);
                     }
+                } catch (NullPointerException ignored) {
+                    // Burp API proxy becomes null during extension unload
                 } catch (Exception e) {
                     if (Thread.currentThread().isInterrupted()) return; // stopped
                     uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()

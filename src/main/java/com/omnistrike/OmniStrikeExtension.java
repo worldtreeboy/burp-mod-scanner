@@ -201,7 +201,8 @@ public class OmniStrikeExtension implements BurpExtension {
         // ==================== CLEANUP ON UNLOAD ====================
         final AiVulnAnalyzer aiRef = aiAnalyzer;
         api.extension().registerUnloadingHandler(() -> {
-            api.logging().logToOutput("OmniStrike unloading...");
+            try { api.logging().logToOutput("OmniStrike unloading..."); }
+            catch (NullPointerException ignored) {}
             interceptor.setRunning(false);
             interceptor.shutdown(); // stop passive executor
             // Stop UI timers to prevent leaks
@@ -216,7 +217,8 @@ public class OmniStrikeExtension implements BurpExtension {
             if (persistentAudit != null) {
                 try { persistentAudit.delete(); } catch (Exception ignored) {}
             }
-            api.logging().logToOutput("OmniStrike unloaded. Goodbye!");
+            try { api.logging().logToOutput("OmniStrike unloaded. Goodbye!"); }
+            catch (NullPointerException ignored) {}
         });
 
         api.logging().logToOutput("=== OmniStrike v1.15 ready ===");

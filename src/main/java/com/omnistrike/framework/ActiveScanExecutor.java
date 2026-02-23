@@ -65,6 +65,8 @@ public class ActiveScanExecutor {
 
     /**
      * Wraps a task with a rate limit delay before execution.
+     * Also catches NullPointerException from Burp's API proxy becoming null
+     * during extension unload while threads are still running.
      */
     private Runnable wrapWithRateLimit(Runnable task) {
         return () -> {
@@ -77,7 +79,14 @@ public class ActiveScanExecutor {
                     return;
                 }
             }
-            task.run();
+            try {
+                task.run();
+            } catch (NullPointerException e) {
+                // Burp invalidates its API proxy during extension unload while scan
+                // threads may still be running. Calls to api.logging() etc. throw NPE
+                // with messages like "Cannot invoke ... because the return value of
+                // burp.Zyg5.Za() is null". Silently discard — the extension is dying.
+            }
         };
     }
 
