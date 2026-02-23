@@ -344,17 +344,12 @@ public class SstiScanner implements ScanModule {
                 }
             }
 
-            // Generic 500 error from polyglot is also suspicious
+            // A 500 from the polyglot is NOT reported as a finding — malformed input in cookies,
+            // query params, or headers commonly triggers 500s for reasons unrelated to template rendering
+            // (input validation, WAF rejection, deserialization errors, etc.). However, we still use it
+            // to gate OOB testing below, since OOB only confirms if Collaborator actually gets a callback.
             if (errorStatus == 500 && baseline.response().statusCode() != 500) {
                 polyglotCaused500 = true;
-                findingsStore.addFinding(Finding.builder("ssti-scanner",
-                                "SSTI Indicator: Server error from polyglot",
-                                Severity.LOW, Confidence.TENTATIVE)
-                        .url(url).parameter(target.name)
-                        .evidence("Polyglot probe caused 500 error (baseline was " + baseline.response().statusCode() + ")")
-                        .description("The SSTI polyglot probe triggered a server error, suggesting input reaches template rendering.")
-                        .requestResponse(errorResult)
-                        .build());
             }
         }
 

