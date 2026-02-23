@@ -625,6 +625,7 @@ public class XssScanner implements ScanModule {
                                         + ". Use DOMPurify.sanitize() for HTML sinks, "
                                         + "encodeURIComponent() for URL sinks, or textContent for safe text insertion.")
                                 .requestResponse(reqResp)
+                                .responseEvidence(context)
                                 .build());
 
                         reported.add(key);
@@ -783,6 +784,7 @@ public class XssScanner implements ScanModule {
                                     : " No sanitization detected in the flow."))
                             .remediation("Sanitize the variable '" + varName + "' before passing to " + sink + ".")
                             .requestResponse(reqResp)
+                            .responseEvidence(sink)
                             .build());
 
                     reported.add(key);
@@ -817,6 +819,7 @@ public class XssScanner implements ScanModule {
                     .remediation("Never pass user-controlled input directly to $(). Use $(document).find() "
                             + "with a sanitized selector, or validate that the input is a valid CSS selector.")
                     .requestResponse(reqResp)
+                    .responseEvidence(jqMatcher.group())
                     .build());
             reported.add(key);
         }
@@ -841,6 +844,7 @@ public class XssScanner implements ScanModule {
                             + "An attacker can break out of the selector context and inject HTML.")
                     .remediation("Avoid string concatenation in jQuery selectors. Use .find() or validate input.")
                     .requestResponse(reqResp)
+                    .responseEvidence(concatMatcher.group())
                     .build());
             reported.add(key);
         }
@@ -867,6 +871,7 @@ public class XssScanner implements ScanModule {
                     .remediation("Use .text() instead of .html() for text content. Sanitize with "
                             + "DOMPurify.sanitize() before passing to .html().")
                     .requestResponse(reqResp)
+                    .responseEvidence(htmlMatcher.group())
                     .build());
             reported.add(key);
         }
@@ -944,6 +949,7 @@ public class XssScanner implements ScanModule {
                         .remediation("Always validate event.origin against expected domains before processing "
                                 + "postMessage data. Sanitize event.data before using in DOM sinks.")
                         .requestResponse(reqResp)
+                        .responseEvidence(sinkFound)
                         .build());
                 reported.add(key);
             }
@@ -985,6 +991,7 @@ public class XssScanner implements ScanModule {
                                 .remediation("Never pass user input to eval(), Function(), setTimeout(string), "
                                         + "or setInterval(string). Use safer alternatives.")
                                 .requestResponse(reqResp)
+                                .responseEvidence(execSink.trim() + truncate(arg, 60))
                                 .build());
                         reported.add(key);
                         break;
@@ -1029,6 +1036,7 @@ public class XssScanner implements ScanModule {
                             .remediation("Never set script.src or iframe.src from user input. Validate URLs "
                                     + "against a whitelist of allowed domains.")
                             .requestResponse(reqResp)
+                            .responseEvidence(source)
                             .build());
                     reported.add(key);
                     break;
@@ -1079,6 +1087,7 @@ public class XssScanner implements ScanModule {
                                     + "from '" + source + "'." + (dangerous ? " A dangerous operation "
                                     + "was detected in the handler code." : ""))
                             .requestResponse(reqResp)
+                            .responseEvidence(truncate(ehm.group(), 150))
                             .build());
                     reported.add(key);
                     break;
@@ -1114,6 +1123,7 @@ public class XssScanner implements ScanModule {
                             .remediation("Never use javascript: URLs with user input. Use event handlers "
                                     + "and validate all input.")
                             .requestResponse(reqResp)
+                            .responseEvidence(truncate(jsm.group(), 200))
                             .build());
                     reported.add(key);
                     break;
@@ -1145,6 +1155,7 @@ public class XssScanner implements ScanModule {
                     .remediation("Use {{ }} interpolation (auto-escaped) instead of v-html. If HTML rendering "
                             + "is needed, sanitize with DOMPurify first.")
                     .requestResponse(reqResp)
+                    .responseEvidence(vuem.group())
                     .build());
             reported.add(key);
         }
@@ -1168,6 +1179,7 @@ public class XssScanner implements ScanModule {
                     .remediation("Avoid dangerouslySetInnerHTML. If needed, sanitize with DOMPurify.sanitize() "
                             + "before passing to __html.")
                     .requestResponse(reqResp)
+                    .responseEvidence(truncate(reactm.group(), 200))
                     .build());
             reported.add(key);
         }
@@ -1192,6 +1204,7 @@ public class XssScanner implements ScanModule {
                     .remediation("Avoid bypassSecurityTrust* functions. Use Angular's built-in sanitization "
                             + "or sanitize with DOMPurify before bypassing.")
                     .requestResponse(reqResp)
+                    .responseEvidence(angm.group())
                     .build());
             reported.add(key);
         }
@@ -1214,6 +1227,7 @@ public class XssScanner implements ScanModule {
                                 + "contains user input, XSS may be possible (especially in AngularJS < 1.6 "
                                 + "or with $sce disabled).")
                         .requestResponse(reqResp)
+                        .responseEvidence(ngm.group())
                         .build());
                 reported.add(key);
             }
@@ -1272,6 +1286,7 @@ public class XssScanner implements ScanModule {
                                 .remediation("Always null-check getElementById results. Validate property "
                                         + "values before use. Use Content-Security-Policy to limit impact.")
                                 .requestResponse(reqResp)
+                                .responseEvidence("getElementById('" + elementId + "')" + sink)
                                 .build());
                         reported.add(key);
                         break;
@@ -1346,6 +1361,7 @@ public class XssScanner implements ScanModule {
                                         + "Use explicit APIs (e.g., getElementById) instead of implicit "
                                         + "window.X or document.forms.X access.")
                                 .requestResponse(reqResp)
+                                .responseEvidence(fullAccess)
                                 .build());
                         reported.add(key);
                     }
@@ -1383,6 +1399,7 @@ public class XssScanner implements ScanModule {
                             + "Use cloneNode(true) for safe DOM copying, or sanitize with DOMPurify "
                             + "after reading innerHTML.")
                     .requestResponse(reqResp)
+                    .responseEvidence(roundtripMatcher.group())
                     .build());
             reported.add(key);
         }
@@ -1412,6 +1429,7 @@ public class XssScanner implements ScanModule {
                     .remediation("Use textContent for safe text transfer. If HTML transfer is needed, "
                             + "sanitize with DOMPurify.sanitize() between read and write.")
                     .requestResponse(reqResp)
+                    .responseEvidence(rwMatcher.group())
                     .build());
             reported.add(key);
         }
@@ -1446,6 +1464,7 @@ public class XssScanner implements ScanModule {
                             .remediation("If re-injection is necessary, sanitize the DOMParser output "
                                     + "with DOMPurify.sanitize() before assigning to innerHTML.")
                             .requestResponse(reqResp)
+                            .responseEvidence(dpMatcher.group())
                             .build());
                     reported.add(key);
                 }
@@ -1481,6 +1500,7 @@ public class XssScanner implements ScanModule {
                             .remediation("Use DOMPurify.sanitize() with default options (returns string) "
                                     + "and assign directly to innerHTML. Avoid RETURN_DOM → innerHTML chains.")
                             .requestResponse(reqResp)
+                            .responseEvidence(pdMatcher.group())
                             .build());
                     reported.add(key);
                 }
@@ -1506,6 +1526,7 @@ public class XssScanner implements ScanModule {
                     .remediation("Use .text() for safe text transfer. If HTML transfer is needed, "
                             + "sanitize with DOMPurify.sanitize() between .html() read and write.")
                     .requestResponse(reqResp)
+                    .responseEvidence(jqRtMatcher.group())
                     .build());
             reported.add(key);
         }
@@ -1572,6 +1593,8 @@ public class XssScanner implements ScanModule {
                             .remediation("Encode user input before embedding in JavaScript contexts. "
                                     + "Use JSON.stringify() for values inside JS strings.")
                             .requestResponse(canaryResult)
+                            .payload(DOM_CANARY)
+                            .responseEvidence(DOM_CANARY)
                             .build());
                     return; // One finding per parameter
                 }
@@ -1588,6 +1611,8 @@ public class XssScanner implements ScanModule {
                             + "JavaScript block. While no direct sink was found nearby, this may enable "
                             + "DOM XSS if the value flows to a sink elsewhere in the code.")
                     .requestResponse(canaryResult)
+                    .payload(DOM_CANARY)
+                    .responseEvidence(DOM_CANARY)
                     .build());
         }
     }
@@ -1844,6 +1869,8 @@ public class XssScanner implements ScanModule {
                 .evidence("Canary '" + CANARY + "' reflected in " + context + " context")
                 .description("User input is reflected in the response. Testing context-specific payloads.")
                 .requestResponse(canaryResult)
+                .payload(CANARY)
+                .responseEvidence(CANARY)
                 .build());
 
         // Step 3: Smart character filter probing (Improvement 1)
@@ -1864,6 +1891,7 @@ public class XssScanner implements ScanModule {
                     .description("Parameter '" + target.name + "' reflects input but all XSS-relevant "
                             + "characters are filtered. Standard XSS payloads are unlikely to work.")
                     .requestResponse(canaryResult)
+                    .payload(CHAR_PROBE)
                     .build());
             // Still try encoding-based and header injection tests
             if (config.getBool("xss.encodingXss.enabled", true)) {
@@ -1906,6 +1934,8 @@ public class XssScanner implements ScanModule {
                         .evidence("Payload: " + xssPayload + " | Marker '" + checkFor + "' found in response")
                         .description("Reflected XSS via " + desc + ". Context: " + context + ".")
                         .requestResponse(result)
+                        .payload(xssPayload)
+                        .responseEvidence(checkFor)
                         .build());
                 return; // XSS confirmed, stop testing this param
             }
@@ -1971,6 +2001,8 @@ public class XssScanner implements ScanModule {
                         .evidence("Evasion technique: " + technique + " | Payload: " + payload)
                         .description("XSS filter bypassed using " + technique + ". Context: " + context + ".")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(checkFor)
                         .build());
                 return;
             }
@@ -2003,6 +2035,8 @@ public class XssScanner implements ScanModule {
                         .description("XSS filter bypassed using adaptive payload '" + technique
                                 + "' generated from character filter analysis. Context: " + context + ".")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(checkFor)
                         .build());
                 return;
             }
@@ -2060,6 +2094,8 @@ public class XssScanner implements ScanModule {
                                 + "(e.g., ng-bind in AngularJS, {{ }} with v-text in Vue). Upgrade AngularJS "
                                 + "to Angular (2+) which has stricter sandbox.")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(evalResult)
                         .build());
                 return; // CSTI confirmed
             }
@@ -2077,6 +2113,7 @@ public class XssScanner implements ScanModule {
                                 + "to be a client-side template engine (" + desc + "). The exact evaluation "
                                 + "result was not detected, but the syntax was processed, suggesting CSTI potential.")
                         .requestResponse(result)
+                        .payload(payload)
                         .build());
             }
             perHostDelay();
@@ -2239,6 +2276,8 @@ public class XssScanner implements ScanModule {
                                         + " framework, confirming client-side template injection.")
                                 .remediation(getFrameworkRemediation(fwName))
                                 .requestResponse(result)
+                                .payload(xssPayload)
+                                .responseEvidence(checkFor)
                                 .build());
                         return; // Confirmed XSS for this param
                     }
@@ -2258,6 +2297,8 @@ public class XssScanner implements ScanModule {
                                         + "The marker '" + checkFor + "' was found in the response body.")
                                 .remediation(getFrameworkRemediation(fwName))
                                 .requestResponse(result)
+                                .payload(xssPayload)
+                                .responseEvidence(checkFor)
                                 .build());
                         return; // Confirmed XSS for this param
                     }
@@ -2374,6 +2415,8 @@ public class XssScanner implements ScanModule {
                         .remediation("Always specify charset=UTF-8 in the Content-Type header. "
                                 + "Add: Content-Type: text/html; charset=UTF-8")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(checkFor)
                         .build());
                 return;
             }
@@ -2418,6 +2461,8 @@ public class XssScanner implements ScanModule {
                         + "the response header '" + reflectedHeaderName + "'. Testing for CRLF "
                         + "injection to achieve XSS via header injection.")
                 .requestResponse(canaryResult)
+                .payload(CANARY)
+                .responseEvidence(CANARY)
                 .build());
 
         // Step 2: Try CRLF injection
@@ -2457,6 +2502,8 @@ public class XssScanner implements ScanModule {
                                 + "Strip or reject CR (\\r) and LF (\\n) characters. Use framework-level "
                                 + "header-setting methods that prevent CRLF injection.")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(checkFor)
                         .build());
                 return;
             }
@@ -2501,6 +2548,7 @@ public class XssScanner implements ScanModule {
                                         + "log viewer, email) and triggered an out-of-band " + interaction.type().name()
                                         + " callback. Parameter '" + target.name + "' is vulnerable.")
                                 .requestResponse(sentRequest.get())
+                                .payload(template)
                                 .build());
                         api.logging().logToOutput("[XSS Blind] Confirmed OOB interaction! "
                                 + url + " param=" + target.name + " technique=" + technique);

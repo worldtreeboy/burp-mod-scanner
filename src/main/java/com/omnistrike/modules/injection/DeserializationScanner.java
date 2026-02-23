@@ -619,7 +619,9 @@ public class DeserializationScanner implements ScanModule {
                 enriched.add(Finding.builder(f.getModuleId(), f.getTitle(), f.getSeverity(), f.getConfidence())
                         .url(f.getUrl()).parameter(f.getParameter())
                         .evidence(f.getEvidence()).description(f.getDescription())
-                        .remediation(f.getRemediation()).requestResponse(requestResponse)
+                        .remediation(f.getRemediation())
+                        .payload(f.getPayload()).responseEvidence(f.getResponseEvidence())
+                        .requestResponse(requestResponse)
                         .build());
             } else {
                 enriched.add(f);
@@ -648,6 +650,7 @@ public class DeserializationScanner implements ScanModule {
                             .evidence("Cookie: " + param.name() + "=" + value.substring(0, Math.min(50, value.length())) + "...")
                             .description("Apache Shiro rememberMe cookie found. This is a known deserialization target. "
                                     + "Vulnerable versions allow RCE via crafted serialized objects.")
+                            .responseEvidence(param.name() + "=" + value.substring(0, Math.min(50, value.length())))
                             .build());
                 }
 
@@ -661,6 +664,7 @@ public class DeserializationScanner implements ScanModule {
                             .evidence("Cookie: " + param.name() + " (length=" + value.length() + ")")
                             .description(".NET session/auth cookie found. If this cookie contains serialized data "
                                     + "(e.g., claims, tokens), it may be a deserialization target.")
+                            .responseEvidence(param.name())
                             .build());
                 }
 
@@ -714,6 +718,7 @@ public class DeserializationScanner implements ScanModule {
                             .evidence("ViewState: " + viewstate.substring(0, Math.min(80, viewstate.length())) + "...")
                             .description("ASP.NET ViewState found. Check if MAC validation is enabled. "
                                     + "Without MAC validation, this is exploitable for deserialization attacks.")
+                            .responseEvidence("__VIEWSTATE")
                             .build());
                 }
             }
@@ -762,6 +767,7 @@ public class DeserializationScanner implements ScanModule {
                         .evidence("Library '" + lib + "' referenced in response body")
                         .description("Reference to '" + lib + "' found in response. "
                                 + "If this library is used for deserialization, it may be exploitable.")
+                        .responseEvidence(lib)
                         .build());
                 break; // One finding for library references is enough
             }
@@ -781,6 +787,7 @@ public class DeserializationScanner implements ScanModule {
                     .description("JSON.NET TypeNameHandling is set to '" + tnm.group(1)
                             + "'. This enables type-based deserialization attacks. "
                             + "Remediation: Use TypeNameHandling.None or implement a SerializationBinder.")
+                    .responseEvidence(tnm.group())
                     .build());
         }
 
@@ -794,6 +801,7 @@ public class DeserializationScanner implements ScanModule {
                     .description("JSON.NET $type property detected in response. The server uses polymorphic "
                             + "deserialization which allows type injection attacks. "
                             + "Remediation: Remove TypeNameHandling or use a strict SerializationBinder.")
+                    .responseEvidence("$type")
                     .build());
         }
 
@@ -806,6 +814,7 @@ public class DeserializationScanner implements ScanModule {
                     .evidence("enableViewStateMac=false found in response")
                     .description("ViewState MAC validation is disabled. This allows tampering with "
                             + "serialized ViewState data, potentially leading to RCE.")
+                    .responseEvidence("enableViewStateMac")
                     .build());
         }
 
@@ -821,6 +830,7 @@ public class DeserializationScanner implements ScanModule {
                     .description("ASP.NET WebForms page detected with ViewState. "
                             + "This creates a deserialization attack surface. "
                             + "Test whether ViewState MAC is properly validated and whether the machine key is default/leaked.")
+                    .responseEvidence("__VIEWSTATEGENERATOR")
                     .build());
         }
 
@@ -835,6 +845,7 @@ public class DeserializationScanner implements ScanModule {
                     .description("Reference to .NET serializer found. If used with untrusted input, "
                             + "this may enable deserialization attacks. DataContractSerializer and XmlSerializer "
                             + "can be exploited via type injection when used with known type lists.")
+                    .responseEvidence(esm.group())
                     .build());
         }
 
@@ -848,6 +859,7 @@ public class DeserializationScanner implements ScanModule {
                     .description(".NET Remoting endpoint detected. Remoting uses BinaryFormatter internally "
                             + "and is inherently vulnerable to deserialization attacks. "
                             + "Remediation: Migrate to WCF or gRPC. .NET Remoting is deprecated.")
+                    .responseEvidence(".rem")
                     .build());
         }
 
@@ -860,6 +872,7 @@ public class DeserializationScanner implements ScanModule {
                     .evidence("SOAP envelope found in response")
                     .description("SOAP endpoint detected. .NET SOAP services may use SoapFormatter "
                             + "or DataContractSerializer internally. Test for XXE and type injection.")
+                    .responseEvidence("SOAP-ENV:Envelope")
                     .build());
         }
 
@@ -872,6 +885,7 @@ public class DeserializationScanner implements ScanModule {
                     .evidence("ASMX/WCF pattern found in response")
                     .description("ASP.NET ASMX or WCF service detected. These services use XML/SOAP "
                             + "serialization and may be vulnerable to XXE or type injection attacks.")
+                    .responseEvidence(".asmx")
                     .build());
         }
 
@@ -886,6 +900,7 @@ public class DeserializationScanner implements ScanModule {
                             .evidence("Content-Type: " + header.value())
                             .description("Response uses Java serialization content type. "
                                     + "The application uses Java serialization for data exchange.")
+                            .responseEvidence(header.value())
                             .build());
                 }
             }
@@ -898,6 +913,7 @@ public class DeserializationScanner implements ScanModule {
                         .evidence("Header: " + header.name() + ": " + header.value())
                         .description("BinaryFormatter or similar .NET serializer detected. "
                                 + "These are inherently unsafe and should not be used with untrusted data.")
+                        .responseEvidence(header.value())
                         .build());
             }
         }
@@ -918,6 +934,7 @@ public class DeserializationScanner implements ScanModule {
                     .description("Fastjson @type property detected in response with a Java class path value. "
                             + "The server uses Fastjson with AutoType which allows type injection attacks. "
                             + "Remediation: Upgrade Fastjson to latest version with safeMode or migrate to Gson/Jackson.")
+                    .responseEvidence("@type")
                     .build());
         }
 
@@ -931,6 +948,7 @@ public class DeserializationScanner implements ScanModule {
                     .description("Jackson DefaultTyping pattern detected in response. The server uses Jackson "
                             + "with polymorphic type handling which allows type injection attacks. "
                             + "Remediation: Disable DefaultTyping or use a strict PolymorphicTypeValidator.")
+                    .responseEvidence("DefaultTyping")
                     .build());
         }
 
@@ -943,6 +961,7 @@ public class DeserializationScanner implements ScanModule {
                     .evidence("XStream XML serialization tags in response body")
                     .description("XStream XML serialization detected in response. Older XStream versions "
                             + "allow RCE via crafted XML. Remediation: Upgrade XStream and configure security framework.")
+                    .responseEvidence("XStream")
                     .build());
         }
 
@@ -956,6 +975,7 @@ public class DeserializationScanner implements ScanModule {
                         .evidence("Ruby library '" + gem + "' referenced in response body")
                         .description("Reference to Ruby library '" + gem + "' found. "
                                 + "If this library handles deserialization of untrusted data, it may be exploitable.")
+                        .responseEvidence(gem)
                         .build());
                 break;
             }
@@ -968,6 +988,7 @@ public class DeserializationScanner implements ScanModule {
                     .evidence("!!ruby/object or similar YAML tag in response")
                     .description("Ruby YAML object tags found in response. If YAML.load is used to deserialize "
                             + "user-controlled data, this is exploitable for RCE. Use YAML.safe_load instead.")
+                    .responseEvidence("!!ruby/object")
                     .build());
         }
 
@@ -982,6 +1003,7 @@ public class DeserializationScanner implements ScanModule {
                     .description("Node.js serialization library markers detected in response. "
                             + "node-serialize and cryo are known to be vulnerable to RCE via crafted input. "
                             + "Remediation: Replace with JSON.parse/JSON.stringify.")
+                    .responseEvidence("_$$ND_FUNC$$_")
                     .build());
         }
 
@@ -994,6 +1016,7 @@ public class DeserializationScanner implements ScanModule {
                     .evidence("jsonpickle markers (py/reduce, py/object) found in response")
                     .description("Python jsonpickle output detected in response. If jsonpickle.decode() is used "
                             + "on user-controlled input, this leads to RCE. Use JSON instead.")
+                    .responseEvidence("py/reduce")
                     .build());
         }
 
@@ -1008,6 +1031,7 @@ public class DeserializationScanner implements ScanModule {
                         .evidence("Content-Type: " + header.value())
                         .description("Hessian serialization protocol detected. Hessian can be exploited "
                                 + "via crafted objects. Remediation: Implement allowlist-based class filtering.")
+                        .responseEvidence(header.value())
                         .build());
                 break;
             }
@@ -1025,6 +1049,7 @@ public class DeserializationScanner implements ScanModule {
                             .evidence("Set-Cookie contains Base64 Java serialized data")
                             .description("Server sets a cookie containing a Java serialized object. "
                                     + "If the cookie is deserialized on subsequent requests, this is exploitable.")
+                            .responseEvidence("rO0AB")
                             .build());
                 }
                 if (RUBY_MARSHAL_B64.matcher(val).find()) {
@@ -1035,6 +1060,7 @@ public class DeserializationScanner implements ScanModule {
                             .evidence("Set-Cookie contains Base64-encoded Ruby Marshal data")
                             .description("Server sets a cookie containing a Ruby Marshal object. "
                                     + "If Marshal.load is used on this cookie, it is exploitable for RCE.")
+                            .responseEvidence("BAh")
                             .build());
                 }
                 // Check decoded Set-Cookie for PHP serialized data
@@ -1053,6 +1079,7 @@ public class DeserializationScanner implements ScanModule {
                             .evidence("Set-Cookie value base64-decodes to PHP serialized object")
                             .description("Server sets a cookie containing base64-encoded PHP serialized data. "
                                     + "If unserialize() processes this cookie, it is a deserialization target.")
+                            .responseEvidence(decoded.substring(0, Math.min(60, decoded.length())))
                             .build());
                 }
             }
@@ -1128,6 +1155,7 @@ public class DeserializationScanner implements ScanModule {
                                     + " gadget chain. Time-based confirmation with double-tap. "
                                     + "Remediation: Do not deserialize untrusted data. "
                                     + "Use JSON with strict typing or implement JEP 290 deserialization filters.")
+                            .payload(payload)
                             .build());
                     return;
                 }
@@ -1158,6 +1186,8 @@ public class DeserializationScanner implements ScanModule {
                         .description(".NET deserialization error triggered by " + chainName
                                 + " payload. The application is processing serialized data. "
                                 + "Remediation: Replace BinaryFormatter with JSON serialization.")
+                        .payload(payload)
+                        .responseEvidence("SerializationException")
                         .requestResponse(result)
                         .build());
                 return;
@@ -1190,6 +1220,8 @@ public class DeserializationScanner implements ScanModule {
                         .description("JSON.NET is processing $type properties from user input. "
                                 + "This confirms TypeNameHandling is enabled and type injection is possible. "
                                 + "Remediation: Set TypeNameHandling.None or use a strict ISerializationBinder.")
+                        .payload(payload)
+                        .responseEvidence("$type")
                         .requestResponse(result)
                         .build());
                 return;
@@ -1205,6 +1237,7 @@ public class DeserializationScanner implements ScanModule {
                                 + " | .NET deserialization error from JSON type injection")
                         .description("Server error triggered by JSON.NET $type injection. "
                                 + "The application may be vulnerable to type-based deserialization attacks.")
+                        .payload(payload)
                         .requestResponse(result)
                         .build());
                 return;
@@ -1239,6 +1272,7 @@ public class DeserializationScanner implements ScanModule {
                                     + " with time-based double-tap. "
                                     + "Remediation: Do not use BinaryFormatter/SoapFormatter with untrusted data. "
                                     + "Migrate to System.Text.Json with strict type handling.")
+                            .payload(payload)
                             .build());
                     return;
                 }
@@ -1282,6 +1316,8 @@ public class DeserializationScanner implements ScanModule {
                         .description("PHP unserialize() is processing user input. "
                                 + "Remediation: Use json_decode() instead of unserialize(). "
                                 + "If serialization is required, use signed serialization (e.g., sodium_crypto_auth).")
+                        .payload(payload)
+                        .responseEvidence("unserialize()")
                         .requestResponse(result)
                         .build());
                 return;
@@ -1297,6 +1333,7 @@ public class DeserializationScanner implements ScanModule {
                         .evidence("First trigger: " + desc + " | Modified PHP serialized data caused 500 error")
                         .description("Server error when sending modified serialized PHP data. "
                                 + "This suggests unserialize() is processing the input.")
+                        .payload(payload)
                         .requestResponse(result)
                         .build());
             }
@@ -1333,6 +1370,7 @@ public class DeserializationScanner implements ScanModule {
                             .description("Python pickle deserialization RCE confirmed via time-based payload. "
                                     + "Remediation: Never unpickle untrusted data. Use JSON or implement "
                                     + "hmac signing for pickle data.")
+                            .payload(payload)
                             .build());
                     return;
                 }
@@ -1368,6 +1406,7 @@ public class DeserializationScanner implements ScanModule {
                             .description("Ruby deserialization RCE confirmed. "
                                     + "Remediation: Never use Marshal.load or YAML.load with untrusted data. "
                                     + "Use JSON.parse or YAML.safe_load instead.")
+                            .payload(payload)
                             .build());
                     return;
                 }
@@ -1390,6 +1429,8 @@ public class DeserializationScanner implements ScanModule {
                             .description("Ruby deserialization error triggered. The application is processing "
                                     + "serialized data via Marshal.load or YAML.load. "
                                     + "Remediation: Use JSON.parse or YAML.safe_load.")
+                            .payload(payload)
+                            .responseEvidence("Marshal")
                             .requestResponse(result)
                             .build());
                     return;
@@ -1426,6 +1467,7 @@ public class DeserializationScanner implements ScanModule {
                             .description("Node.js deserialization RCE confirmed. "
                                     + "Remediation: Replace node-serialize/cryo/funcster with JSON.parse. "
                                     + "Never deserialize untrusted data with eval or Function constructor.")
+                            .payload(payload)
                             .build());
                     return;
                 }
@@ -1449,6 +1491,8 @@ public class DeserializationScanner implements ScanModule {
                             .description("Node.js deserialization error triggered. The application is processing "
                                     + "serialized data via an unsafe library. "
                                     + "Remediation: Use JSON.parse instead of node-serialize/cryo/funcster.")
+                            .payload(payload)
+                            .responseEvidence("SyntaxError")
                             .requestResponse(result)
                             .build());
                     return;
@@ -1482,6 +1526,8 @@ public class DeserializationScanner implements ScanModule {
                         .description("Fastjson is processing @type properties. Even if autoType is blocked, "
                                 + "many bypass payloads exist for older versions. "
                                 + "Remediation: Upgrade Fastjson to latest with safeMode or migrate to Gson.")
+                        .payload(payload)
+                        .responseEvidence("autoType")
                         .requestResponse(result)
                         .build());
                 return;
@@ -1510,6 +1556,8 @@ public class DeserializationScanner implements ScanModule {
                         .evidence("Payload: " + desc + " | Jackson error in response")
                         .description("Jackson is processing polymorphic type data. DefaultTyping is enabled. "
                                 + "Remediation: Disable DefaultTyping or use a strict PolymorphicTypeValidator.")
+                        .payload(payload)
+                        .responseEvidence("JsonMappingException")
                         .requestResponse(result)
                         .build());
                 return;
@@ -1537,6 +1585,8 @@ public class DeserializationScanner implements ScanModule {
                         .evidence("Payload: " + desc + " | XStream error in response")
                         .description("XStream is processing XML serialized data. "
                                 + "Remediation: Upgrade XStream and configure security framework with allowlists.")
+                        .payload(payload)
+                        .responseEvidence("XStreamException")
                         .requestResponse(result)
                         .build());
                 return;
@@ -1565,6 +1615,8 @@ public class DeserializationScanner implements ScanModule {
                         .evidence("Payload: " + desc + " | SnakeYAML error in response")
                         .description("SnakeYAML is processing YAML with type tags. "
                                 + "Remediation: Use SafeConstructor or upgrade SnakeYAML 2.0+ with restricted tags.")
+                        .payload(payload)
+                        .responseEvidence("YAMLException")
                         .requestResponse(result)
                         .build());
                 return;
@@ -1599,6 +1651,8 @@ public class DeserializationScanner implements ScanModule {
                         .evidence("Payload: " + desc + " | PHP deserialization error in response")
                         .description("PHP framework deserialization chain triggered processing. "
                                 + "Remediation: Use json_decode() instead of unserialize().")
+                        .payload(payload)
+                        .responseEvidence("unserialize()")
                         .requestResponse(result)
                         .build());
                 return;
@@ -1615,6 +1669,7 @@ public class DeserializationScanner implements ScanModule {
                         .description("Server error from PHP deserialization chain. "
                                 + "Confirms unserialize() is processing user input. "
                                 + "Multiple framework chains tested.")
+                        .payload(payload)
                         .requestResponse(result)
                         .build());
                 // Don't return — keep testing for confirmed deserialization,
@@ -1753,6 +1808,7 @@ public class DeserializationScanner implements ScanModule {
                                         + "triggering a " + interaction.type().name() + " callback. "
                                         + "Remediation: Do not deserialize untrusted data. Use safe alternatives "
                                         + "(JSON with strict typing, signed serialization, allowlist-based filters).")
+                                .payload(payloadTemplate)
                                 .requestResponse(sentRequest.get())
                                 .build());
                         api.logging().logToOutput("[Deser OOB] Confirmed! " + dp.language + " " + technique

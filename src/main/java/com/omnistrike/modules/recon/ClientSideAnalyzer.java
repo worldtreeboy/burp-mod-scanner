@@ -418,6 +418,7 @@ public class ClientSideAnalyzer implements ScanModule {
                                     sinkEntry.getValue(), Confidence.TENTATIVE)
                             .url(url)
                             .evidence("Source: " + sourceEvidence + "\nSink: " + sinkEvidence)
+                            .responseEvidence(sink)
                             .description("Potential DOM XSS: user-controllable source '" + source
                                     + "' found in same script block as dangerous sink '" + sink
                                     + "'. If user input flows from the source to the sink without "
@@ -456,12 +457,14 @@ public class ClientSideAnalyzer implements ScanModule {
                     continue; // Defensive check — not a vulnerability
                 }
 
+                String matchedText = m.group();
                 String evidence = extractContext(body, matchStart, 80);
                 findings.add(Finding.builder("client-side-analyzer",
                                 "Prototype Pollution: " + pws.description,
                                 pws.severity, Confidence.TENTATIVE)
                         .url(url)
                         .evidence(evidence)
+                        .responseEvidence(matchedText)
                         .description("Potential prototype pollution vector detected. " + pws.description
                                 + ". An attacker may be able to modify Object.prototype and affect "
                                 + "application behavior, potentially leading to XSS or privilege escalation.")
@@ -520,6 +523,7 @@ public class ClientSideAnalyzer implements ScanModule {
                                 effectiveSeverity, effectiveConfidence)
                         .url(url)
                         .evidence("Matched: " + redacted + "\nContext: " + evidence)
+                        .responseEvidence(matched)
                         .description("A " + sp.name + " was found exposed in the response body. "
                                 + "Hardcoded secrets in client-side code are accessible to anyone "
                                 + "who views the page source. (" + sp.cwe + ")")
@@ -571,6 +575,7 @@ public class ClientSideAnalyzer implements ScanModule {
                                 severity, Confidence.TENTATIVE)
                         .url(url)
                         .evidence(truncate(handlerBody, 300))
+                        .responseEvidence(handlerBody)
                         .description(desc)
                         .remediation("Always validate event.origin against expected origins before "
                                 + "processing message data. Example: if (event.origin !== 'https://trusted.com') return;")
@@ -604,13 +609,15 @@ public class ClientSideAnalyzer implements ScanModule {
                     continue; // URL validation present — discard
                 }
 
+                String matchedRedirect = m.group();
                 String evidence = extractContext(body, matchStart, 80);
 
                 findings.add(Finding.builder("client-side-analyzer",
-                                "Client-Side Open Redirect: " + truncate(m.group(), 60),
+                                "Client-Side Open Redirect: " + truncate(matchedRedirect, 60),
                                 Severity.MEDIUM, Confidence.TENTATIVE)
                         .url(url)
                         .evidence(evidence)
+                        .responseEvidence(matchedRedirect)
                         .description("JavaScript code redirects to a URL derived from user-controllable "
                                 + "input (location.hash, location.search, etc.). An attacker could craft "
                                 + "a URL that redirects victims to a malicious site for phishing.")
@@ -668,6 +675,7 @@ public class ClientSideAnalyzer implements ScanModule {
                                 Severity.LOW, Confidence.FIRM)
                         .url(url)
                         .evidence(evidence)
+                        .responseEvidence(ip)
                         .description("An internal/private IP address (" + ip + ") was found in the "
                                 + "response. This reveals internal network structure.")
                         .remediation("Remove internal IP addresses from client-side code and responses.")
@@ -682,12 +690,14 @@ public class ClientSideAnalyzer implements ScanModule {
             int matchStart = hostMatcher.start();
             // Discard if inside a comment
             if (!isInsideComment(body, matchStart)) {
+                String hostMatch = hostMatcher.group();
                 String evidence = extractContext(body, matchStart, 80);
                 findings.add(Finding.builder("client-side-analyzer",
                                 "Internal/staging host URL disclosed",
                                 Severity.LOW, Confidence.FIRM)
                         .url(url)
                         .evidence(evidence)
+                        .responseEvidence(hostMatch)
                         .description("A reference to an internal, staging, or development host was found. "
                                 + "This may expose internal infrastructure or non-production environments.")
                         .remediation("Remove internal host references from production code.")
@@ -702,11 +712,13 @@ public class ClientSideAnalyzer implements ScanModule {
         // Source maps
         Matcher sourceMapMatcher = SOURCE_MAP_PATTERN.matcher(body);
         if (sourceMapMatcher.find()) {
+            String sourceMapMatch = sourceMapMatcher.group();
             findings.add(Finding.builder("client-side-analyzer",
                             "Source map reference found",
                             Severity.INFO, Confidence.CERTAIN)
                     .url(url)
-                    .evidence(sourceMapMatcher.group())
+                    .evidence(sourceMapMatch)
+                    .responseEvidence(sourceMapMatch)
                     .description("A sourceMappingURL was found, which can expose original source code "
                             + "including comments, variable names, and application logic.")
                     .remediation("Remove source map references from production builds. "
@@ -732,6 +744,7 @@ public class ClientSideAnalyzer implements ScanModule {
                                     Severity.LOW, Confidence.FIRM)
                             .url(url)
                             .evidence(email)
+                            .responseEvidence(email)
                             .description("An email address was found in JavaScript code. "
                                     + "This could be used for social engineering or targeted phishing.")
                             .remediation("Remove hardcoded email addresses from client-side code.")
@@ -754,12 +767,14 @@ public class ClientSideAnalyzer implements ScanModule {
             int matchStart = evalMatcher.start();
             // Discard if inside a comment
             if (!isInsideComment(body, matchStart)) {
+                String evalMatch = evalMatcher.group();
                 String evidence = extractContext(body, matchStart, 80);
                 findings.add(Finding.builder("client-side-analyzer",
                                 "Dangerous eval() with variable: eval(" + evalMatcher.group(1) + ")",
                                 Severity.MEDIUM, Confidence.FIRM)
                         .url(url)
                         .evidence(evidence)
+                        .responseEvidence(evalMatch)
                         .description("eval() is called with a variable argument rather than a string literal. "
                                 + "If the variable can be influenced by user input, this leads to arbitrary "
                                 + "JavaScript execution.")
@@ -779,12 +794,14 @@ public class ClientSideAnalyzer implements ScanModule {
             int matchStart = funcMatcher.start();
             // Discard if inside a comment
             if (!isInsideComment(body, matchStart)) {
+                String funcMatch = funcMatcher.group();
                 String evidence = extractContext(body, matchStart, 80);
                 findings.add(Finding.builder("client-side-analyzer",
                                 "Dangerous new Function() with variable argument",
                                 Severity.MEDIUM, Confidence.FIRM)
                         .url(url)
                         .evidence(evidence)
+                        .responseEvidence(funcMatch)
                         .description("new Function() is called with a variable argument. Like eval(), "
                                 + "this compiles and executes arbitrary code if the argument is user-controllable.")
                         .remediation("Avoid new Function() with dynamic input. Use safer alternatives.")
@@ -804,12 +821,14 @@ public class ClientSideAnalyzer implements ScanModule {
         if (localMatcher.find()) {
             // Discard if inside a comment
             if (!isInsideComment(body, localMatcher.start())) {
+                String localMatch = localMatcher.group();
                 String evidence = extractContext(body, localMatcher.start(), 100);
                 findings.add(Finding.builder("client-side-analyzer",
                                 "Sensitive data stored in localStorage",
                                 Severity.MEDIUM, Confidence.FIRM)
                         .url(url)
                         .evidence(evidence)
+                        .responseEvidence(localMatch)
                         .description("Sensitive data (tokens, passwords, keys) is being stored in localStorage. "
                                 + "localStorage is accessible via JavaScript and persists across sessions, "
                                 + "making it vulnerable to XSS-based token theft.")
@@ -824,12 +843,14 @@ public class ClientSideAnalyzer implements ScanModule {
         if (sessionMatcher.find()) {
             // Discard if inside a comment
             if (!isInsideComment(body, sessionMatcher.start())) {
+                String sessionMatch = sessionMatcher.group();
                 String evidence = extractContext(body, sessionMatcher.start(), 100);
                 findings.add(Finding.builder("client-side-analyzer",
                                 "Sensitive data stored in sessionStorage",
                                 Severity.LOW, Confidence.FIRM)
                         .url(url)
                         .evidence(evidence)
+                        .responseEvidence(sessionMatch)
                         .description("Sensitive data is being stored in sessionStorage. While sessionStorage "
                                 + "does not persist across tabs/sessions, it is still accessible via JavaScript "
                                 + "and vulnerable to XSS attacks.")
@@ -871,6 +892,7 @@ public class ClientSideAnalyzer implements ScanModule {
                                 Severity.LOW, Confidence.FIRM)
                         .url(url)
                         .evidence(evidence)
+                        .responseEvidence(path)
                         .description("A server-side file path was found in the response body. "
                                 + "This reveals internal directory structure and may help an attacker "
                                 + "craft path traversal payloads.")
@@ -886,12 +908,14 @@ public class ClientSideAnalyzer implements ScanModule {
         // Dynamic import/require with variables — lowered to INFO/TENTATIVE
         Matcher dynImportMatcher = DYNAMIC_IMPORT.matcher(body);
         if (dynImportMatcher.find()) {
+            String dynImportMatch = dynImportMatcher.group();
             String evidence = extractContext(body, dynImportMatcher.start(), 80);
             findings.add(Finding.builder("client-side-analyzer",
                             "Dynamic import()/require() with variable argument",
                             Severity.INFO, Confidence.TENTATIVE)
                     .url(url)
                     .evidence(evidence)
+                    .responseEvidence(dynImportMatch)
                     .description("Dynamic import() or require() is called with a variable argument. "
                             + "If the variable is user-controllable, an attacker may be able to load "
                             + "arbitrary modules or files.")
@@ -905,12 +929,14 @@ public class ClientSideAnalyzer implements ScanModule {
         while (fileParamMatcher.find() && seenParams.size() < 3) {
             String paramName = fileParamMatcher.group(1);
             if (seenParams.add(paramName.toLowerCase())) {
+                String fileParamMatch = fileParamMatcher.group();
                 String evidence = extractContext(body, fileParamMatcher.start(), 100);
                 findings.add(Finding.builder("client-side-analyzer",
                                 "File/path parameter found: " + paramName,
                                 Severity.INFO, Confidence.FIRM)
                         .url(url)
                         .evidence(evidence)
+                        .responseEvidence(fileParamMatch)
                         .description("A URL parameter named '" + paramName + "' suggests the server "
                                 + "handles file paths. This parameter is a strong candidate for path "
                                 + "traversal testing (e.g., ../../etc/passwd, ..\\..\\windows\\win.ini).")

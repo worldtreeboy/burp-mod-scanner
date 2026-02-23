@@ -443,6 +443,7 @@ public class CommandInjectionScanner implements ScanModule {
                             + "within baseline range (" + controlResult.elapsedMs + "ms), second true condition "
                             + "confirmed the delay. Parameter '" + target.name + "' is injectable via "
                             + technique + " (" + osType + ").")
+                    .payload(truePayload)
                     .requestResponse(result2.response)
                     .build());
             return true;
@@ -477,20 +478,26 @@ public class CommandInjectionScanner implements ScanModule {
             if (!expectedOutput.isEmpty()) {
                 boolean matched;
                 boolean baselineMatched;
+                String matchedEvidence = null; // actual matched text for responseEvidence
 
                 if (expectedOutput.startsWith("REGEX:")) {
                     // Regex-based matching (e.g., for echo-wrapped whoami output)
                     Pattern regexPattern = Pattern.compile(expectedOutput.substring(6));
-                    matched = regexPattern.matcher(body).find();
+                    java.util.regex.Matcher regexMatcher = regexPattern.matcher(body);
+                    matched = regexMatcher.find();
+                    if (matched) {
+                        matchedEvidence = regexMatcher.group();
+                    }
                     baselineMatched = baselineBody.isEmpty() || regexPattern.matcher(baselineBody).find();
                 } else {
                     // Simple string contains matching
                     matched = body.contains(expectedOutput);
+                    matchedEvidence = expectedOutput;
                     baselineMatched = baselineBody.isEmpty() || baselineBody.contains(expectedOutput);
                 }
 
                 if (matched && !baselineMatched) {
-                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                    Finding.Builder findingBuilder = Finding.builder("cmdi-scanner",
                                     "OS Command Injection (Output-Based) - " + osType,
                                     Severity.CRITICAL, Confidence.CERTAIN)
                             .url(url).parameter(target.name)
@@ -500,8 +507,12 @@ public class CommandInjectionScanner implements ScanModule {
                             .description("Command injection confirmed. Command output matching '"
                                     + expectedOutput + "' found in response via " + technique + ". "
                                     + "Parameter '" + target.name + "' allows OS command execution.")
-                            .requestResponse(result)
-                            .build());
+                            .payload(payload)
+                            .requestResponse(result);
+                    if (matchedEvidence != null) {
+                        findingBuilder.responseEvidence(matchedEvidence);
+                    }
+                    findingsStore.addFinding(findingBuilder.build());
                     return true;
                 }
             }
@@ -534,6 +545,8 @@ public class CommandInjectionScanner implements ScanModule {
 
         // AtomicReference to capture the sent request/response for the finding
         AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+        // AtomicReference to capture the final payload string for the finding
+        AtomicReference<String> sentPayload = new AtomicReference<>();
 
         String collabPayload = collaboratorManager.generatePayload(
                 "cmdi-scanner", url, target.name,
@@ -551,6 +564,7 @@ public class CommandInjectionScanner implements ScanModule {
                                     + "The server executed " + technique + " which triggered a "
                                     + interaction.type().name() + " callback. "
                                     + "Parameter '" + target.name + "' allows arbitrary command execution.")
+                            .payload(sentPayload.get())
                             .requestResponse(sentRequest.get())
                             .build());
                     api.logging().logToOutput("[CmdI OOB] Confirmed! " + interaction.type()
@@ -563,7 +577,7 @@ public class CommandInjectionScanner implements ScanModule {
 
         String payload = payloadTemplate.replace("COLLAB_PLACEHOLDER", collabPayload);
 
-
+        sentPayload.set(payload);
         sentRequest.set(sendPayload(original, target, target.originalValue + payload));
 
         api.logging().logToOutput("[CmdI OOB] Sent " + technique + " payload to " + url

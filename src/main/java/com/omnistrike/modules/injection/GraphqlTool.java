@@ -372,6 +372,8 @@ public class GraphqlTool implements ScanModule {
                         .remediation("Disable introspection in production. In Apollo Server: "
                                 + "new ApolloServer({ introspection: false })")
                         .requestResponse(result)
+                        .payload(INTROSPECTION_QUERY)
+                        .responseEvidence("__schema")
                         .build());
 
                 return schema;
@@ -409,6 +411,8 @@ public class GraphqlTool implements ScanModule {
                             .description("Introspection was blocked for the full query but a simpler/alternate "
                                     + "query succeeded. The introspection block is incomplete.")
                             .requestResponse(result)
+                            .payload(bypassQuery)
+                            .responseEvidence("__schema")
                             .build());
 
                     // Try to parse partial schema
@@ -450,6 +454,8 @@ public class GraphqlTool implements ScanModule {
                         .description("Introspection is blocked on POST but allowed via GET. "
                                 + "The server's introspection protection is method-dependent.")
                         .requestResponse(getResult)
+                        .payload(INTROSPECTION_QUERY)
+                        .responseEvidence("__schema")
                         .build());
 
                 try {
@@ -496,6 +502,8 @@ public class GraphqlTool implements ScanModule {
                                     + "is accessible. This provides an interactive query builder that aids schema exploration.")
                             .remediation("Disable or restrict access to GraphQL IDE interfaces in production.")
                             .requestResponse(result)
+                            .payload(idePath)
+                            .responseEvidence("graphiql")
                             .build());
                 }
             }
@@ -550,6 +558,7 @@ public class GraphqlTool implements ScanModule {
                             + "Discovered: " + discoveredFields.size() + " field(s).")
                     .remediation("Disable field suggestions in production. "
                             + "In Apollo: validationRules: [NoSchemaIntrospectionCustomRule]")
+                    .responseEvidence("Did you mean")
                     .build());
         }
     }
@@ -574,6 +583,7 @@ public class GraphqlTool implements ScanModule {
                         .evidence("Type: " + typeName)
                         .description("GraphQL type '" + typeName + "' matches a debug/internal naming pattern. "
                                 + "Manual verification required — many applications legitimately use these prefixes.")
+                        .responseEvidence(typeName)
                         .build());
             }
 
@@ -595,6 +605,7 @@ public class GraphqlTool implements ScanModule {
                             .description("Authentication/secret-related field '" + fieldName
                                     + "' exists in GraphQL schema on type '" + typeName
                                     + "'. Manual verification required — field presence does not confirm data exposure.")
+                            .responseEvidence(fieldName)
                             .build());
                 }
 
@@ -607,6 +618,7 @@ public class GraphqlTool implements ScanModule {
                             .evidence("Field: " + fullPath)
                             .description("PII field '" + fieldName + "' exists in GraphQL schema. "
                                     + "Manual verification required — field presence does not confirm data exposure.")
+                            .responseEvidence(fieldName)
                             .build());
                 }
 
@@ -620,6 +632,7 @@ public class GraphqlTool implements ScanModule {
                             .evidence("Field: " + fullPath + (reason.isEmpty() ? "" : " | Reason: " + reason))
                             .description("Deprecated field '" + fieldName + "' is still accessible. "
                                     + "Deprecated fields may have weaker security controls or be unmaintained.")
+                            .responseEvidence(fieldName)
                             .build());
                 }
 
@@ -647,6 +660,7 @@ public class GraphqlTool implements ScanModule {
                                 .description("List field '" + fieldName + "' on type '" + typeName + "' has no "
                                         + "pagination arguments. Manual verification required — the resolver may "
                                         + "implement server-side limits not reflected in the schema.")
+                                .responseEvidence(fieldName)
                                 .build());
                     }
                 }
@@ -670,6 +684,7 @@ public class GraphqlTool implements ScanModule {
                                     .description("Mutation '" + mutName + "' matches a destructive naming pattern. "
                                             + "Manual verification required — mutation name alone does not confirm "
                                             + "missing authorization. Test with different privilege levels.")
+                                    .responseEvidence(mutName)
                                     .build());
                         }
                     }
@@ -798,6 +813,7 @@ public class GraphqlTool implements ScanModule {
                                         + "'. True condition delayed " + (elapsed / 1000) + "s while false condition "
                                         + "returned in " + falseElapsed + "ms.")
                                 .requestResponse(result)
+                                .payload(payload)
                                 .build());
                         return;
                     }
@@ -816,6 +832,8 @@ public class GraphqlTool implements ScanModule {
                         .description("Error-based SQL injection detected in GraphQL argument '" + arg.argName
                                 + "' on field '" + arg.fieldName + "'. SQL error messages appeared in response.")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence("sql")
                         .build());
                 return;
             }
@@ -858,6 +876,8 @@ public class GraphqlTool implements ScanModule {
                         .description("NoSQL injection detected in GraphQL argument '" + arg.argName
                                 + "'. NoSQL error messages or operator processing detected.")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence("mongo")
                         .build());
                 return;
             }
@@ -913,6 +933,8 @@ public class GraphqlTool implements ScanModule {
                         .description("OS command injection confirmed in GraphQL argument '" + arg.argName
                                 + "'. Command output was reflected in the response.")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(hasIdOutput ? "uid=" : "root:x:0:0:")
                         .build());
                 return;
             }
@@ -927,6 +949,7 @@ public class GraphqlTool implements ScanModule {
                         .evidence("Technique: " + technique + " | Response time: " + elapsed + "ms")
                         .description("Time-based command injection detected in GraphQL argument '" + arg.argName + "'.")
                         .requestResponse(result)
+                        .payload(payload)
                         .build());
                 return;
             }
@@ -975,6 +998,8 @@ public class GraphqlTool implements ScanModule {
                         .description("Server-Side Template Injection detected in GraphQL argument '" + arg.argName
                                 + "'. The template engine evaluated the expression.")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(expected)
                         .build());
                 return;
             }
@@ -1018,6 +1043,8 @@ public class GraphqlTool implements ScanModule {
                         .description("Path traversal confirmed in GraphQL argument '" + arg.argName
                                 + "'. Server file contents were returned.")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(expected)
                         .build());
                 return;
             }
@@ -1055,6 +1082,7 @@ public class GraphqlTool implements ScanModule {
                                 .description("Out-of-band SQL injection confirmed in GraphQL argument '"
                                         + arg.argName + "' via Burp Collaborator callback.")
                                 .requestResponse(sentRequest.get())
+                                .payload(payloadTemplate)
                                 .build());
                     }
             );
@@ -1087,6 +1115,7 @@ public class GraphqlTool implements ScanModule {
                                 .description("SSRF confirmed in GraphQL argument '" + arg.argName
                                         + "'. The server made an outbound request to the Collaborator payload.")
                                 .requestResponse(sentRequest.get())
+                                .payload("GraphQL SSRF OOB via " + arg.argName)
                                 .build());
                     }
             );
@@ -1197,6 +1226,8 @@ public class GraphqlTool implements ScanModule {
                             + "Test with two different authenticated sessions to confirm unauthorized access.")
                     .remediation("If access control is missing, implement authorization checks on the resolver for '"
                             + fieldName + "'.")
+                    .payload(fieldName + "(" + argName + ": ...)")
+                    .responseEvidence("\"data\"")
                     .build());
         }
     }
@@ -1230,6 +1261,8 @@ public class GraphqlTool implements ScanModule {
                         .remediation("Consider limiting batch query count. In Apollo: "
                                 + "allowBatchedHttpRequests: false or use a batch size limiter plugin.")
                         .requestResponse(result)
+                        .payload(body)
+                        .responseEvidence("__typename")
                         .build());
             }
         }
@@ -1255,6 +1288,7 @@ public class GraphqlTool implements ScanModule {
                     .remediation("Consider implementing query depth limiting. Libraries: graphql-depth-limit (JS), "
                             + "graphql-query-complexity (JS), or built-in MaxQueryDepthRule.")
                     .requestResponse(result)
+                    .payload(deepQuery)
                     .build());
         }
     }
@@ -1285,6 +1319,8 @@ public class GraphqlTool implements ScanModule {
                                 + "This is a configuration observation — actual DoS impact depends on field cost.")
                         .remediation("Consider implementing query complexity/cost analysis that accounts for aliases.")
                         .requestResponse(result)
+                        .payload(sb.toString())
+                        .responseEvidence("a99")
                         .build());
             }
         }
@@ -1315,6 +1351,7 @@ public class GraphqlTool implements ScanModule {
                                 + "a validation error. This is a configuration observation — the server may "
                                 + "still limit recursion depth internally.")
                         .requestResponse(result)
+                        .payload(query)
                         .build());
             }
         }
@@ -1346,6 +1383,8 @@ public class GraphqlTool implements ScanModule {
                         .description("Server allows excessive directive use on a single field. "
                                 + "This is a configuration observation — actual impact depends on directive processing cost.")
                         .requestResponse(result)
+                        .payload(sb.toString())
+                        .responseEvidence("__typename")
                         .build());
             }
         }
@@ -1380,6 +1419,8 @@ public class GraphqlTool implements ScanModule {
                                 + "GET method mutations are particularly dangerous.")
                         .remediation("Only accept POST for queries, or at minimum reject mutations via GET.")
                         .requestResponse(result)
+                        .payload("{ __typename }")
+                        .responseEvidence("__typename")
                         .build());
             }
         }
@@ -1414,6 +1455,8 @@ public class GraphqlTool implements ScanModule {
                                 + "without CORS preflight. Only actionable if mutations lack other CSRF protections.")
                         .remediation("Strictly validate Content-Type to only accept application/json.")
                         .requestResponse(result)
+                        .payload(formBody)
+                        .responseEvidence("__typename")
                         .build());
             }
         }
@@ -1473,6 +1516,7 @@ public class GraphqlTool implements ScanModule {
                         .remediation("Implement CSRF protection: validate Origin header, use CSRF tokens, "
                                 + "or require custom headers (e.g. X-Requested-With) for mutations.")
                         .requestResponse(result)
+                        .payload(query)
                         .build());
             }
         }
@@ -1526,6 +1570,8 @@ public class GraphqlTool implements ScanModule {
                         .remediation("Disable debug mode in production. Sanitize error messages to not include "
                                 + "stack traces, file paths, or internal details.")
                         .requestResponse(result)
+                        .payload(query)
+                        .responseEvidence("stacktrace")
                         .build());
                 return;
             }
@@ -1572,6 +1618,8 @@ public class GraphqlTool implements ScanModule {
                     .remediation("Disable tracing and debug extensions in production. "
                             + "In Apollo: plugins: [ApolloServerPluginInlineTraceDisabled()]")
                     .requestResponse(result)
+                    .payload(query)
+                    .responseEvidence(debugIndicators.get(0))
                     .build());
         }
     }
@@ -1623,6 +1671,7 @@ public class GraphqlTool implements ScanModule {
                     .description("The GraphQL implementation was fingerprinted from error patterns "
                             + "and response characteristics: " + String.join(", ", detected)
                             + ". This information helps target framework-specific vulnerabilities.")
+                    .responseEvidence(detected.iterator().next())
                     .build());
         }
     }

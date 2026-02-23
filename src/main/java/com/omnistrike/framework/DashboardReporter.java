@@ -63,6 +63,9 @@ public class DashboardReporter implements FindingsStore.FindingsListener {
             String detail = buildDetailHtml(finding);
             String remediation = finding.getRemediation() != null ? finding.getRemediation() : "";
 
+            // Apply highlighting markers (payload in request, evidence in response)
+            reqResp = MarkerUtil.addMarkers(reqResp, finding.getPayload(), finding.getResponseEvidence());
+
             // Step 1: Ensure the request/response is in Burp's site map
             // (Burp may not display issues for URLs not in the site map)
             try {

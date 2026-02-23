@@ -812,6 +812,8 @@ public class SmartSqliDetector implements ScanModule {
                                     .url(original.request().url())
                                     .parameter(ip.name)
                                     .evidence("Payload: " + payload + " | Error: " + evidence)
+                                    .payload(payload)
+                                    .responseEvidence(evidence)
                                     .description("Error-based SQL injection detected. DB type: " + dbType
                                             + ". Parameter '" + ip.name + "' triggered a SQL error.")
                                     .requestResponse(result)
@@ -957,6 +959,7 @@ public class SmartSqliDetector implements ScanModule {
                             .url(original.request().url())
                             .parameter(ip.name)
                             .evidence("Payload: " + payload + "\n" + String.join("\n", signals))
+                            .payload(payload)
                             .description("Authentication bypass via SQL injection. The payload '" + payload
                                     + "' in parameter '" + ip.name + "' caused a response with authentication "
                                     + "artifacts (session cookie and/or authenticated-area content) that were "
@@ -1165,6 +1168,8 @@ public class SmartSqliDetector implements ScanModule {
                                 .url(original.request().url())
                                 .parameter(ip.name)
                                 .evidence("Column " + reflectedColumn + " of " + columnCount + " is reflected. Marker '" + UNION_MARKER + "' found in response.")
+                                .payload(markerPayload)
+                                .responseEvidence(UNION_MARKER)
                                 .description("Union-based SQL injection confirmed. Column " + reflectedColumn
                                         + " is reflected in the response.")
                                 .requestResponse(markerResult)
@@ -1258,6 +1263,7 @@ public class SmartSqliDetector implements ScanModule {
                                 .url(original.request().url())
                                 .parameter(ip.name)
                                 .evidence("DB probe " + probe[1] + " returned data")
+                                .payload(payload)
                                 .description("Database identified as " + probe[0] + " via UNION-based extraction. "
                                         + "This is informational context for the confirmed UNION injection.")
                                 .requestResponse(result)
@@ -1335,6 +1341,7 @@ public class SmartSqliDetector implements ScanModule {
                                                     + "\nTrue condition #1: " + result1.elapsedMs + "ms"
                                                     + "\nFalse condition: " + falseResult.elapsedMs + "ms (payload: " + falsePayload + ")"
                                                     + "\nTrue condition #2: " + result2.elapsedMs + "ms")
+                                            .payload(payload)
                                             .description("Time-based blind SQL injection confirmed via 3-step verification. "
                                                     + "True condition delays, false condition does not, baseline is stable. "
                                                     + "DB type: " + dbType)
@@ -1358,6 +1365,7 @@ public class SmartSqliDetector implements ScanModule {
                                                 + "\nTrue #1: " + result1.elapsedMs + "ms"
                                                 + "\nTrue #2: " + result2.elapsedMs + "ms"
                                                 + "\n(No false-condition payload available for this DB type)")
+                                        .payload(payload)
                                         .description("Time-based blind SQL injection detected (2 consistent hits). "
                                                 + "DB type: " + dbType)
                                         .requestResponse(result2.response)
@@ -1500,6 +1508,7 @@ public class SmartSqliDetector implements ScanModule {
                                     + "\n  Round 1: len=" + falseLen1 + ", status=" + falseStatus1
                                     + "\n  Round 2: len=" + falseLen2 + ", status=" + falseStatus2
                                     + "\nBaseline: len=" + baselineLength + ", status=" + baselineStatus)
+                            .payload(pair[0])
                             .description("Boolean-based blind SQL injection confirmed. True/false conditions "
                                     + "produce consistently different responses across 2 rounds. "
                                     + "True condition matches baseline, false condition differs.")
@@ -1543,6 +1552,7 @@ public class SmartSqliDetector implements ScanModule {
                                                 + " interaction received from " + interaction.clientIp()
                                                 + " at " + interaction.timeStamp()
                                                 + " | DB type: " + dbType)
+                                        .payload(payloadTemplate)
                                         .description("Out-of-band SQL injection confirmed via Burp Collaborator. "
                                                 + "The server made a " + interaction.type().name()
                                                 + " request to the Collaborator server, proving code execution "

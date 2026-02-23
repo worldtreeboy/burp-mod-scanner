@@ -21,6 +21,8 @@ public class Finding {
     private final HttpRequestResponse requestResponse;
     private final String targetModuleId;
     private final long timestamp;
+    private final String payload;           // Raw injected payload string (for request highlighting)
+    private final String responseEvidence;  // Specific string to highlight in response body
 
     private Finding(Builder builder) {
         this.moduleId = Objects.requireNonNull(builder.moduleId, "moduleId is required");
@@ -35,6 +37,8 @@ public class Finding {
         this.requestResponse = builder.requestResponse;
         this.targetModuleId = builder.targetModuleId;
         this.timestamp = builder.timestamp;
+        this.payload = builder.payload;
+        this.responseEvidence = builder.responseEvidence;
     }
 
     public String getModuleId() { return moduleId; }
@@ -49,6 +53,8 @@ public class Finding {
     public HttpRequestResponse getRequestResponse() { return requestResponse; }
     public String getTargetModuleId() { return targetModuleId; }
     public long getTimestamp() { return timestamp; }
+    public String getPayload() { return payload; }
+    public String getResponseEvidence() { return responseEvidence; }
 
     public static Builder builder(String moduleId, String title, Severity severity, Confidence confidence) {
         return new Builder(moduleId, title, severity, confidence);
@@ -89,6 +95,8 @@ public class Finding {
         private HttpRequestResponse requestResponse;
         private String targetModuleId;
         private long timestamp = System.currentTimeMillis();
+        private String payload = "";
+        private String responseEvidence = "";
 
         private Builder(String moduleId, String title, Severity severity, Confidence confidence) {
             this.moduleId = moduleId;
@@ -105,6 +113,8 @@ public class Finding {
         public Builder requestResponse(HttpRequestResponse rr) { this.requestResponse = rr; return this; }
         public Builder targetModuleId(String id) { this.targetModuleId = id; return this; }
         public Builder timestamp(long t) { this.timestamp = t; return this; }
+        public Builder payload(String p) { this.payload = p != null ? p : ""; return this; }
+        public Builder responseEvidence(String r) { this.responseEvidence = r != null ? r : ""; return this; }
 
         public Finding build() {
             return new Finding(this);

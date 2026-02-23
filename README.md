@@ -336,6 +336,7 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 | **Smart filter probing** | Probes which characters survive server-side filtering, then selects only viable payloads and generates adaptive evasions |
 | **Context-aware XSS** | Payloads adapt to 6 distinct reflection contexts with per-context evasion strategies |
 | **Comment & library awareness** | Passive analyzer auto-skips minified libraries and discards matches inside HTML/JS comments |
+| **Request/response highlighting** | Findings in Burp's Dashboard highlight the injected payload in the request and the matched evidence in the response — just like Burp's native scanner. All 21 modules annotate findings with byte-range markers. |
 | **OOB detection** | Blind SQLi, XXE, SSRF, RCE, and deserialization via Burp Collaborator callbacks |
 | **Deduplication** | Findings deduplicated by normalized URL with cross-module overlap prevention |
 

@@ -649,6 +649,7 @@ public class AiVulnAnalyzer implements ScanModule {
                         .targetModuleId(targetModuleId)
                         .url(exchange.getUrl())
                         .evidence(ev)
+                        .responseEvidence(llmFinding.getEvidence())
                         .description("[AI Analysis] " + llmFinding.getDescription())
                         .remediation(llmFinding.getRemediation());
 
@@ -1077,6 +1078,7 @@ public class AiVulnAnalyzer implements ScanModule {
                         .targetModuleId(targetModuleId)
                         .url(url)
                         .evidence(fuzzEv)
+                        .responseEvidence(llmFinding.getEvidence())
                         .description("[AI Smart Fuzz] " + llmFinding.getDescription())
                         .remediation(llmFinding.getRemediation())
                         .requestResponse(originalReqResp)
@@ -1099,6 +1101,8 @@ public class AiVulnAnalyzer implements ScanModule {
                 .url(url)
                 .parameter(result.payload.parameter)
                 .evidence(evidence)
+                .payload(result.payload.payload)
+                .responseEvidence(evidence)
                 .description("[AI Smart Fuzz] " + result.payload.description)
                 .requestResponse(result.response)
                 .build();
@@ -1150,6 +1154,7 @@ public class AiVulnAnalyzer implements ScanModule {
                                 .targetModuleId(targetModuleId)
                                 .url(targetUrl)
                                 .parameter(payload.parameter)
+                                .payload(payload.payload)
                                 .evidence("Collaborator " + interaction.type() + " interaction received from "
                                         + interaction.clientIp() + " after injecting AI-generated "
                                         + payload.attackType + " payload into parameter '"
@@ -1948,6 +1953,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     .targetModuleId("client-side-analyzer")
                     .url(matchedUrl)
                     .evidence(evidence)
+                    .responseEvidence(llmFinding.getEvidence())
                     .description("[AI Batch Scan] " + llmFinding.getDescription())
                     .remediation(llmFinding.getRemediation());
 

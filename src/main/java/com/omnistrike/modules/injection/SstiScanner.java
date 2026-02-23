@@ -340,6 +340,7 @@ public class SstiScanner implements ScanModule {
                             .evidence("Engine: " + entry.getKey() + " | Polyglot triggered error response (status " + errorStatus + ")")
                             .description("Template engine error detected. Input may reach a " + entry.getKey() + " template.")
                             .requestResponse(errorResult)
+                            .payload(POLYGLOT_ERROR)
                             .build());
                 }
             }
@@ -385,6 +386,7 @@ public class SstiScanner implements ScanModule {
                             .evidence("Payload: " + payload + " | Random number appeared in response")
                             .description("Spring EL injection confirmed via Math.random() execution.")
                             .requestResponse(result)
+                            .payload(payload)
                             .build());
                     break;
                 }
@@ -438,6 +440,8 @@ public class SstiScanner implements ScanModule {
                         .description("Template expression was evaluated — the template syntax was consumed "
                                 + "and replaced with the computed result. Engine hint: " + engineHint)
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(expected)
                         .build());
                 break;
             }
@@ -515,6 +519,8 @@ public class SstiScanner implements ScanModule {
                                 .description("Template engine positively identified as " + engine
                                         + ". " + desc + ".")
                                 .requestResponse(result)
+                                .payload(payload)
+                                .responseEvidence(expected)
                                 .build());
                         return engine; // Engine identified, done
                     }
@@ -558,6 +564,7 @@ public class SstiScanner implements ScanModule {
                                         + "The template engine executed the injected command, triggering a "
                                         + interaction.type().name() + " callback.")
                                 .requestResponse(sentRequest.get())
+                                .payload(payloadTemplate)
                                 .build());
                         api.logging().logToOutput("[SSTI OOB] Confirmed! " + technique
                                 + " at " + url + " param=" + target.name);

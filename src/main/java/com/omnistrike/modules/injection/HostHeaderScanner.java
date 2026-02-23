@@ -120,6 +120,7 @@ public class HostHeaderScanner implements ScanModule {
         if (collaboratorManager == null || !collaboratorManager.isAvailable()) return;
 
         AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+        AtomicReference<String> sentHost = new AtomicReference<>();
         String collabPayload = collaboratorManager.generatePayload(
                 "host-header", url, "Host", "Password reset poisoning via Host header",
                 interaction -> {
@@ -136,11 +137,13 @@ public class HostHeaderScanner implements ScanModule {
                             .remediation("Never use the Host header to generate URLs in emails or password reset links. "
                                     + "Use a hardcoded, server-side configured base URL instead.")
                             .requestResponse(sentRequest.get())
+                            .payload(sentHost.get())
                             .build());
                     api.logging().logToOutput("[Host Header] Password reset poisoning confirmed! " + url);
                 });
 
         if (collabPayload == null) return;
+        sentHost.set(collabPayload);
 
         try {
             HttpRequest modified = original.request()
@@ -202,6 +205,7 @@ public class HostHeaderScanner implements ScanModule {
                             .remediation("Configure the web server to reject requests with unexpected Host headers. "
                                     + "Use a whitelist of allowed Host values.")
                             .requestResponse(result)
+                            .payload(internalHost)
                             .build());
                     return;
                 }
@@ -259,6 +263,8 @@ public class HostHeaderScanner implements ScanModule {
                         .remediation("Configure the web server/reverse proxy to reject requests with "
                                 + "duplicate Host headers.")
                         .requestResponse(result)
+                        .payload(attackerHost)
+                        .responseEvidence(attackerHost)
                         .build());
             }
         } catch (Exception e) {
@@ -311,6 +317,8 @@ public class HostHeaderScanner implements ScanModule {
                                         + "reverse proxy. Configure the web server to only trust these headers "
                                         + "from specific upstream IPs.")
                                 .requestResponse(result)
+                                .payload(headerValue)
+                                .responseEvidence(attackerValue)
                                 .build());
                     }
                 }
@@ -320,6 +328,7 @@ public class HostHeaderScanner implements ScanModule {
                 if (config.getBool("host.oob.enabled", true)
                         && collaboratorManager != null && collaboratorManager.isAvailable()) {
                     AtomicReference<HttpRequestResponse> oobSent = new AtomicReference<>();
+                    AtomicReference<String> oobPayloadRef = new AtomicReference<>();
                     String collabPayload = collaboratorManager.generatePayload(
                             "host-header", url, header, "Host override OOB via " + header,
                             interaction -> {
@@ -334,6 +343,7 @@ public class HostHeaderScanner implements ScanModule {
                                                 + "This confirms the header is actively used for routing or URL generation.")
                                         .remediation("Strip or ignore override headers from untrusted sources.")
                                         .requestResponse(oobSent.get())
+                                        .payload(oobPayloadRef.get())
                                         .build());
                             });
 
@@ -341,6 +351,7 @@ public class HostHeaderScanner implements ScanModule {
                         String oobHeaderValue = header.equals("Forwarded")
                                 ? "host=" + collabPayload
                                 : collabPayload;
+                        oobPayloadRef.set(oobHeaderValue);
                         HttpRequest oobModified = original.request()
                                 .withRemovedHeader(header)
                                 .withAddedHeader(header, oobHeaderValue);

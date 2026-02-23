@@ -185,6 +185,8 @@ public class CorsMisconfScanner implements ScanModule {
                             : "The server reflects arbitrary Origin headers. Unauthenticated cross-origin reads are possible.")
                     .remediation("Whitelist specific trusted origins. Never reflect the Origin header directly.")
                     .requestResponse(result)
+                    .payload(attackerOrigin)
+                    .responseEvidence(acao)
                     .build());
         }
         perHostDelay();
@@ -214,6 +216,8 @@ public class CorsMisconfScanner implements ScanModule {
                             + (acac ? " to steal authenticated data." : " for cross-origin reads."))
                     .remediation("Never whitelist the null origin. Reject requests with Origin: null.")
                     .requestResponse(result)
+                    .payload("null")
+                    .responseEvidence(acao)
                     .build());
         }
         perHostDelay();
@@ -245,6 +249,8 @@ public class CorsMisconfScanner implements ScanModule {
                                 + (acac ? " including authenticated data." : "."))
                         .remediation("Use strict exact-match origin validation. Do not use substring/prefix/suffix matching.")
                         .requestResponse(result)
+                        .payload(evilOrigin)
+                        .responseEvidence(acao)
                         .build());
                 return;
             }
@@ -271,6 +277,8 @@ public class CorsMisconfScanner implements ScanModule {
                             + "hijack the HTTP origin to steal data from the HTTPS endpoint via CORS.")
                     .remediation("Only allow HTTPS origins on HTTPS endpoints.")
                     .requestResponse(result)
+                    .payload(httpOrigin)
+                    .responseEvidence(acao)
                     .build());
         }
         perHostDelay();
@@ -295,6 +303,8 @@ public class CorsMisconfScanner implements ScanModule {
                             + "older or misconfigured clients may not. Indicates a broken CORS policy.")
                     .remediation("Never use ACAO: * with ACAC: true. Reflect a specific whitelisted origin instead.")
                     .requestResponse(result)
+                    .payload("https://check.example.com")
+                    .responseEvidence(acao)
                     .build());
         }
         perHostDelay();
@@ -322,6 +332,8 @@ public class CorsMisconfScanner implements ScanModule {
                                 + "CORS exploitation requires only a basic fetch()/XHR, no OPTIONS preflight.")
                         .remediation("Validate Origin on all request types, not just preflighted requests.")
                         .requestResponse(result)
+                        .payload(attackerOrigin)
+                        .responseEvidence(acao)
                         .build());
             }
         } catch (Exception e) {
@@ -414,6 +426,8 @@ public class CorsMisconfScanner implements ScanModule {
                                 + "Escape all special characters if using regex. "
                                 + "Validate the full origin string, never substrings.")
                         .requestResponse(result)
+                        .payload(origin)
+                        .responseEvidence(acao)
                         .build());
             }
             perHostDelay();
@@ -446,6 +460,8 @@ public class CorsMisconfScanner implements ScanModule {
                             + "(dev server, CI tool, admin panel) can be used as a CORS attack origin.")
                     .remediation("Validate the full origin including scheme, host, AND port.")
                     .requestResponse(result)
+                    .payload(origin)
+                    .responseEvidence(acao)
                     .build());
         }
         perHostDelay();
@@ -484,6 +500,8 @@ public class CorsMisconfScanner implements ScanModule {
                                 + "Exploitable via HTTP request smuggling or reverse proxy header injection.")
                         .remediation("Reject requests with multiple Origin headers. If parsing, use the first value only.")
                         .requestResponse(result)
+                        .payload(attackerOrigin)
+                        .responseEvidence(acao)
                         .build());
             }
         } catch (Exception e) {
@@ -534,6 +552,8 @@ public class CorsMisconfScanner implements ScanModule {
                         .remediation("Do not whitelist entire cloud platform domains. "
                                 + "Only trust specific, known production origins.")
                         .requestResponse(result)
+                        .payload(origin)
+                        .responseEvidence(acao)
                         .build());
                 return; // One cloud hit proves the issue
             }
@@ -584,6 +604,8 @@ public class CorsMisconfScanner implements ScanModule {
                                         + "enables SSRF-to-CORS chains for cloud credential theft." : ""))
                         .remediation("Do not whitelist internal or private network origins in production CORS configuration.")
                         .requestResponse(result)
+                        .payload(origin)
+                        .responseEvidence(acao)
                         .build());
                 return; // One hit proves the issue
             }
@@ -616,6 +638,8 @@ public class CorsMisconfScanner implements ScanModule {
                             + (acac ? " with credential access." : "."))
                     .remediation("Whitelist specific subdomains only. Do not use *." + targetDomain + ".")
                     .requestResponse(result)
+                    .payload(origin)
+                    .responseEvidence(acao)
                     .build());
         }
         perHostDelay();
@@ -666,6 +690,8 @@ public class CorsMisconfScanner implements ScanModule {
                             + "This enables cross-origin data theft at scale via web cache poisoning.")
                     .remediation("Always include 'Vary: Origin' when ACAO changes based on the request Origin.")
                     .requestResponse(result)
+                    .payload(probeOrigin)
+                    .responseEvidence(acao)
                     .build());
         }
         perHostDelay();
@@ -715,6 +741,8 @@ public class CorsMisconfScanner implements ScanModule {
                                     + "If JSONP must remain, ensure the endpoint never returns sensitive "
                                     + "or user-specific data.")
                             .requestResponse(result)
+                            .payload(marker)
+                            .responseEvidence(marker + "(")
                             .build());
                     return; // One JSONP hit is enough
                 }
@@ -783,6 +811,8 @@ public class CorsMisconfScanner implements ScanModule {
                                               + "state changes or data reads via " + method + " requests."))
                             .remediation("Apply consistent CORS origin validation across all HTTP methods.")
                             .requestResponse(result)
+                            .payload(attackerOrigin)
+                            .responseEvidence(acao)
                             .build());
                     return; // One hit proves inconsistency
                 }
@@ -801,6 +831,7 @@ public class CorsMisconfScanner implements ScanModule {
         if (collaboratorManager == null || !collaboratorManager.isAvailable()) return;
 
         AtomicReference<HttpRequestResponse> sentRr = new AtomicReference<>();
+        AtomicReference<String> sentOrigin = new AtomicReference<>();
 
         String collabPayload = collaboratorManager.generatePayload(
                 "cors-scanner", url, "Origin", "CORS Blind OOB DNS",
@@ -820,12 +851,14 @@ public class CorsMisconfScanner implements ScanModule {
                             .remediation("Origin validation should be string-based comparison against an allowlist. "
                                     + "Never resolve the Origin header domain via DNS for validation purposes.")
                             .requestResponse(sentRr.get())
+                            .payload(sentOrigin.get())
                             .build());
                 });
 
         if (collabPayload == null) return;
 
         String origin = "https://" + collabPayload;
+        sentOrigin.set(origin);
         HttpRequestResponse result = sendWithOrigin(original, origin);
         sentRr.set(result);
         perHostDelay();

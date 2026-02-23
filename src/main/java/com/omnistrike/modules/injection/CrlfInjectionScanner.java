@@ -162,6 +162,8 @@ public class CrlfInjectionScanner implements ScanModule {
                                 + "Strip or reject CR (\\r, %0d) and LF (\\n, %0a) characters from any "
                                 + "value reflected in headers. Use a web framework that auto-encodes header values.")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence("X-Injected: " + CANARY)
                         .build());
                 return; // One confirmed finding per parameter is enough
             }
@@ -211,6 +213,8 @@ public class CrlfInjectionScanner implements ScanModule {
                                     + "Strip CR and LF characters from any value used in headers or redirects. "
                                     + "Use framework-provided redirect functions that properly encode values.")
                             .requestResponse(result)
+                            .payload(payload)
+                            .responseEvidence(splitCanary)
                             .build());
                     return;
                 }
@@ -253,6 +257,8 @@ public class CrlfInjectionScanner implements ScanModule {
                                     + "sanitizing CR/LF characters. Configure reverse proxies to strip "
                                     + "or sanitize these headers before forwarding to the application.")
                             .requestResponse(result)
+                            .payload(payload)
+                            .responseEvidence("X-Injected: " + CANARY)
                             .build());
                     // Found one — skip remaining headers to reduce noise
                     return;
@@ -296,6 +302,8 @@ public class CrlfInjectionScanner implements ScanModule {
                                     + "Strip CR and LF characters. Implement proper session management that "
                                     + "regenerates session IDs after authentication.")
                             .requestResponse(result)
+                            .payload(payload)
+                            .responseEvidence(cookieCanary)
                             .build());
                     return;
                 }

@@ -909,6 +909,8 @@ public class XxeScanner implements ScanModule {
                             + "For Java: set XMLConstants.FEATURE_SECURE_PROCESSING, disable DTDs. "
                             + "For .NET: use XmlReaderSettings with DtdProcessing.Prohibit. "
                             + "For PHP: use libxml_disable_entity_loader(true).")
+                    .payload(payloadBody)
+                    .responseEvidence(matchedEvidence)
                     .requestResponse(result)
                     .build());
             api.logging().logToOutput("[XXE] File read confirmed: " + fileDescription
@@ -947,6 +949,7 @@ public class XxeScanner implements ScanModule {
                                 + "external entity processing is enabled. This is a strong indicator "
                                 + "of XXE vulnerability even though no file was read. "
                                 + "Remediation: Disable DTD processing and external entity resolution.")
+                        .payload(nonExistentPayload)
                         .requestResponse(nonExistentResult)
                         .build());
             }
@@ -975,6 +978,7 @@ public class XxeScanner implements ScanModule {
                         .description("The XML parser processed a parameter entity definition within the DTD, "
                                 + "confirming that DTD processing and external entity resolution are enabled. "
                                 + "Remediation: Disable DTD processing entirely.")
+                        .payload(malformedPayload)
                         .requestResponse(malformedResult)
                         .build());
             }
@@ -1003,6 +1007,8 @@ public class XxeScanner implements ScanModule {
                                 + "While this alone proves entity processing is enabled, it strongly "
                                 + "suggests external entities (SYSTEM/PUBLIC) may also be processed. "
                                 + "Remediation: Disable DTD processing and entity expansion.")
+                        .payload(recursivePayload)
+                        .responseEvidence("XXE_PROBE_CONFIRMED")
                         .requestResponse(recursiveResult)
                         .build());
             }
@@ -1288,7 +1294,8 @@ public class XxeScanner implements ScanModule {
                         + "This confirms the parser processes external entities. "
                         + "An attacker can use this to read arbitrary files from the server, "
                         + "perform SSRF, or exfiltrate data. "
-                        + "Remediation: Disable external entity processing and DTDs in the XML parser.");
+                        + "Remediation: Disable external entity processing and DTDs in the XML parser.")
+                .payload(technique);
         if (requestResponse != null) {
             builder.requestResponse(requestResponse);
         }
@@ -1419,6 +1426,7 @@ public class XxeScanner implements ScanModule {
                                     + "parser honored the " + encoding + " encoding declaration, bypassing "
                                     + "any input filters that only inspect UTF-8 content. "
                                     + "Remediation: Normalize XML encoding before parsing. Disable external entities.")
+                            .payload(xxeXml)
                             .requestResponse(result)
                             .build());
                 }
@@ -1470,6 +1478,8 @@ public class XxeScanner implements ScanModule {
                                     + "in parameter entity declarations (&#x25;). This bypasses WAFs that block "
                                     + "literal '<!ENTITY %' patterns. "
                                     + "Remediation: Disable DTD processing entirely instead of relying on pattern matching.")
+                            .payload(encodedParamEntity)
+                            .responseEvidence("root:x:0:0:")
                             .requestResponse(result1)
                             .build());
                     return; // confirmed, skip further bypass tests
@@ -1501,6 +1511,8 @@ public class XxeScanner implements ScanModule {
                             .description("XXE injection confirmed using CDATA section wrapping around entity "
                                     + "references. This evades output encoding and content inspection. "
                                     + "Remediation: Disable external entity processing in the XML parser.")
+                            .payload(cdataBypass)
+                            .responseEvidence("root:x:0:0:")
                             .requestResponse(result2)
                             .build());
                     return;
@@ -1536,6 +1548,8 @@ public class XxeScanner implements ScanModule {
                                 .evidence("Nested entity definition bypass succeeded — /etc/passwd content returned")
                                 .description("XXE injection confirmed via nested parameter entity definitions. "
                                         + "Remediation: Disable DTD processing entirely.")
+                                .payload(nestedEntity)
+                                .responseEvidence("root:x:0:0:")
                                 .requestResponse(result3)
                                 .build());
                         return;
@@ -1549,6 +1563,7 @@ public class XxeScanner implements ScanModule {
                                         + "definitions, confirming DTD processing is active. While file content "
                                         + "was not directly returned, this confirms the parser is vulnerable. "
                                         + "Remediation: Disable DTD processing entirely.")
+                                .payload(nestedEntity)
                                 .requestResponse(result3)
                                 .build());
                     }
@@ -1584,6 +1599,8 @@ public class XxeScanner implements ScanModule {
                                         + "The server accepted XML via text/xml even though the original "
                                         + "Content-Type may have been application/xml. "
                                         + "Remediation: Enforce strict Content-Type validation and disable external entities.")
+                                .payload(winEntity)
+                                .responseEvidence("[fonts]")
                                 .requestResponse(result4)
                                 .build());
                     }
@@ -1615,6 +1632,8 @@ public class XxeScanner implements ScanModule {
                             .evidence("HTML-encoded &#x25; parameter entity bypass — win.ini content returned")
                             .description("XXE injection confirmed using HTML entity encoding of % on a Windows "
                                     + "target. Remediation: Disable DTD processing entirely.")
+                            .payload(encodedWinEntity)
+                            .responseEvidence("[fonts]")
                             .requestResponse(result5)
                             .build());
                 }
@@ -1657,6 +1676,8 @@ public class XxeScanner implements ScanModule {
                                 + "The /etc/passwd file was successfully read. "
                                 + "Remediation: Disable XInclude processing in the XML parser, "
                                 + "or sanitize input before embedding it into XML.")
+                        .payload(xincludePasswd)
+                        .responseEvidence("root:x:0:0:")
                         .requestResponse(passwdResult)
                         .build());
                 return;
@@ -1683,6 +1704,8 @@ public class XxeScanner implements ScanModule {
                                 + "The server embeds user input into XML and processes XInclude directives. "
                                 + "The Windows win.ini file was successfully read. "
                                 + "Remediation: Disable XInclude processing in the XML parser.")
+                        .payload(xincludeWinIni)
+                        .responseEvidence("[fonts]")
                         .requestResponse(winIniResult)
                         .build());
                 return;
@@ -1708,6 +1731,7 @@ public class XxeScanner implements ScanModule {
                                         + "The server processed an XInclude directive in parameter '"
                                         + target.name + "' and made an outbound request. "
                                         + "Remediation: Disable XInclude processing in the XML parser.")
+                                .payload("XInclude OOB callback")
                                 .requestResponse(sentXIncludeOob.get())
                                 .build());
                         api.logging().logToOutput("[XXE XInclude OOB] Confirmed at " + url
@@ -1741,6 +1765,8 @@ public class XxeScanner implements ScanModule {
                             .evidence("XInclude with fallback returned /etc/passwd content")
                             .description("XInclude injection confirmed with fallback element. "
                                     + "Remediation: Disable XInclude processing.")
+                            .payload(xincludeFallback)
+                            .responseEvidence("root:x:0:0:")
                             .requestResponse(fallbackResult)
                             .build());
                     return;
@@ -1756,6 +1782,8 @@ public class XxeScanner implements ScanModule {
                                     + target.name + "'. The file read failed (access denied or wrong OS), "
                                     + "but the fallback was rendered, confirming XInclude support. "
                                     + "Remediation: Disable XInclude processing.")
+                            .payload(xincludeFallback)
+                            .responseEvidence("XINCLUDE_FALLBACK")
                             .requestResponse(fallbackResult)
                             .build());
                 }
@@ -1812,6 +1840,7 @@ public class XxeScanner implements ScanModule {
                         .description("The server accepted an XML Content-Type where JSON was expected. "
                                 + "This expands the attack surface to include XXE injection. "
                                 + "Remediation: Enforce strict Content-Type validation on the server.")
+                        .payload(xmlBody)
                         .requestResponse(xmlResult)
                         .build());
 
@@ -1862,6 +1891,8 @@ public class XxeScanner implements ScanModule {
                                         + "/etc/passwd content was returned. "
                                         + "Remediation: Enforce strict Content-Type validation and disable "
                                         + "external entity processing.")
+                                .payload(xxePayloadBody)
+                                .responseEvidence("root:x:0:0:")
                                 .requestResponse(result)
                                 .build());
                         return;
@@ -1897,6 +1928,8 @@ public class XxeScanner implements ScanModule {
                                 .evidence("JSON endpoint accepted XML; XXE payload read win.ini")
                                 .description("XXE injection confirmed via Content-Type conversion. "
                                         + "The JSON endpoint also accepts XML. win.ini content was returned.")
+                                .payload(winIniPayload)
+                                .responseEvidence("[fonts]")
                                 .requestResponse(winIniResult)
                                 .build());
                         return;
@@ -1926,6 +1959,7 @@ public class XxeScanner implements ScanModule {
                                         + "The server accepted XML where JSON was expected and processed "
                                         + "external entities, triggering an OOB callback. "
                                         + "Remediation: Enforce Content-Type validation and disable external entities.")
+                                .payload("Content-Type conversion OOB")
                                 .requestResponse(sentCtConvertOob.get())
                                 .build());
                         api.logging().logToOutput("[XXE CT-Convert OOB] Confirmed at " + url);

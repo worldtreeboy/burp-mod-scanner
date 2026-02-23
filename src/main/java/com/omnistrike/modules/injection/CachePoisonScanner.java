@@ -191,6 +191,8 @@ public class CachePoisonScanner implements ScanModule {
                         .remediation("Include the header in the cache key (Vary header), or strip/ignore "
                                 + "unkeyed headers before processing. Review CDN/cache configuration.")
                         .requestResponse(result)
+                        .payload(canary)
+                        .responseEvidence(canary)
                         .build());
                 perHostDelay();
                 return;
@@ -211,6 +213,8 @@ public class CachePoisonScanner implements ScanModule {
                     .remediation("Include the header in the cache key (Vary header), or strip/ignore "
                             + "unkeyed headers. Test with cache.confirmPoison=true for confirmation.")
                     .requestResponse(result)
+                    .payload(canary)
+                    .responseEvidence(canary)
                     .build());
         } else {
             findingsStore.addFinding(Finding.builder("cache-poison",
@@ -223,6 +227,8 @@ public class CachePoisonScanner implements ScanModule {
                             + "but the response does not appear cacheable. This may still be exploitable "
                             + "depending on intermediary cache configurations.")
                     .requestResponse(result)
+                    .payload(canary)
+                    .responseEvidence(canary)
                     .build());
         }
         perHostDelay();
@@ -258,6 +264,8 @@ public class CachePoisonScanner implements ScanModule {
                     .remediation("Include all reflected query parameters in the cache key, or strip "
                             + "unknown parameters before caching.")
                     .requestResponse(result)
+                    .payload(canary)
+                    .responseEvidence(canary)
                     .build());
         }
         perHostDelay();

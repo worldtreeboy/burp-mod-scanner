@@ -223,6 +223,9 @@ public class OmniStrikeScanCheck implements ScanCheck {
                     ? f.getRequestResponse() : fallbackReqResp;
             if (rr == null || rr.request() == null) return null;
 
+            // Apply highlighting markers (payload in request, evidence in response)
+            rr = MarkerUtil.addMarkers(rr, f.getPayload(), f.getResponseEvidence());
+
             String baseUrl = extractBaseUrl(rr.request().url());
             if (baseUrl.isEmpty()) baseUrl = extractBaseUrl(f.getUrl());
             if (baseUrl.isEmpty()) return null;

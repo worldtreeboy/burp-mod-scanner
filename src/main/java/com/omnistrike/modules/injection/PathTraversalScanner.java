@@ -174,6 +174,8 @@ public class PathTraversalScanner implements ScanModule {
                         .remediation("Never use user input directly in file paths. Use a whitelist of allowed "
                                 + "files or IDs that map to server-side paths.")
                         .requestResponse(result)
+                        .payload(absPath)
+                        .responseEvidence(confirmed.evidence)
                         .build());
                 return true;
             }
@@ -241,6 +243,8 @@ public class PathTraversalScanner implements ScanModule {
                             .remediation("Never use user input directly in file paths. Use a whitelist of allowed "
                                     + "files or IDs that map to server-side paths. Apply chroot/jail if applicable.")
                             .requestResponse(result)
+                            .payload(traversal)
+                            .responseEvidence(confirmed.evidence)
                             .build());
                     return true;
                 }
@@ -293,6 +297,8 @@ public class PathTraversalScanner implements ScanModule {
                                     + "The file " + targetFile + " was successfully read.")
                             .remediation("Never use user input directly in file paths. Use a whitelist approach.")
                             .requestResponse(result)
+                            .payload(traversal)
+                            .responseEvidence(confirmed.evidence)
                             .build());
                     return true;
                 }
@@ -407,6 +413,8 @@ public class PathTraversalScanner implements ScanModule {
                         .remediation("Canonicalize/normalize file paths before validating them. Use realpath() "
                                 + "or equivalent to resolve the actual path, then check it against the allowed directory.")
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(confirmed.evidence)
                         .build());
                 return true;
             }
@@ -440,6 +448,7 @@ public class PathTraversalScanner implements ScanModule {
                             .remediation("Disable PHP stream wrappers (allow_url_include=Off). Never pass user "
                                     + "input to include/require functions. Use a whitelist of includable files.")
                             .requestResponse(filterResult)
+                            .payload(filterPayload)
                             .build());
                 }
             }
@@ -464,6 +473,8 @@ public class PathTraversalScanner implements ScanModule {
                         .remediation("Set allow_url_include=Off in php.ini. Never pass user input to "
                                 + "include/require functions.")
                         .requestResponse(dataResult)
+                        .payload(dataPayload)
+                        .responseEvidence("PHP Version")
                         .build());
             }
         }
@@ -487,6 +498,7 @@ public class PathTraversalScanner implements ScanModule {
                             .description("PHP filter wrapper read /etc/passwd. Decoded content contains passwd structure.")
                             .remediation("Disable PHP stream wrappers (allow_url_include=Off). Use a whitelist.")
                             .requestResponse(filterChainResult)
+                            .payload(filterChainPayload)
                             .build());
                 }
             }
@@ -521,6 +533,8 @@ public class PathTraversalScanner implements ScanModule {
                                 + "was returned. This is a full Remote Code Execution vulnerability.")
                         .remediation("Disable the expect extension. Set allow_url_include=Off.")
                         .requestResponse(expectResult)
+                        .payload(expectPayload)
+                        .responseEvidence(idMatcher.group())
                         .build());
             }
         }
@@ -549,6 +563,8 @@ public class PathTraversalScanner implements ScanModule {
                                     + "ROT13-encoded PHP markers confirm file content was read.")
                             .remediation("Disable PHP stream wrappers. Use a whitelist of includable files.")
                             .requestResponse(rot13Result)
+                            .payload(rot13Payload)
+                            .responseEvidence("<?cuc")
                             .build());
                 }
             }
@@ -580,6 +596,8 @@ public class PathTraversalScanner implements ScanModule {
                                     + "UTF-7 encoded markers confirm file content was read through the filter chain.")
                             .remediation("Disable PHP stream wrappers. Use a whitelist of includable files.")
                             .requestResponse(iconvResult)
+                            .payload(iconvPayload)
+                            .responseEvidence("+ADw-")
                             .build());
                 }
             }
@@ -607,6 +625,8 @@ public class PathTraversalScanner implements ScanModule {
                                 + "phpinfo() structural output confirms code execution.")
                         .remediation("Set allow_url_include=Off in php.ini.")
                         .requestResponse(dataB64Result)
+                        .payload(dataB64Payload)
+                        .responseEvidence("PHP Version")
                         .build());
             }
         }

@@ -309,6 +309,7 @@ public class SsrfScanner implements ScanModule {
                             .evidence("Collaborator " + interaction.type() + " interaction from " + interaction.clientIp())
                             .description("Server followed a manipulated Host header to make an external request.")
                             .requestResponse(hostSentRequest.get())
+                            .payload("SSRF OOB Host header")
                             .build());
                 });
         if (headerCollab != null) {
@@ -337,6 +338,7 @@ public class SsrfScanner implements ScanModule {
                         + interaction.type().name() + " request to the Collaborator server when "
                         + "parameter '" + target.name + "' was injected with a Collaborator URL.")
                 .requestResponse(requestResponse)
+                .payload(interaction.id().toString())
                 .build());
         api.logging().logToOutput("[SSRF] Confirmed OOB interaction! " + url + " param=" + target.name);
     }
@@ -424,6 +426,8 @@ public class SsrfScanner implements ScanModule {
                                 .evidence("Metadata URL: " + metaUrl + " | Response contains: " + matchEvidence)
                                 .description("Cloud metadata endpoint accessible via SSRF. " + description + ".")
                                 .requestResponse(result)
+                                .payload(metaUrl)
+                                .responseEvidence(matchEvidence)
                                 .build());
                     }
                 }
@@ -450,6 +454,7 @@ public class SsrfScanner implements ScanModule {
                                 + "The server can reach the internal metadata service. "
                                 + "If the application makes requests with custom headers, token retrieval may be possible.")
                         .requestResponse(imdsv2Result)
+                        .payload(imdsv2Url)
                         .build());
             }
         }
@@ -495,6 +500,7 @@ public class SsrfScanner implements ScanModule {
                             .evidence("Payload: " + payload + " | Internal data in response")
                             .description("Internal resource accessed via URL parsing bypass technique.")
                             .requestResponse(result)
+                            .payload(payload)
                             .build());
                     return;
                 }
@@ -531,6 +537,7 @@ public class SsrfScanner implements ScanModule {
                                     + " vs baseline: " + baselineLen)
                             .description("Localhost access achieved via IP bypass technique.")
                             .requestResponse(result)
+                            .payload(bypass)
                             .build());
                     return; // One confirmed bypass is enough
                 }
@@ -565,6 +572,7 @@ public class SsrfScanner implements ScanModule {
                             .evidence("Protocol payload: " + payload + " | Response contains internal data")
                             .description("Protocol smuggling successful. Server followed " + proto + " URI scheme.")
                             .requestResponse(result)
+                            .payload(payload)
                             .build());
                 }
             }
@@ -618,6 +626,7 @@ public class SsrfScanner implements ScanModule {
                                         + "bypassing SSRF filters that only validate the initial DNS resolution. "
                                         + "Rebinding pair: " + description)
                                 .requestResponse(result)
+                                .payload(payload)
                                 .build());
                         return; // One confirmed rebinding is enough
                     }

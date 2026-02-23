@@ -138,6 +138,8 @@ public class PrototypePollutionScanner implements ScanModule {
                     .remediation("Use Object.create(null) for user-controlled objects. Use Map instead of plain "
                             + "objects. Filter __proto__ and constructor keys from user input. Use --frozen-intrinsics "
                             + "in Node.js.")
+                    .payload(pollutedBody)
+                    .responseEvidence(canary)
                     .requestResponse(result)
                     .build());
 
@@ -196,6 +198,8 @@ public class PrototypePollutionScanner implements ScanModule {
                                 + "This bypasses __proto__ filters but achieves the same effect.")
                         .remediation("Filter both __proto__ and constructor keys from user input. "
                                 + "Use Object.create(null) or Map for user-controlled objects.")
+                        .payload(pollutedBody)
+                        .responseEvidence(canary)
                         .requestResponse(result)
                         .build());
 
@@ -260,6 +264,8 @@ public class PrototypePollutionScanner implements ScanModule {
                         .description("Prototype pollution gadget confirmed. The __proto__.status property "
                                 + "was injected and subsequent responses returned HTTP 510, indicating "
                                 + "the Express/Fastify default status was overridden via prototype pollution.")
+                        .payload(pollutedBody)
+                        .responseEvidence("510")
                         .requestResponse(result)
                         .build());
 
@@ -318,6 +324,8 @@ public class PrototypePollutionScanner implements ScanModule {
                                 .description("Prototype pollution gadget confirmed. The Content-Type header was "
                                         + "overridden via __proto__ pollution. This can be leveraged for XSS by setting "
                                         + "Content-Type to text/html on JSON endpoints.")
+                                .payload(pollutedBody)
+                                .responseEvidence(marker)
                                 .requestResponse(result)
                                 .build());
 
@@ -375,6 +383,7 @@ public class PrototypePollutionScanner implements ScanModule {
                                 .description("Prototype pollution gadget confirmed. The Express 'json spaces' "
                                         + "setting was overridden via __proto__, changing JSON formatting. "
                                         + "This confirms prototype pollution is effective on this Express app.")
+                                .payload(pollutedBody)
                                 .requestResponse(result)
                                 .build());
 

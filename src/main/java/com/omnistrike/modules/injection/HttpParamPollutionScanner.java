@@ -173,6 +173,8 @@ public class HttpParamPollutionScanner implements ScanModule {
                             + "requests with duplicates (400 Bad Request) or consistently use only the first "
                             + "occurrence. Ensure front-end proxies and back-end servers agree on parameter "
                             + "precedence.")
+                    .payload(target.name + "=" + target.originalValue + "&" + target.name + "=" + CANARY)
+                    .responseEvidence(CANARY)
                     .requestResponse(result)
                     .build());
         }
@@ -239,6 +241,7 @@ public class HttpParamPollutionScanner implements ScanModule {
                     .remediation("Reject requests with duplicate parameters for security-sensitive fields. "
                             + "Validate authorization server-side using session state, not client-supplied "
                             + "parameters. Never use request parameters for role or permission decisions.")
+                    .payload(target.name + "=" + target.originalValue + "&" + target.name + "=" + escalationValue)
                     .requestResponse(result)
                     .build());
         }
@@ -283,6 +286,8 @@ public class HttpParamPollutionScanner implements ScanModule {
                         .remediation("Implement WAF rules that account for parameter concatenation. Reject "
                                 + "duplicate parameters at the WAF/proxy level. Apply output encoding on "
                                 + "the server side regardless of input validation.")
+                        .payload(target.name + "=" + part1 + "&" + target.name + "=" + part2)
+                        .responseEvidence(fullPayload)
                         .requestResponse(result)
                         .build());
                 return; // One finding per parameter is enough
@@ -336,6 +341,8 @@ public class HttpParamPollutionScanner implements ScanModule {
                     .remediation("Document and enforce consistent parameter handling across all layers "
                             + "(load balancer, WAF, reverse proxy, application server). Reject requests "
                             + "with duplicate parameters for sensitive operations.")
+                    .payload(target.name + "=" + firstValue + "&" + target.name + "=" + lastValue)
+                    .responseEvidence(hasFirst ? firstValue : lastValue)
                     .requestResponse(result)
                     .build());
         }
