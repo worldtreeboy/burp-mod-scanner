@@ -7,6 +7,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
@@ -2595,11 +2596,11 @@ public class XssScanner implements ScanModule {
             switch (target.type) {
                 case QUERY:
                     modified = original.request().withUpdatedParameters(
-                            HttpParameter.urlParameter(target.name, payload));
+                            HttpParameter.urlParameter(target.name, PayloadEncoder.encode(payload)));
                     break;
                 case BODY:
                     modified = original.request().withUpdatedParameters(
-                            HttpParameter.bodyParameter(target.name, payload));
+                            HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(payload)));
                     break;
                 case COOKIE:
                     modified = original.request().withUpdatedParameters(
@@ -2693,7 +2694,7 @@ public class XssScanner implements ScanModule {
             if (segmentIndex < 0 || segmentIndex >= segments.length) return null;
 
             // Replace the segment with the payload
-            segments[segmentIndex] = payload;
+            segments[segmentIndex] = PayloadEncoder.encode(payload);
             String newPath = String.join("/", segments);
 
             // Reconstruct the URL with the new path

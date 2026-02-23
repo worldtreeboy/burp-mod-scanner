@@ -8,6 +8,7 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
@@ -1560,10 +1561,10 @@ public class SmartSqliDetector implements ScanModule {
         switch (ip.type) {
             case QUERY:
                 return request.withUpdatedParameters(
-                        burp.api.montoya.http.message.params.HttpParameter.urlParameter(ip.name, payload));
+                        burp.api.montoya.http.message.params.HttpParameter.urlParameter(ip.name, PayloadEncoder.encode(payload)));
             case BODY:
                 return request.withUpdatedParameters(
-                        burp.api.montoya.http.message.params.HttpParameter.bodyParameter(ip.name, payload));
+                        burp.api.montoya.http.message.params.HttpParameter.bodyParameter(ip.name, PayloadEncoder.encode(payload)));
             case COOKIE:
                 return request.withUpdatedParameters(
                         burp.api.montoya.http.message.params.HttpParameter.cookieParameter(ip.name, payload));

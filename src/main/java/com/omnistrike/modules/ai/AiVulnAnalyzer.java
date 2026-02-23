@@ -7,6 +7,7 @@ import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.params.HttpParameterType;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 import com.omnistrike.model.*;
 import com.omnistrike.modules.ai.llm.*;
 import com.omnistrike.framework.ModuleRegistry;
@@ -1136,9 +1137,9 @@ public class AiVulnAnalyzer implements ScanModule {
     private HttpRequest injectPayload(HttpRequest original, FuzzPayload payload) {
         return switch (payload.injectionPoint.toLowerCase()) {
             case "query", "url" -> original.withParameter(
-                    HttpParameter.parameter(payload.parameter, payload.payload, HttpParameterType.URL));
+                    HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.URL));
             case "body" -> original.withParameter(
-                    HttpParameter.parameter(payload.parameter, payload.payload, HttpParameterType.BODY));
+                    HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.BODY));
             case "header" -> original
                     .withRemovedHeader(payload.parameter)
                     .withAddedHeader(payload.parameter, payload.payload);
@@ -1146,7 +1147,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     .withRemovedHeader("Cookie")
                     .withAddedHeader("Cookie", payload.parameter + "=" + payload.payload);
             default -> original.withParameter(
-                    HttpParameter.parameter(payload.parameter, payload.payload, HttpParameterType.URL));
+                    HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.URL));
         };
     }
 

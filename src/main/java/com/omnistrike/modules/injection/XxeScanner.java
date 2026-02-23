@@ -10,6 +10,7 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
@@ -1984,10 +1985,10 @@ public class XxeScanner implements ScanModule {
         switch (target.type) {
             case QUERY:
                 return request.withUpdatedParameters(
-                        HttpParameter.urlParameter(target.name, payload));
+                        HttpParameter.urlParameter(target.name, PayloadEncoder.encode(payload)));
             case BODY:
                 return request.withUpdatedParameters(
-                        HttpParameter.bodyParameter(target.name, payload));
+                        HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(payload)));
             case COOKIE:
                 return request.withUpdatedParameters(
                         HttpParameter.cookieParameter(target.name, payload));

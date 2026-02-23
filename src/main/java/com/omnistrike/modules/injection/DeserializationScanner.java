@@ -9,6 +9,7 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
@@ -1792,11 +1793,11 @@ public class DeserializationScanner implements ScanModule {
                     break;
                 case "body_param":
                     modified = request.withUpdatedParameters(
-                            HttpParameter.bodyParameter(dp.name, payload));
+                            HttpParameter.bodyParameter(dp.name, PayloadEncoder.encode(payload)));
                     break;
                 case "url_param":
                     modified = request.withUpdatedParameters(
-                            HttpParameter.urlParameter(dp.name, payload));
+                            HttpParameter.urlParameter(dp.name, PayloadEncoder.encode(payload)));
                     break;
                 case "header":
                     modified = request.withRemovedHeader(dp.name).withAddedHeader(dp.name, payload);
