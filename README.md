@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.png" alt="OmniStrike Banner" width="700">
+
 </p>
 
 <h1 align="center">OmniStrike</h1>
