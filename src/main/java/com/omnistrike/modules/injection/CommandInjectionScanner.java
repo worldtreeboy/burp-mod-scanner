@@ -163,6 +163,13 @@ public class CommandInjectionScanner implements ScanModule {
             {";ruby -e 'puts 131337';", "131337", "ruby eval (Unix)"},
             // PHP execution — unique marker
             {";php -r 'echo 131337;';", "131337", "php eval (Unix)"},
+            // ls -la — Unix permission strings (drwxr-xr-x) are unmistakable
+            {";ls -la /;", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / (Unix)"},
+            {"|ls -la /", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / piped (Unix)"},
+            {"$(ls -la /)", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / subshell (Unix)"},
+            {"`ls -la /`", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / backtick (Unix)"},
+            {";ls${IFS}-la${IFS}/;", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / via IFS (Unix)"},
+            {"%0als -la /%0a", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / newline (Unix)"},
             // cat /proc/version — specific kernel version string
             {";cat /proc/version;", "Linux version", "/proc/version (Unix)"},
             // Curl-based output

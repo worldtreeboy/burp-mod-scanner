@@ -193,7 +193,7 @@ That's it. Findings appear in Burp's Dashboard and the OmniStrike tab.
 <details>
 <summary><strong>SQLi Detector</strong></summary>
 
-Authentication bypass with auth-artifact proof (session cookie + success content required), error-based with baseline stability verification (DB-specific error patterns only), UNION-based with marker exfiltration confirmation, **time-based blind** with **3-step verification** (stable baseline, true-condition delay, false-condition must NOT delay), **boolean-blind** with **2-round reproducibility** (4 consistency checks), OOB via Collaborator, XML body injection. DB fingerprinting (INFO-only). Comment-as-space and encoding bypasses.
+Authentication bypass with auth-artifact proof (session cookie + success content required), error-based with baseline stability verification (DB-specific error patterns only), UNION-based with marker exfiltration confirmation, **time-based blind** with **3-step verification** (stable baseline, true-condition delay, false-condition must NOT delay), **boolean-blind** with **2-round reproducibility** (4 consistency checks), **64 OOB payloads** via Collaborator (MySQL 11, MSSQL 18, Oracle 14, PostgreSQL 13, SQLite 2, Generic 6 — including CHAR() WAF bypass, xp_cmdshell HTTP callbacks, DBMS_SCHEDULER, BULK INSERT, dblink variants), XML body injection. DB fingerprinting (INFO-only). **~375 payloads per parameter** across 6 detection phases. Comment-as-space and encoding bypasses.
 </details>
 
 <details>
@@ -211,13 +211,13 @@ Collaborator OOB detection, cloud metadata endpoints with **multi-marker structu
 <details>
 <summary><strong>SSTI Scanner</strong></summary>
 
-Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebble, Thymeleaf, Mako, Tornado, Smarty, Blade, ERB, Slim, Handlebars, EJS, Nunjucks, Dust, Jade/Pug, Mustache, Liquid, Groovy, Plates). **Unique large-number probes** (133*991=131881 instead of 7*7=49 — eliminates false positives from page numbers, dates, and article IDs). **Template syntax consumption verification** — the raw payload must NOT appear in the response (reflection ≠ evaluation). Engine-specific error patterns, 32 OOB payloads via Collaborator.
+Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebble, Thymeleaf, Mako, Tornado, Smarty, Blade, ERB, Slim, Handlebars, EJS, Nunjucks, Dust, Jade/Pug, Mustache, Liquid, Groovy, Plates). **Unique large-number probes** (133*991=131803 instead of 7*7=49 — eliminates false positives from page numbers, dates, and article IDs). **Template syntax consumption verification** — the raw payload must NOT appear in the response (reflection ≠ evaluation). Engine-specific error patterns, 32 OOB payloads via Collaborator.
 </details>
 
 <details>
 <summary><strong>Command Injection</strong></summary>
 
-**3-step time-based verification** (true delay → control with zero delay returns within baseline → true delay again) with 80% threshold and error-page discard. **Output-based with structural regexes** — `uid=\d+` not "uid=", `Linux\s+\S+\s+\d+\.\d+` not "Linux", `inet\s+IP` not "inet", unique 6-digit math markers (131337) instead of "42". **Header injection restricted** — User-Agent, Referer, X-Forwarded-For, X-Forwarded-Host, and Origin are only tested via time-based 3-step and OOB Collaborator (never output-based — header changes cause WAF blocks and routing differences unrelated to command execution). 403/404/500 responses with body < 500 bytes automatically discarded. 31 Unix `sleep` + 13 Windows `ping` time payloads, 30 Unix + 18 Windows output probes, 26 Unix + 15 Windows OOB via Collaborator. `$IFS` space bypass, `%0a` newline injection, env variable concatenation, backtick nesting, CRLF variants, double-encoding, wildcard globbing.
+**3-step time-based verification** (true delay → control with zero delay returns within baseline → true delay again) with 80% threshold and error-page discard. **Output-based with structural regexes** — `uid=\d+` not "uid=", `Linux\s+\S+\s+\d+\.\d+` not "Linux", `inet\s+IP` not "inet", `[d-][rwx-]{9}\s+\d+` for `ls -la` output, unique 6-digit math markers (131337) instead of "42". **Header injection restricted** — User-Agent, Referer, X-Forwarded-For, X-Forwarded-Host, and Origin are only tested via time-based 3-step and OOB Collaborator (never output-based — header changes cause WAF blocks and routing differences unrelated to command execution). 403/404/500 responses with body < 500 bytes automatically discarded. **141 payloads per parameter**: 33 Unix `sleep` + 13 Windows `ping` time payloads, 36 Unix + 18 Windows output probes (including `ls -la` with permission-string regex matching), 26 Unix + 15 Windows OOB via Collaborator. `$IFS` space bypass, `%0a` newline injection, env variable concatenation, backtick nesting, CRLF variants, double-encoding, wildcard globbing.
 </details>
 
 <details>
@@ -244,7 +244,7 @@ Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebbl
 <details>
 <summary><strong>GraphQL Scanner</strong></summary>
 
-**7-phase testing**: introspection & discovery (4 bypass techniques, IDE detection with HTML markup validation), schema analysis (INFO-only — field/mutation/type observations require manual verification), injection via arguments (SQLi with DB-specific errors + time-based false-condition verification, NoSQLi with MongoDB-specific error patterns, CMDi, SSTI, path traversal + OOB), IDOR observation (INFO-only — requires manual two-session verification), DoS configuration observations (INFO-only — batch, depth, alias, circular fragments, directives), HTTP-level tests (GET queries, content-type, CSRF), error & info disclosure (stack trace detection with standard GraphQL error filtering, framework fingerprinting). Auto-generates executable queries from introspection schema.
+**7-phase testing**: introspection & discovery (4 bypass techniques, IDE detection with HTML markup validation), schema analysis (INFO-only — field/mutation/type observations require manual verification), injection via arguments (SQLi with DB-specific errors + time-based false-condition verification, NoSQLi with MongoDB-specific error patterns, CMDi, SSTI with large math canaries 133*991=131803, path traversal + OOB), IDOR observation (INFO-only — requires manual two-session verification), DoS configuration observations (INFO-only — batch, depth, alias, circular fragments, directives), HTTP-level tests (GET queries, content-type, CSRF), error & info disclosure (stack trace detection with standard GraphQL error filtering, framework fingerprinting). Auto-generates executable queries from introspection schema.
 </details>
 
 <details>

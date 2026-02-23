@@ -129,14 +129,15 @@ public class GraphqlTool implements ScanModule {
             {"; ls /", "Semicolon ls (Unix)"},
     };
 
-    // SSTI payloads
+    // SSTI payloads — use large unique math canaries (131803) instead of 7*7=49
+    // "49" appears in pagination, table data, and GraphQL response metadata
     private static final String[][] SSTI_PAYLOADS = {
-            {"{{7*7}}", "Jinja2/Twig 7*7", "49"},
-            {"${7*7}", "Freemarker/EL 7*7", "49"},
-            {"<%= 7*7 %>", "ERB 7*7", "49"},
-            {"#{7*7}", "Ruby/Pug 7*7", "49"},
-            {"{{constructor.constructor('return 7*7')()}}", "Handlebars/Pug", "49"},
-            {"${{7*7}}", "Thymeleaf 7*7", "49"},
+            {"{{133*991}}", "Jinja2/Twig 133*991", "131803"},
+            {"${133*991}", "Freemarker/EL 133*991", "131803"},
+            {"<%= 133*991 %>", "ERB 133*991", "131803"},
+            {"#{133*991}", "Ruby/Pug 133*991", "131803"},
+            {"{{constructor.constructor('return 133*991')()}}", "Handlebars/Pug", "131803"},
+            {"${{133*991}}", "Thymeleaf 133*991", "131803"},
     };
 
     // Path traversal payloads

