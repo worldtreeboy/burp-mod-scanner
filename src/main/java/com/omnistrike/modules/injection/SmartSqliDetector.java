@@ -1566,8 +1566,7 @@ public class SmartSqliDetector implements ScanModule {
                 return request.withUpdatedParameters(
                         burp.api.montoya.http.message.params.HttpParameter.bodyParameter(ip.name, PayloadEncoder.encode(payload)));
             case COOKIE:
-                return request.withUpdatedParameters(
-                        burp.api.montoya.http.message.params.HttpParameter.cookieParameter(ip.name, payload));
+                return PayloadEncoder.injectCookie(request, ip.name, payload);
             case JSON:
                 // Replace value in JSON body, supporting nested dot-notation keys
                 String body = request.bodyToString();

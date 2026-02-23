@@ -346,8 +346,7 @@ public class CrlfInjectionScanner implements ScanModule {
                 return request.withUpdatedParameters(
                         HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(payload)));
             case COOKIE:
-                return request.withUpdatedParameters(
-                        HttpParameter.cookieParameter(target.name, payload));
+                return PayloadEncoder.injectCookie(request, target.name, payload);
             default:
                 return request;
         }

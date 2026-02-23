@@ -2603,8 +2603,7 @@ public class XssScanner implements ScanModule {
                             HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(payload)));
                     break;
                 case COOKIE:
-                    modified = original.request().withUpdatedParameters(
-                            HttpParameter.cookieParameter(target.name, payload));
+                    modified = PayloadEncoder.injectCookie(original.request(), target.name, payload);
                     break;
                 case JSON:
                     modified = injectJsonPayload(original.request(), target.name, payload);

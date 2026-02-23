@@ -1096,8 +1096,7 @@ public class PathTraversalScanner implements ScanModule {
                 return request.withUpdatedParameters(
                         HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(payload)));
             case COOKIE:
-                return request.withUpdatedParameters(
-                        HttpParameter.cookieParameter(target.name, payload));
+                return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
                 return injectJsonPayload(request, target.name, payload);
             default:

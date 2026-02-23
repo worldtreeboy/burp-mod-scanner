@@ -1788,8 +1788,7 @@ public class DeserializationScanner implements ScanModule {
 
             switch (dp.location) {
                 case "cookie":
-                    modified = request.withUpdatedParameters(
-                            HttpParameter.cookieParameter(dp.name, payload));
+                    modified = PayloadEncoder.injectCookie(request, dp.name, payload);
                     break;
                 case "body_param":
                     modified = request.withUpdatedParameters(
