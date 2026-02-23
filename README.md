@@ -205,13 +205,13 @@ Authentication bypass with auth-artifact proof (session cookie + success content
 <details>
 <summary><strong>SSRF Scanner</strong></summary>
 
-Collaborator OOB detection, 28 cloud metadata endpoints (AWS IMDSv1/v2, GCP, Azure, DigitalOcean, Alibaba, Oracle, Hetzner, OpenStack, IBM, Linode, Rancher, Consul, Docker API), DNS rebinding, 49 localhost bypasses (IPv6, hex, octal, DNS wildcards, enclosed alphanumeric, nip.io/xip.io), 31 protocol smuggling payloads (gopher to Redis/SMTP/MongoDB/PostgreSQL/MySQL/Memcached, LDAP, TFTP, SFTP, netdoc, Kubernetes secrets).
+Collaborator OOB detection, cloud metadata endpoints with **multi-marker structural validation** (AWS requires ami-id+instance-id, Azure requires vmId+resourceGroupName, Oracle requires displayName+compartmentId — single generic words like "id" or "region" never constitute a finding), DNS rebinding, 49 localhost bypasses (IPv6, hex, octal, DNS wildcards, enclosed alphanumeric, nip.io/xip.io), 31 protocol smuggling payloads (gopher to Redis/SMTP/MongoDB/PostgreSQL/MySQL/Memcached, LDAP, TFTP, SFTP, netdoc, Kubernetes secrets).
 </details>
 
 <details>
 <summary><strong>SSTI Scanner</strong></summary>
 
-Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebble, Thymeleaf, Mako, Tornado, Smarty, Blade, ERB, Slim, Handlebars, EJS, Nunjucks, Dust, Jade/Pug, Mustache, Liquid, Groovy, Plates). 34 polyglot probes, engine-specific error patterns, 32 OOB payloads via Collaborator.
+Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebble, Thymeleaf, Mako, Tornado, Smarty, Blade, ERB, Slim, Handlebars, EJS, Nunjucks, Dust, Jade/Pug, Mustache, Liquid, Groovy, Plates). **Unique large-number probes** (133*991=131881 instead of 7*7=49 — eliminates false positives from page numbers, dates, and article IDs). **Template syntax consumption verification** — the raw payload must NOT appear in the response (reflection ≠ evaluation). Engine-specific error patterns, 32 OOB payloads via Collaborator.
 </details>
 
 <details>
