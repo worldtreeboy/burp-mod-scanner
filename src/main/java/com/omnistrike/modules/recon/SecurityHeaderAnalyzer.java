@@ -42,11 +42,10 @@ public class SecurityHeaderAnalyzer implements ScanModule {
     private static final Map<String, String> REQUIRED_HEADERS = Map.ofEntries(
             Map.entry("Strict-Transport-Security", "Prevents MITM downgrade attacks. Recommended: max-age=31536000; includeSubDomains"),
             Map.entry("X-Content-Type-Options", "Prevents MIME-sniffing. Should be 'nosniff'"),
-            Map.entry("X-Frame-Options", "Prevents clickjacking. Should be 'DENY' or 'SAMEORIGIN'"),
+            Map.entry("X-Frame-Options", "Prevents clickjacking. Should be 'DENY' or 'SAMEORIGIN'. Supplement with CSP frame-ancestors"),
             Map.entry("Content-Security-Policy", "Prevents XSS and injection attacks"),
             Map.entry("Referrer-Policy", "Controls information leakage via Referer header"),
             Map.entry("Permissions-Policy", "Controls browser feature access (camera, microphone, geolocation, etc.)"),
-            Map.entry("X-XSS-Protection", "Should be '0' (disabled) as CSP supersedes it. The '1; mode=block' option can itself introduce vulnerabilities."),
             Map.entry("Cross-Origin-Opener-Policy", "Prevents cross-origin window access. Recommended: same-origin"),
             Map.entry("Cross-Origin-Resource-Policy", "Controls cross-origin resource loading"),
             Map.entry("Cross-Origin-Embedder-Policy", "Required for SharedArrayBuffer/high-res timers")
