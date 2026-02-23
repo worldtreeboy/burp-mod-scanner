@@ -75,25 +75,20 @@ public class GraphqlTool implements ScanModule {
     };
 
     // Framework fingerprint patterns: pattern -> framework name
+    // Framework fingerprint patterns — only patterns specific enough to avoid FPs
+    // Removed: "Apollo" (too generic), "GraphQLError" (standard spec), "Unexpected token" (standard JS error),
+    // generic single-word framework names that could appear in unrelated contexts
     private static final String[][] FRAMEWORK_FINGERPRINTS = {
             {"\"extensions\":{\"tracing\"", "Apollo Server (tracing enabled)"},
-            {"Apollo", "Apollo Server"},
             {"PersistedQueryNotFound", "Apollo Server (APQ enabled)"},
-            {"hasura", "Hasura GraphQL Engine"},
-            {"x-hasura", "Hasura GraphQL Engine"},
-            {"graphql-java", "graphql-java"},
-            {"GraphQLError", "graphql-js / Express GraphQL"},
-            {"Unexpected token", "Express GraphQL / graphql-js"},
-            {"absinthe", "Absinthe (Elixir)"},
-            {"ariadne", "Ariadne (Python)"},
-            {"strawberry", "Strawberry (Python)"},
-            {"graphene", "Graphene (Python)"},
-            {"Sangria", "Sangria (Scala)"},
-            {"juniper", "Juniper (Rust)"},
-            {"dgraph", "Dgraph"},
             {"\"code\":\"GRAPHQL_VALIDATION_FAILED\"", "Apollo Server"},
             {"\"code\":\"BAD_USER_INPUT\"", "Apollo Server"},
+            {"x-hasura", "Hasura GraphQL Engine"},
+            {"x-hasura-admin-secret", "Hasura GraphQL Engine"},
+            {"graphql-java/", "graphql-java"},
+            {"absinthe_", "Absinthe (Elixir)"},
             {"WPGraphQL", "WPGraphQL (WordPress)"},
+            {"dgraph.io", "Dgraph"},
     };
 
     // SQL injection payloads for GraphQL arguments
@@ -488,10 +483,9 @@ public class GraphqlTool implements ScanModule {
             if (result != null && result.response() != null) {
                 int status = result.response().statusCode();
                 String body = result.response().bodyToString();
-                if (status == 200 && body != null
-                        && (body.contains("GraphiQL") || body.contains("graphql-playground")
-                        || body.contains("GraphQL Playground") || body.contains("graphql-explorer")
-                        || body.contains("altair") || body.contains("voyager"))) {
+                // Require IDE-specific HTML markup — not just keyword presence
+                // Each IDE has characteristic HTML/JS patterns in its rendered page
+                if (status == 200 && body != null && containsIdeMarkup(body)) {
                     findingsStore.addFinding(Finding.builder(MODULE_ID,
                                     "GraphQL IDE Exposed: " + idePath,
                                     Severity.LOW, Confidence.CERTAIN)
@@ -574,11 +568,11 @@ public class GraphqlTool implements ScanModule {
             if (DEBUG_INTERNAL_TYPE.matcher(typeName).find()) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "Debug/Internal GraphQL Type: " + typeName,
-                                Severity.LOW, Confidence.FIRM)
+                                Severity.INFO, Confidence.TENTATIVE)
                         .url(url)
                         .evidence("Type: " + typeName)
-                        .description("GraphQL type '" + typeName + "' appears to be a debug, internal, "
-                                + "or admin type that may not be intended for public access.")
+                        .description("GraphQL type '" + typeName + "' matches a debug/internal naming pattern. "
+                                + "Manual verification required — many applications legitimately use these prefixes.")
                         .build());
             }
 
@@ -593,23 +587,25 @@ public class GraphqlTool implements ScanModule {
                 // Check for sensitive auth fields
                 if (SENSITIVE_AUTH.matcher(fieldName).find()) {
                     findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                    "Sensitive Field Exposed: " + fullPath,
-                                    Severity.MEDIUM, Confidence.FIRM)
+                                    "Sensitive Field in Schema: " + fullPath,
+                                    Severity.INFO, Confidence.FIRM)
                             .url(url)
                             .evidence("Field: " + fullPath)
                             .description("Authentication/secret-related field '" + fieldName
-                                    + "' exposed in GraphQL schema on type '" + typeName + "'.")
+                                    + "' exists in GraphQL schema on type '" + typeName
+                                    + "'. Manual verification required — field presence does not confirm data exposure.")
                             .build());
                 }
 
                 // Check for PII fields
                 if (SENSITIVE_PII.matcher(fieldName).find()) {
                     findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                    "PII Field Exposed: " + fullPath,
-                                    Severity.MEDIUM, Confidence.FIRM)
+                                    "PII Field in Schema: " + fullPath,
+                                    Severity.INFO, Confidence.FIRM)
                             .url(url)
                             .evidence("Field: " + fullPath)
-                            .description("PII field '" + fieldName + "' exposed in GraphQL schema.")
+                            .description("PII field '" + fieldName + "' exists in GraphQL schema. "
+                                    + "Manual verification required — field presence does not confirm data exposure.")
                             .build());
                 }
 
@@ -644,12 +640,12 @@ public class GraphqlTool implements ScanModule {
                     if (!hasPagination) {
                         findingsStore.addFinding(Finding.builder(MODULE_ID,
                                         "Unbounded List Field: " + fullPath,
-                                        Severity.LOW, Confidence.TENTATIVE)
+                                        Severity.INFO, Confidence.TENTATIVE)
                                 .url(url)
                                 .evidence("Field: " + fullPath + " returns a LIST without pagination args (first/last/limit)")
                                 .description("List field '" + fieldName + "' on type '" + typeName + "' has no "
-                                        + "pagination arguments. This may allow fetching unlimited records, "
-                                        + "leading to DoS or data exfiltration.")
+                                        + "pagination arguments. Manual verification required — the resolver may "
+                                        + "implement server-side limits not reflected in the schema.")
                                 .build());
                     }
                 }
@@ -666,12 +662,13 @@ public class GraphqlTool implements ScanModule {
                         String mutName = safeString(fieldEl.getAsJsonObject(), "name");
                         if (DANGEROUS_MUTATION.matcher(mutName).find()) {
                             findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                            "Dangerous Mutation: " + mutName,
-                                            Severity.MEDIUM, Confidence.TENTATIVE)
+                                            "Dangerous Mutation in Schema: " + mutName,
+                                            Severity.INFO, Confidence.TENTATIVE)
                                     .url(url)
                                     .evidence("Mutation: " + mutName)
-                                    .description("Potentially dangerous mutation '" + mutName + "' available. "
-                                            + "Verify authorization controls prevent unauthorized use.")
+                                    .description("Mutation '" + mutName + "' matches a destructive naming pattern. "
+                                            + "Manual verification required — mutation name alone does not confirm "
+                                            + "missing authorization. Test with different privilege levels.")
                                     .build());
                         }
                     }
@@ -742,7 +739,6 @@ public class GraphqlTool implements ScanModule {
 
         String baselineRespBody = (baselineResult != null && baselineResult.response() != null)
                 ? baselineResult.response().bodyToString() : "";
-        long baselineTime = 0;
 
         for (String[] payloadInfo : SQLI_PAYLOADS) {
             checkInterrupted();
@@ -762,28 +758,49 @@ public class GraphqlTool implements ScanModule {
             String respBody = result.response().bodyToString();
             if (respBody == null) continue;
 
-            // Check for time-based — require delay significantly above baseline
-            long measuredBaselineTime = 0;
-            try {
-                long bstart = System.currentTimeMillis();
-                api.http().sendRequest(buildGqlRequest(originalRequest, path,
-                        new Gson().toJson(Map.of("query", buildQueryForArg(arg, "test123")))));
-                measuredBaselineTime = System.currentTimeMillis() - bstart;
-            } catch (Exception ignored) {}
-            if (technique.contains("time") && elapsed > measuredBaselineTime + 4000 && elapsed > 4500) {
-                findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "GraphQL SQL Injection (Time-Based) via " + arg.argName,
-                                Severity.HIGH, Confidence.FIRM)
-                        .url(url)
-                        .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
-                        .evidence("Technique: " + technique + " | Payload: " + payload
-                                + " | Response time: " + elapsed + "ms")
-                        .description("Time-based SQL injection detected in GraphQL argument '" + arg.argName
-                                + "' on field '" + arg.fieldName + "'. The server delayed ~"
-                                + (elapsed / 1000) + " seconds.")
-                        .requestResponse(result)
-                        .build());
-                return;
+            // Check for time-based — require delay above baseline AND false-condition must NOT delay
+            if (technique.contains("time") && elapsed > 4500) {
+                // Step 1: measure fresh baseline
+                long measuredBaselineTime = 0;
+                try {
+                    long bstart = System.currentTimeMillis();
+                    api.http().sendRequest(buildGqlRequest(originalRequest, path,
+                            new Gson().toJson(Map.of("query", buildQueryForArg(arg, "test123")))));
+                    measuredBaselineTime = System.currentTimeMillis() - bstart;
+                } catch (Exception ignored) {}
+
+                if (elapsed > measuredBaselineTime + 4000) {
+                    // Step 2: false-condition verification — replace SLEEP(5) with SLEEP(0) or IF(1=2,SLEEP(5),0)
+                    String falsePayload = payload.replace("SLEEP(5)", "SLEEP(0)")
+                            .replace("sleep(5)", "sleep(0)")
+                            .replace("pg_sleep(5)", "pg_sleep(0)")
+                            .replace("DELAY '0:0:5'", "DELAY '0:0:0'");
+                    String falseQuery = buildQueryForArg(arg, falsePayload);
+                    String falseBody = new Gson().toJson(Map.of("query", falseQuery));
+                    HttpRequest falseReq = buildGqlRequest(originalRequest, path, falseBody);
+                    long fstart = System.currentTimeMillis();
+                    api.http().sendRequest(falseReq);
+                    long falseElapsed = System.currentTimeMillis() - fstart;
+                    perHostDelay();
+
+                    // False condition must NOT delay (within baseline + 2s tolerance)
+                    if (falseElapsed < measuredBaselineTime + 2000) {
+                        findingsStore.addFinding(Finding.builder(MODULE_ID,
+                                        "GraphQL SQL Injection (Time-Based) via " + arg.argName,
+                                        Severity.HIGH, Confidence.CERTAIN)
+                                .url(url)
+                                .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
+                                .evidence("Technique: " + technique + " | Payload: " + payload
+                                        + " | True condition: " + elapsed + "ms | False condition: "
+                                        + falseElapsed + "ms | Baseline: " + measuredBaselineTime + "ms")
+                                .description("Time-based SQL injection confirmed in GraphQL argument '" + arg.argName
+                                        + "'. True condition delayed " + (elapsed / 1000) + "s while false condition "
+                                        + "returned in " + falseElapsed + "ms.")
+                                .requestResponse(result)
+                                .build());
+                        return;
+                    }
+                }
             }
 
             // Check for error-based (SQL error strings in response)
@@ -813,7 +830,6 @@ public class GraphqlTool implements ScanModule {
 
         String baselineRespBody = (baselineResult != null && baselineResult.response() != null)
                 ? baselineResult.response().bodyToString() : "";
-        int baselineLen = baselineRespBody.length();
 
         for (String[] payloadInfo : NOSQLI_PAYLOADS) {
             checkInterrupted();
@@ -845,22 +861,8 @@ public class GraphqlTool implements ScanModule {
                 return;
             }
 
-            // Large response difference may indicate data exfil via operator injection
-            // Require 5x size increase and >1000 bytes to reduce false positives
-            if (respBody.length() > baselineLen * 5 && respBody.length() > 1000
-                    && baselineLen > 0 && result.response().statusCode() == 200) {
-                findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "Potential GraphQL NoSQL Injection (Data Exfil) via " + arg.argName,
-                                Severity.MEDIUM, Confidence.TENTATIVE)
-                        .url(url)
-                        .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
-                        .evidence("Technique: " + technique + " | Payload: " + payload
-                                + " | Response size: " + respBody.length() + " vs baseline: " + baselineLen)
-                        .description("NoSQL operator injection may have caused data exfiltration. "
-                                + "Response was significantly larger than baseline.")
-                        .requestResponse(result)
-                        .build());
-            }
+            // Removed: response-length-difference-only detection is too FP-prone.
+            // Size differences can result from caching, pagination, or dynamic content.
         }
     }
 
@@ -1182,18 +1184,18 @@ public class GraphqlTool implements ScanModule {
 
         if (successCount > 1) {
             findingsStore.addFinding(Finding.builder(MODULE_ID,
-                            "GraphQL IDOR: " + fieldName + " accessible via " + argName + " enumeration",
-                            Severity.HIGH, Confidence.FIRM)
+                            "GraphQL Potential IDOR: " + fieldName + " enumerable via " + argName,
+                            Severity.INFO, Confidence.TENTATIVE)
                     .url(url)
                     .parameter(fieldName + "." + argName)
                     .evidence("Accessible IDs: " + String.join(", ", accessibleIds)
                             + " (" + successCount + "/" + maxIds + " returned data)")
-                    .description("IDOR detected on GraphQL field '" + fieldName + "'. Enumerating "
-                            + argName + " values from 1-" + maxIds + " returned data for "
-                            + successCount + " IDs. This indicates broken access control allowing "
-                            + "horizontal privilege escalation.")
-                    .remediation("Implement proper authorization checks on the resolver for '"
-                            + fieldName + "'. Ensure users can only access their own records.")
+                    .description("GraphQL field '" + fieldName + "' returns data for enumerated "
+                            + argName + " values. Manual verification required — this does NOT confirm "
+                            + "broken access control. The data returned may be intentionally public. "
+                            + "Test with two different authenticated sessions to confirm unauthorized access.")
+                    .remediation("If access control is missing, implement authorization checks on the resolver for '"
+                            + fieldName + "'.")
                     .build());
         }
     }
@@ -1218,13 +1220,13 @@ public class GraphqlTool implements ScanModule {
             String respBody = result.response().bodyToString();
             if (respBody != null && respBody.contains("__typename")) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "GraphQL Batch Queries Not Limited",
-                                Severity.LOW, Confidence.FIRM)
+                                "GraphQL Batch Queries Accepted",
+                                Severity.INFO, Confidence.FIRM)
                         .url(url)
                         .evidence("10 batched queries all succeeded")
-                        .description("Server accepts batched GraphQL queries without limits. "
-                                + "Could be used for brute-force attacks or DoS.")
-                        .remediation("Limit batch query count. In Apollo: "
+                        .description("Server accepts batched GraphQL queries. This is a configuration observation — "
+                                + "actual DoS impact depends on query complexity limits and rate limiting.")
+                        .remediation("Consider limiting batch query count. In Apollo: "
                                 + "allowBatchedHttpRequests: false or use a batch size limiter plugin.")
                         .requestResponse(result)
                         .build());
@@ -1244,12 +1246,12 @@ public class GraphqlTool implements ScanModule {
         if (result != null && result.response() != null && result.response().statusCode() == 200) {
             findingsStore.addFinding(Finding.builder(MODULE_ID,
                             "GraphQL No Query Depth Limiting",
-                            Severity.LOW, Confidence.FIRM)
+                            Severity.INFO, Confidence.FIRM)
                     .url(url)
                     .evidence("Deeply nested query (7 levels) processed successfully")
                     .description("Server processes deeply nested queries without depth limiting. "
-                            + "Risk of DoS via recursive/nested queries.")
-                    .remediation("Implement query depth limiting. Libraries: graphql-depth-limit (JS), "
+                            + "This is a configuration observation — actual DoS impact depends on resolver complexity.")
+                    .remediation("Consider implementing query depth limiting. Libraries: graphql-depth-limit (JS), "
                             + "graphql-query-complexity (JS), or built-in MaxQueryDepthRule.")
                     .requestResponse(result)
                     .build());
@@ -1274,13 +1276,13 @@ public class GraphqlTool implements ScanModule {
             String respBody = result.response().bodyToString();
             if (respBody != null && respBody.contains("a99")) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "GraphQL Alias-Based Resource Exhaustion",
-                                Severity.LOW, Confidence.FIRM)
+                                "GraphQL Alias Fan-Out Accepted",
+                                Severity.INFO, Confidence.FIRM)
                         .url(url)
                         .evidence("100 aliases for __typename all processed successfully")
                         .description("Server does not limit the number of aliases per query. "
-                                + "Could be abused for DoS with expensive aliased fields.")
-                        .remediation("Implement query complexity/cost analysis that accounts for aliases.")
+                                + "This is a configuration observation — actual DoS impact depends on field cost.")
+                        .remediation("Consider implementing query complexity/cost analysis that accounts for aliases.")
                         .requestResponse(result)
                         .build());
             }
@@ -1304,12 +1306,13 @@ public class GraphqlTool implements ScanModule {
             // If the server returns 200 or takes very long, the circular detection may be absent
             if (status == 200 && respBody != null && !respBody.contains("\"errors\"")) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "GraphQL Circular Fragment Spreading Allowed",
-                                Severity.MEDIUM, Confidence.FIRM)
+                                "GraphQL Circular Fragment Spreading Accepted",
+                                Severity.INFO, Confidence.FIRM)
                         .url(url)
                         .evidence("Circular fragment (A→B→A) processed without error")
-                        .description("Server accepted a query with circular fragment spreads. "
-                                + "This can cause infinite recursion leading to DoS.")
+                        .description("Server accepted a query with circular fragment spreads without returning "
+                                + "a validation error. This is a configuration observation — the server may "
+                                + "still limit recursion depth internally.")
                         .requestResponse(result)
                         .build());
             }
@@ -1335,12 +1338,12 @@ public class GraphqlTool implements ScanModule {
             String respBody = result.response().bodyToString();
             if (respBody != null && respBody.contains("__typename") && !respBody.contains("\"errors\"")) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "GraphQL Directive Overloading Allowed",
-                                Severity.LOW, Confidence.FIRM)
+                                "GraphQL Directive Overloading Accepted",
+                                Severity.INFO, Confidence.FIRM)
                         .url(url)
                         .evidence("50 @skip directives on single field processed without limit")
                         .description("Server allows excessive directive use on a single field. "
-                                + "This can be used to increase query cost and cause resource exhaustion.")
+                                + "This is a configuration observation — actual impact depends on directive processing cost.")
                         .requestResponse(result)
                         .build());
             }
@@ -1401,13 +1404,13 @@ public class GraphqlTool implements ScanModule {
             String respBody = result.response().bodyToString();
             if (respBody != null && respBody.contains("__typename")) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "GraphQL Content-Type Bypass (Form URL-Encoded)",
-                                Severity.LOW, Confidence.CERTAIN)
+                                "GraphQL Accepts Form URL-Encoded Content-Type",
+                                Severity.INFO, Confidence.CERTAIN)
                         .url(url)
                         .evidence("Query succeeded with Content-Type: application/x-www-form-urlencoded")
                         .description("The GraphQL endpoint accepts queries via form URL-encoded content type. "
-                                + "This can bypass CSRF protections that rely on Content-Type checking, "
-                                + "since browsers can send form-encoded requests cross-origin without CORS preflight.")
+                                + "This is a CSRF enabler — browsers can send form-encoded requests cross-origin "
+                                + "without CORS preflight. Only actionable if mutations lack other CSRF protections.")
                         .remediation("Strictly validate Content-Type to only accept application/json.")
                         .requestResponse(result)
                         .build());
@@ -1458,13 +1461,14 @@ public class GraphqlTool implements ScanModule {
             if (status == 200 && respBody != null && !respBody.contains("CSRF")
                     && !respBody.contains("csrf") && !respBody.contains("forbidden")) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "GraphQL Mutations May Be Vulnerable to CSRF",
-                                Severity.MEDIUM, Confidence.TENTATIVE)
+                                "GraphQL Mutations Accept Requests Without Origin Header",
+                                Severity.INFO, Confidence.TENTATIVE)
                         .url(url)
                         .evidence("Mutation '" + testMutation + "' accepted without Origin/Referer headers")
                         .description("GraphQL mutations were accepted without Origin or Referer headers. "
-                                + "Combined with GET query acceptance or form-encoded content type, "
-                                + "this may allow cross-site request forgery attacks on mutations.")
+                                + "This alone does not confirm CSRF — the endpoint may rely on cookie SameSite "
+                                + "attributes, CORS policy, or authentication tokens. Manual verification required "
+                                + "with a cross-origin proof-of-concept.")
                         .remediation("Implement CSRF protection: validate Origin header, use CSRF tokens, "
                                 + "or require custom headers (e.g. X-Requested-With) for mutations.")
                         .requestResponse(result)
@@ -1499,12 +1503,18 @@ public class GraphqlTool implements ScanModule {
             if (respBody == null) continue;
 
             // Check for stack traces, file paths, or excessive error details
-            if (respBody.contains("stack") || respBody.contains("stacktrace")
+            // Filter standard GraphQL validation errors — these are normal protocol behavior
+            boolean isStandardGqlError = respBody.contains("Cannot query field")
+                    || respBody.contains("Syntax Error") || respBody.contains("Parse error")
+                    || respBody.contains("Did you mean") || respBody.contains("Unknown argument")
+                    || respBody.contains("Expected Name") || respBody.contains("Unknown type");
+            if (!isStandardGqlError && (
+                    respBody.contains("stacktrace") || respBody.contains("stack_trace")
                     || respBody.contains("at com.") || respBody.contains("at org.")
-                    || respBody.contains("node_modules") || respBody.contains("File \"")
+                    || respBody.contains("node_modules/") || respBody.contains("File \"")
                     || respBody.contains(".java:") || respBody.contains(".py:")
                     || respBody.contains(".js:") || respBody.contains("Traceback")
-                    || respBody.contains("Exception in")) {
+                    || respBody.contains("Exception in"))) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "GraphQL Verbose Error Messages (Stack Trace)",
                                 Severity.LOW, Confidence.CERTAIN)
@@ -1553,7 +1563,7 @@ public class GraphqlTool implements ScanModule {
         if (hasDebugInfo) {
             findingsStore.addFinding(Finding.builder(MODULE_ID,
                             "GraphQL Debug/Tracing Mode Enabled",
-                            Severity.LOW, Confidence.CERTAIN)
+                            Severity.INFO, Confidence.CERTAIN)
                     .url(url)
                     .evidence("Debug indicators found: " + String.join(", ", debugIndicators))
                     .description("The GraphQL endpoint returns debug/tracing information in extensions. "
@@ -1845,27 +1855,68 @@ public class GraphqlTool implements ScanModule {
 
     // ==================== DETECTION HELPERS ====================
 
+    /**
+     * Check for IDE-specific HTML markup that confirms a GraphQL IDE is actually rendered.
+     * Simple keyword matches like "GraphiQL" are insufficient — the word can appear in
+     * documentation, error messages, or unrelated pages.
+     */
+    private boolean containsIdeMarkup(String body) {
+        // GraphiQL: renders via React component with specific CSS class or container
+        boolean graphiql = body.contains("graphiql") && (
+                body.contains("<div id=\"graphiql\"") || body.contains("class=\"graphiql")
+                || body.contains("GraphiQL.createFetcher") || body.contains("ReactDOM.render")
+                || body.contains("graphiql.min.js") || body.contains("graphiql.css")
+                || body.contains("graphiql/graphiql"));
+
+        // GraphQL Playground: has its own JS bundle and container
+        boolean playground = body.contains("graphql-playground") && (
+                body.contains("middleware-express") || body.contains("playground.js")
+                || body.contains("GraphQLPlayground.init") || body.contains("cdn.jsdelivr.net")
+                || body.contains("<div id=\"root\""));
+
+        // Altair: specific JS library
+        boolean altair = body.contains("altair") && (
+                body.contains("altair-app") || body.contains("altair-graphql")
+                || body.contains("AltairGraphQL"));
+
+        // Voyager: schema visualization tool
+        boolean voyager = body.contains("voyager") && (
+                body.contains("graphql-voyager") || body.contains("GraphQLVoyager.init")
+                || body.contains("voyager.worker.js"));
+
+        // Apollo Explorer / Apollo Studio embedded
+        boolean explorer = body.contains("apollo-explorer") || body.contains("studio.apollographql.com");
+
+        return graphiql || playground || altair || voyager || explorer;
+    }
+
     private boolean containsSqlError(String body) {
         if (body == null) return false;
         String lower = body.toLowerCase();
-        return lower.contains("sql syntax") || lower.contains("sql error")
-                || lower.contains("syntax error") && (lower.contains("sql") || lower.contains("query"))
-                || lower.contains("mysql") && lower.contains("error")
-                || lower.contains("postgresql") && lower.contains("error")
-                || lower.contains("sqlite") && lower.contains("error")
-                || lower.contains("ora-") || lower.contains("microsoft sql")
-                || lower.contains("unclosed quotation") || lower.contains("quoted string not properly terminated")
-                || lower.contains("sqlstate") || lower.contains("pg_")
-                || lower.contains("you have an error in your sql");
+        // Require DB-specific error patterns, not generic "syntax error" which GraphQL returns normally
+        return lower.contains("you have an error in your sql")     // MySQL
+                || lower.contains("sql syntax")                     // MySQL
+                || (lower.contains("mysql") && lower.contains("error") && !lower.contains("graphql"))
+                || lower.contains("ora-")                           // Oracle
+                || lower.contains("microsoft sql")                  // MSSQL
+                || lower.contains("unclosed quotation")             // MSSQL
+                || lower.contains("quoted string not properly terminated") // Oracle
+                || lower.contains("sqlstate[")                      // PDO/ODBC (with bracket = real)
+                || lower.contains("pg_query")                       // PostgreSQL
+                || lower.contains("pg_exec")                        // PostgreSQL
+                || lower.contains("unterminated quoted string at or near") // PostgreSQL
+                || (lower.contains("sqlite") && lower.contains("error"))
+                || lower.contains("near \"): syntax error");         // SQLite specific
     }
 
     private boolean containsNosqlError(String body) {
         if (body == null) return false;
         String lower = body.toLowerCase();
-        return lower.contains("mongoerror") || lower.contains("mongo")
-                || lower.contains("$where") || lower.contains("bsontype")
-                || lower.contains("cast to objectid") || lower.contains("invalid operator")
-                || lower.contains("unknown operator");
+        // Require MongoDB-specific error patterns, not generic strings
+        return lower.contains("mongoerror") || lower.contains("mongosyntaxerror")
+                || lower.contains("bsontype") || lower.contains("cast to objectid")
+                || lower.contains("bad query: badvalue") || lower.contains("unknown top-level operator")
+                || lower.contains("$where is not allowed");
     }
 
     // ==================== REQUEST BUILDING HELPERS ====================

@@ -37,13 +37,15 @@ public class PathTraversalScanner implements ScanModule {
     );
 
     // Confirmed file read patterns
-    private static final Pattern UNIX_PASSWD_PATTERN = Pattern.compile("root:[x*]:0:0:");
+    // Require complete colon-delimited line: root:x:0:0: or root:*:0:0:
+    private static final Pattern UNIX_PASSWD_PATTERN = Pattern.compile("root:[x*]:0:0:[^:]*:[^:]*:[^\\n]*");
     private static final Pattern UNIX_HOSTNAME_PATTERN = Pattern.compile("^[a-zA-Z0-9][a-zA-Z0-9._-]+$", Pattern.MULTILINE);
     private static final Pattern UNIX_ENVIRON_PATTERN = Pattern.compile("(PATH=|HOME=|USER=|SHELL=)");
     private static final Pattern WIN_INI_PATTERN = Pattern.compile("\\[(fonts|extensions|mci extensions|files)\\]", Pattern.CASE_INSENSITIVE);
     private static final Pattern WIN_HOSTS_PATTERN = Pattern.compile("localhost", Pattern.CASE_INSENSITIVE);
     private static final Pattern PHP_INFO_PATTERN = Pattern.compile("(phpinfo\\(\\)|PHP Version|PHP Extension|Zend Engine)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern UNIX_SHADOW_PATTERN = Pattern.compile("root:\\$[0-9a-z]\\$|root:!:|root:\\*:");
+    // Require root: followed by a hash algorithm identifier ($1$, $5$, $6$, $y$) or locked markers
+    private static final Pattern UNIX_SHADOW_PATTERN = Pattern.compile("root:\\$[156y]\\$|root:!:|root:\\*:");
     private static final Pattern UNIX_ISSUE_PATTERN = Pattern.compile("(Ubuntu|Debian|CentOS|Red Hat|Fedora|Alpine|Arch|SUSE|Gentoo|Linux)", Pattern.CASE_INSENSITIVE);
     private static final Pattern BASE64_PATTERN = Pattern.compile("^[A-Za-z0-9+/]{50,}={0,2}$", Pattern.MULTILINE);
 
@@ -348,43 +350,45 @@ public class PathTraversalScanner implements ScanModule {
     private void testPhpWrappers(HttpRequestResponse original, TraversalTarget target,
                                   String url, String baselineBody, int baselineLen) throws InterruptedException {
         // php://filter base64 encoding — reads source code
+        // Structural validation: response must contain valid base64 that decodes to readable PHP/HTML
         String filterPayload = "php://filter/convert.base64-encode/resource=index";
         HttpRequestResponse filterResult = sendPayload(original, target, filterPayload);
         if (filterResult != null && filterResult.response() != null
                 && filterResult.response().statusCode() == 200) {
             String body = filterResult.response().bodyToString();
-            // Require response differs from baseline, contains long base64 block, and is significantly larger
-            if (body != null && !body.equals(baselineBody) && BASE64_PATTERN.matcher(body).find()
-                    && body.length() > baselineLen + 100) {
-                findingsStore.addFinding(Finding.builder("path-traversal",
-                                "LFI via php://filter — Source Code Disclosure",
-                                Severity.CRITICAL, Confidence.CERTAIN)
-                        .url(url).parameter(target.name)
-                        .evidence("Payload: " + filterPayload + " | Response contains base64-encoded data")
-                        .description("PHP filter wrapper successfully used to read source code. "
-                                + "The response contains base64-encoded PHP source that can be decoded "
-                                + "to reveal application source code, credentials, and logic.")
-                        .remediation("Disable PHP stream wrappers (allow_url_include=Off). Never pass user "
-                                + "input to include/require functions. Use a whitelist of includable files.")
-                        .requestResponse(filterResult)
-                        .build());
+            if (body != null && BASE64_PATTERN.matcher(body).find()
+                    && (baselineBody == null || !BASE64_PATTERN.matcher(baselineBody).find())) {
+                // Validate: try to decode the base64 and check for PHP/HTML markers
+                if (isValidBase64WithReadableContent(body)) {
+                    findingsStore.addFinding(Finding.builder("path-traversal",
+                                    "LFI via php://filter — Source Code Disclosure",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Payload: " + filterPayload + " | Response contains base64-encoded PHP/HTML source")
+                            .description("PHP filter wrapper successfully used to read source code. "
+                                    + "The response contains base64-encoded PHP source that decodes to readable code.")
+                            .remediation("Disable PHP stream wrappers (allow_url_include=Off). Never pass user "
+                                    + "input to include/require functions. Use a whitelist of includable files.")
+                            .requestResponse(filterResult)
+                            .build());
+                }
             }
         }
         perHostDelay();
 
         // data:// wrapper (code execution)
+        // Structural validation: response must contain phpinfo() structural output (multiple markers)
         String dataPayload = "data://text/plain,<?php phpinfo();?>";
         HttpRequestResponse dataResult = sendPayload(original, target, dataPayload);
         if (dataResult != null && dataResult.response() != null) {
             String body = dataResult.response().bodyToString();
-            // Require phpinfo output AND it must NOT already exist in baseline
-            if (body != null && PHP_INFO_PATTERN.matcher(body).find()
-                    && (baselineBody == null || !PHP_INFO_PATTERN.matcher(baselineBody).find())) {
+            if (body != null && isConfirmedPhpInfo(body)
+                    && (baselineBody == null || !isConfirmedPhpInfo(baselineBody))) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "LFI to RCE via data:// Wrapper",
                                 Severity.CRITICAL, Confidence.CERTAIN)
                         .url(url).parameter(target.name)
-                        .evidence("Payload: " + dataPayload + " | phpinfo() output detected")
+                        .evidence("Payload: " + dataPayload + " | phpinfo() structural output confirmed")
                         .description("PHP data:// wrapper successfully executed arbitrary PHP code. "
                                 + "This is a full Remote Code Execution vulnerability via Local File Inclusion.")
                         .remediation("Set allow_url_include=Off in php.ini. Never pass user input to "
@@ -396,82 +400,55 @@ public class PathTraversalScanner implements ScanModule {
         perHostDelay();
 
         // php://filter chain variant (read specific file)
+        // Structural validation: decoded base64 must contain /etc/passwd structural content
         String filterChainPayload = "php://filter/read=convert.base64-encode/resource=/etc/passwd";
         HttpRequestResponse filterChainResult = sendPayload(original, target, filterChainPayload);
         if (filterChainResult != null && filterChainResult.response() != null) {
             String body = filterChainResult.response().bodyToString();
-            if (body != null && !body.equals(baselineBody) && BASE64_PATTERN.matcher(body).find()) {
-                findingsStore.addFinding(Finding.builder("path-traversal",
-                                "LFI via php://filter chain — /etc/passwd",
-                                Severity.CRITICAL, Confidence.CERTAIN)
-                        .url(url).parameter(target.name)
-                        .evidence("Payload: " + filterChainPayload + " | Response contains base64 data")
-                        .description("PHP filter wrapper read /etc/passwd via explicit read= chain variant.")
-                        .remediation("Disable PHP stream wrappers (allow_url_include=Off). Use a whitelist.")
-                        .requestResponse(filterChainResult)
-                        .build());
+            if (body != null && BASE64_PATTERN.matcher(body).find()
+                    && (baselineBody == null || !BASE64_PATTERN.matcher(baselineBody).find())) {
+                // Decode base64 and check for passwd structure
+                if (isBase64DecodingToPasswd(body)) {
+                    findingsStore.addFinding(Finding.builder("path-traversal",
+                                    "LFI via php://filter chain — /etc/passwd",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Payload: " + filterChainPayload + " | Base64 decodes to /etc/passwd content")
+                            .description("PHP filter wrapper read /etc/passwd. Decoded content contains passwd structure.")
+                            .remediation("Disable PHP stream wrappers (allow_url_include=Off). Use a whitelist.")
+                            .requestResponse(filterChainResult)
+                            .build());
+                }
             }
         }
         perHostDelay();
 
-        // php://input wrapper (POST body as include — code execution)
-        String phpInputPayload = "php://input";
-        HttpRequestResponse phpInputResult = sendPayload(original, target, phpInputPayload);
-        if (phpInputResult != null && phpInputResult.response() != null) {
-            String body = phpInputResult.response().bodyToString();
-            // php://input echoes back POST body content — detect if response changed significantly
-            // Require large difference (500+ bytes) to avoid FPs from normal response variance
-            if (body != null && !body.equals(baselineBody) && Math.abs(body.length() - baselineLen) > 500
-                    && phpInputResult.response().statusCode() == 200) {
-                findingsStore.addFinding(Finding.builder("path-traversal",
-                                "LFI via php://input — Potential Code Execution",
-                                Severity.HIGH, Confidence.TENTATIVE)
-                        .url(url).parameter(target.name)
-                        .evidence("Payload: " + phpInputPayload + " | Response changed (len diff > 50)")
-                        .description("php://input wrapper accepted. If the include executes PHP from POST body, "
-                                + "this is a Remote Code Execution vulnerability.")
-                        .remediation("Set allow_url_include=Off in php.ini.")
-                        .requestResponse(phpInputResult)
-                        .build());
-            }
-        }
+        // php://input wrapper — REMOVED: response body difference alone is not a finding.
+        // Without being able to inject a specific PHP payload into the POST body and confirm
+        // its output appears, we cannot structurally validate code execution.
         perHostDelay();
 
-        // phar:// wrapper (deserialization via PHAR metadata)
-        String pharPayload = "phar://./uploads/avatar.jpg/test.txt";
-        HttpRequestResponse pharResult = sendPayload(original, target, pharPayload);
-        if (pharResult != null && pharResult.response() != null) {
-            String body = pharResult.response().bodyToString();
-            if (body != null && !body.equals(baselineBody)
-                    && pharResult.response().statusCode() == 200
-                    && body.length() > baselineLen + 200) {
-                findingsStore.addFinding(Finding.builder("path-traversal",
-                                "LFI via phar:// Wrapper — Potential Deserialization",
-                                Severity.HIGH, Confidence.TENTATIVE)
-                        .url(url).parameter(target.name)
-                        .evidence("Payload: " + pharPayload + " | Response significantly changed")
-                        .description("phar:// wrapper accepted. If a PHAR file can be uploaded, "
-                                + "its metadata is deserialized on access, enabling RCE via gadget chains.")
-                        .remediation("Disable phar:// wrapper. Use stream_wrapper_unregister('phar').")
-                        .requestResponse(pharResult)
-                        .build());
-            }
-        }
+        // phar:// wrapper — REMOVED: response difference alone is not a finding.
+        // Without Collaborator confirmation or injected output matching, cannot confirm.
         perHostDelay();
 
         // expect:// wrapper (command execution)
+        // Structural validation: response must contain uid=N(username) gid=N(groupname) format
         String expectPayload = "expect://id";
         HttpRequestResponse expectResult = sendPayload(original, target, expectPayload);
         if (expectResult != null && expectResult.response() != null) {
             String body = expectResult.response().bodyToString();
-            if (body != null && body.contains("uid=") && body.contains("gid=")) {
+            Pattern idOutputPattern = Pattern.compile("uid=\\d+\\([^)]+\\)\\s+gid=\\d+\\([^)]+\\)");
+            Matcher idMatcher = body != null ? idOutputPattern.matcher(body) : null;
+            if (idMatcher != null && idMatcher.find()
+                    && (baselineBody == null || !idOutputPattern.matcher(baselineBody).find())) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "LFI to RCE via expect:// Wrapper",
                                 Severity.CRITICAL, Confidence.CERTAIN)
                         .url(url).parameter(target.name)
-                        .evidence("Payload: " + expectPayload + " | Command output: uid=...gid=...")
-                        .description("PHP expect:// wrapper executed an OS command. This is a full Remote "
-                                + "Code Execution vulnerability.")
+                        .evidence("Payload: " + expectPayload + " | Command output: " + idMatcher.group())
+                        .description("PHP expect:// wrapper executed an OS command. The `id` command output "
+                                + "was returned. This is a full Remote Code Execution vulnerability.")
                         .remediation("Disable the expect extension. Set allow_url_include=Off.")
                         .requestResponse(expectResult)
                         .build());
@@ -479,86 +456,117 @@ public class PathTraversalScanner implements ScanModule {
         }
         perHostDelay();
 
-        // zip:// wrapper (if ZIP file can be uploaded)
-        String zipPayload = "zip://./uploads/avatar.jpg%23test.txt";
-        HttpRequestResponse zipResult = sendPayload(original, target, zipPayload);
-        if (zipResult != null && zipResult.response() != null) {
-            String body = zipResult.response().bodyToString();
-            if (body != null && !body.equals(baselineBody)
-                    && zipResult.response().statusCode() == 200
-                    && body.length() > baselineLen + 200) {
-                findingsStore.addFinding(Finding.builder("path-traversal",
-                                "LFI via zip:// Wrapper",
-                                Severity.HIGH, Confidence.TENTATIVE)
-                        .url(url).parameter(target.name)
-                        .evidence("Payload: " + zipPayload + " | Response changed")
-                        .description("zip:// wrapper accepted. If a ZIP file can be uploaded, "
-                                + "its contents can be read via this wrapper.")
-                        .remediation("Disable zip:// wrapper. Use stream_wrapper_unregister('zip').")
-                        .requestResponse(zipResult)
-                        .build());
-            }
-        }
+        // zip:// wrapper — REMOVED: response difference alone is not a finding.
+        // Without Collaborator confirmation or injected output matching, cannot confirm.
         perHostDelay();
 
         // php://filter with ROT13
+        // Structural validation: decoded ROT13 must contain PHP markers (<?php, <html, etc.)
         String rot13Payload = "php://filter/read=string.rot13/resource=index";
         HttpRequestResponse rot13Result = sendPayload(original, target, rot13Payload);
-        if (rot13Result != null && rot13Result.response() != null) {
+        if (rot13Result != null && rot13Result.response() != null
+                && rot13Result.response().statusCode() == 200) {
             String body = rot13Result.response().bodyToString();
-            if (body != null && !body.equals(baselineBody) && body.length() > baselineLen + 200
-                    && rot13Result.response().statusCode() == 200) {
-                findingsStore.addFinding(Finding.builder("path-traversal",
-                                "LFI via php://filter (ROT13) — Source Code Disclosure",
-                                Severity.CRITICAL, Confidence.FIRM)
-                        .url(url).parameter(target.name)
-                        .evidence("Payload: " + rot13Payload + " | Response contains ROT13-encoded data")
-                        .description("PHP filter wrapper with ROT13 encoding used to read source code.")
-                        .remediation("Disable PHP stream wrappers. Use a whitelist of includable files.")
-                        .requestResponse(rot13Result)
-                        .build());
+            if (body != null && (baselineBody == null || !body.equals(baselineBody))) {
+                // ROT13 of "<?php" is "<?cuc", "<html" is "<ugzy"
+                if (body.contains("<?cuc") || body.contains("<ugzy") || body.contains("shapgvba")) {
+                    findingsStore.addFinding(Finding.builder("path-traversal",
+                                    "LFI via php://filter (ROT13) — Source Code Disclosure",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Payload: " + rot13Payload + " | ROT13-encoded PHP/HTML markers found (<?cuc, <ugzy)")
+                            .description("PHP filter wrapper with ROT13 encoding returned source code. "
+                                    + "ROT13-encoded PHP markers confirm file content was read.")
+                            .remediation("Disable PHP stream wrappers. Use a whitelist of includable files.")
+                            .requestResponse(rot13Result)
+                            .build());
+                }
             }
         }
         perHostDelay();
 
-        // php://filter with zlib compression
-        String zlibPayload = "php://filter/zlib.deflate/resource=/etc/passwd";
-        HttpRequestResponse zlibResult = sendPayload(original, target, zlibPayload);
-        if (zlibResult != null && zlibResult.response() != null) {
-            String body = zlibResult.response().bodyToString();
-            if (body != null && !body.equals(baselineBody) && body.length() != baselineLen
-                    && zlibResult.response().statusCode() == 200) {
-                findingsStore.addFinding(Finding.builder("path-traversal",
-                                "LFI via php://filter (zlib) — File Read",
-                                Severity.HIGH, Confidence.TENTATIVE)
-                        .url(url).parameter(target.name)
-                        .evidence("Payload: " + zlibPayload + " | Response changed with zlib filter")
-                        .description("PHP filter wrapper with zlib compression returned modified content.")
-                        .remediation("Disable PHP stream wrappers (allow_url_include=Off).")
-                        .requestResponse(zlibResult)
-                        .build());
-            }
-        }
+        // php://filter with zlib — REMOVED: compressed output cannot be structurally validated
+        // in a text HTTP response without decompression. Response difference alone is not a finding.
         perHostDelay();
 
         // data:// with base64 encoded PHP
+        // Structural validation: same as plain data:// — require confirmed phpinfo output
         String dataB64Payload = "data://text/plain;base64,PD9waHAgcGhwaW5mbygpOyA/Pg==";
         HttpRequestResponse dataB64Result = sendPayload(original, target, dataB64Payload);
         if (dataB64Result != null && dataB64Result.response() != null) {
             String body = dataB64Result.response().bodyToString();
-            if (body != null && PHP_INFO_PATTERN.matcher(body).find()) {
+            if (body != null && isConfirmedPhpInfo(body)
+                    && (baselineBody == null || !isConfirmedPhpInfo(baselineBody))) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "LFI to RCE via data:// (Base64) Wrapper",
                                 Severity.CRITICAL, Confidence.CERTAIN)
                         .url(url).parameter(target.name)
-                        .evidence("Payload: " + dataB64Payload + " | phpinfo() output detected")
-                        .description("PHP data:// wrapper with base64 encoding executed PHP code.")
+                        .evidence("Payload: " + dataB64Payload + " | phpinfo() structural output confirmed")
+                        .description("PHP data:// wrapper with base64 encoding executed PHP code. "
+                                + "phpinfo() structural output confirms code execution.")
                         .remediation("Set allow_url_include=Off in php.ini.")
                         .requestResponse(dataB64Result)
                         .build());
             }
         }
         perHostDelay();
+    }
+
+    /**
+     * Validates that response contains base64 that decodes to readable PHP/HTML content.
+     */
+    private boolean isValidBase64WithReadableContent(String body) {
+        try {
+            // Extract the longest base64 block from the body
+            Matcher m = BASE64_PATTERN.matcher(body);
+            while (m.find()) {
+                String b64 = m.group().trim();
+                if (b64.length() < 50) continue;
+                byte[] decoded = java.util.Base64.getDecoder().decode(b64);
+                String content = new String(decoded, StandardCharsets.UTF_8);
+                // Check for PHP/HTML structural markers in decoded content
+                if (content.contains("<?php") || content.contains("<?=")
+                        || content.contains("<html") || content.contains("<!DOCTYPE")
+                        || content.contains("function ") || content.contains("class ")) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    /**
+     * Validates that response contains confirmed phpinfo() output (multiple structural markers).
+     */
+    private boolean isConfirmedPhpInfo(String body) {
+        // Require at least 2 of these phpinfo() structural markers
+        int markers = 0;
+        if (body.contains("PHP Version")) markers++;
+        if (body.contains("PHP Extension")) markers++;
+        if (body.contains("Zend Engine")) markers++;
+        if (body.contains("php.ini")) markers++;
+        if (body.contains("Configuration File")) markers++;
+        if (body.contains("PHP API")) markers++;
+        return markers >= 2;
+    }
+
+    /**
+     * Checks if base64 in response decodes to /etc/passwd content (root:x:0:0:).
+     */
+    private boolean isBase64DecodingToPasswd(String body) {
+        try {
+            Matcher m = BASE64_PATTERN.matcher(body);
+            while (m.find()) {
+                String b64 = m.group().trim();
+                if (b64.length() < 20) continue;
+                byte[] decoded = java.util.Base64.getDecoder().decode(b64);
+                String content = new String(decoded, StandardCharsets.UTF_8);
+                if (UNIX_PASSWD_PATTERN.matcher(content).find()) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 
     // ==================== TARGET EXTRACTION ====================
@@ -647,27 +655,29 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "UNIX_HOSTNAME": {
-                // Only valid if response body is very short (just a hostname)
-                if (body.trim().length() < 256 && body.trim().length() > 1
-                        && UNIX_HOSTNAME_PATTERN.matcher(body.trim()).matches()
-                        && (baselineBody == null || !body.trim().equals(baselineBody.trim()))) {
-                    return new ConfirmedRead("/etc/hostname content: " + body.trim());
-                }
+                // REMOVED: single-word responses are too ambiguous to confirm /etc/hostname read.
                 break;
             }
             case "UNIX_ENVIRON": {
-                if (UNIX_ENVIRON_PATTERN.matcher(body).find()
-                        && (baselineBody == null || !UNIX_ENVIRON_PATTERN.matcher(baselineBody).find())) {
-                    return new ConfirmedRead("Environment variables (PATH=, HOME=, etc.) found");
+                // Require at least 3 of 4 markers to confirm /proc/self/environ
+                int environMarkers = 0;
+                if (body.contains("PATH=")) environMarkers++;
+                if (body.contains("HOME=")) environMarkers++;
+                if (body.contains("USER=")) environMarkers++;
+                if (body.contains("SHELL=")) environMarkers++;
+                if (environMarkers >= 3 && (baselineBody == null || !UNIX_ENVIRON_PATTERN.matcher(baselineBody).find())) {
+                    return new ConfirmedRead("Environment variables (" + environMarkers + "/4 markers) found");
                 }
                 break;
             }
             case "UNIX_CMDLINE": {
-                // /proc/self/cmdline contains null-separated strings
-                if (body.contains("\0") || (body.length() > 5 && body.length() < 10000
-                        && !body.equals(baselineBody) && body.matches("(?s).*[a-z/]+.*"))) {
-                    // Weak signal, don't confirm unless clearly different
-                    break;
+                // Require null-separated strings containing recognizable process paths
+                if (body.contains("\0")) {
+                    Pattern cmdlinePattern = Pattern.compile("/(?:usr|bin|sbin|opt|var|home)/");
+                    if (cmdlinePattern.matcher(body).find()
+                            && (baselineBody == null || !baselineBody.contains("\0"))) {
+                        return new ConfirmedRead("/proc/self/cmdline: null-separated args with Unix paths");
+                    }
                 }
                 break;
             }
@@ -679,9 +689,16 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "WIN_HOSTS": {
-                if (WIN_HOSTS_PATTERN.matcher(body).find() && body.contains("127.0.0.1")
-                        && (baselineBody == null || !baselineBody.contains("127.0.0.1"))) {
-                    return new ConfirmedRead("Windows hosts file content (127.0.0.1 localhost)");
+                // Require 127.0.0.1 and localhost within 20 chars of each other
+                int idx127 = body.indexOf("127.0.0.1");
+                if (idx127 >= 0) {
+                    int searchStart = Math.max(0, idx127 - 20);
+                    int searchEnd = Math.min(body.length(), idx127 + 30);
+                    String vicinity = body.substring(searchStart, searchEnd);
+                    if (vicinity.contains("localhost")
+                            && (baselineBody == null || !baselineBody.contains("127.0.0.1"))) {
+                        return new ConfirmedRead("Windows hosts file content (127.0.0.1 localhost nearby)");
+                    }
                 }
                 break;
             }
@@ -693,24 +710,24 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "UNIX_ISSUE": {
-                if (body.trim().length() < 512 && body.trim().length() > 3
-                        && UNIX_ISSUE_PATTERN.matcher(body).find()
-                        && (baselineBody == null || !UNIX_ISSUE_PATTERN.matcher(baselineBody).find())) {
-                    return new ConfirmedRead("/etc/issue content: " + body.trim().substring(0, Math.min(80, body.trim().length())));
-                }
+                // REMOVED: /etc/issue content (distro names like "Ubuntu") is too generic
+                // to confirm a file read. A page mentioning "Ubuntu" is not evidence.
                 break;
             }
             case "UNIX_GROUP": {
-                if (body.contains("root:") && body.contains(":0:")
-                        && (baselineBody == null || !baselineBody.contains("root:"))) {
-                    return new ConfirmedRead("/etc/group content: root group found");
+                // Require exact group file format: root:x:0:
+                if (body.contains("root:x:0:")
+                        && (baselineBody == null || !baselineBody.contains("root:x:0:"))) {
+                    return new ConfirmedRead("/etc/group content: root:x:0: found");
                 }
                 break;
             }
             case "UNIX_RESOLV": {
-                if ((body.contains("nameserver") || body.contains("search"))
-                        && (baselineBody == null || !baselineBody.contains("nameserver"))) {
-                    return new ConfirmedRead("/etc/resolv.conf content: nameserver entries found");
+                // Require 'nameserver' followed by an IP address pattern
+                Pattern resolvPattern = Pattern.compile("nameserver\\s+\\d+\\.\\d+\\.\\d+\\.\\d+");
+                if (resolvPattern.matcher(body).find()
+                        && (baselineBody == null || !resolvPattern.matcher(baselineBody).find())) {
+                    return new ConfirmedRead("/etc/resolv.conf content: nameserver + IP found");
                 }
                 break;
             }
@@ -730,23 +747,35 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "UNIX_OSRELEASE": {
-                if ((body.contains("NAME=") || body.contains("VERSION=") || body.contains("ID="))
-                        && (baselineBody == null || !baselineBody.contains("NAME="))) {
-                    return new ConfirmedRead("/etc/os-release content found");
+                // Require at least 3 of: NAME=, VERSION=, ID=, VERSION_ID=, PRETTY_NAME=
+                int osReleaseMarkers = 0;
+                if (body.contains("NAME=")) osReleaseMarkers++;
+                if (body.contains("VERSION=")) osReleaseMarkers++;
+                if (body.contains("ID=")) osReleaseMarkers++;
+                if (body.contains("VERSION_ID=")) osReleaseMarkers++;
+                if (body.contains("PRETTY_NAME=")) osReleaseMarkers++;
+                if (osReleaseMarkers >= 3 && (baselineBody == null || !baselineBody.contains("PRETTY_NAME="))) {
+                    return new ConfirmedRead("/etc/os-release content found (" + osReleaseMarkers + "/5 markers)");
                 }
                 break;
             }
             case "UNIX_CRONTAB": {
-                if ((body.contains("cron") || body.contains("* * *") || body.contains("SHELL="))
-                        && (baselineBody == null || !baselineBody.contains("SHELL="))) {
-                    return new ConfirmedRead("/etc/crontab content found");
+                // Require cron schedule pattern AND (SHELL= or a command path)
+                Pattern cronSchedule = Pattern.compile("\\d+\\s+\\d+\\s+\\*\\s+\\*\\s+\\*|\\*/\\d+\\s+\\*\\s+\\*\\s+\\*\\s+\\*");
+                boolean hasCronSchedule = cronSchedule.matcher(body).find();
+                boolean hasShellOrPath = body.contains("SHELL=") || body.contains("/usr/") || body.contains("/bin/");
+                if (hasCronSchedule && hasShellOrPath
+                        && (baselineBody == null || !cronSchedule.matcher(baselineBody).find())) {
+                    return new ConfirmedRead("/etc/crontab content found (cron schedule + shell/path)");
                 }
                 break;
             }
             case "UNIX_HOSTS": {
-                if (body.contains("127.0.0.1") && body.contains("localhost")
-                        && (baselineBody == null || !baselineBody.contains("127.0.0.1"))) {
-                    return new ConfirmedRead("/etc/hosts content: localhost entry found");
+                // Require 127.0.0.1 followed by localhost on the same line
+                Pattern hostsLinePattern = Pattern.compile("127\\.0\\.0\\.1\\s+localhost");
+                if (hostsLinePattern.matcher(body).find()
+                        && (baselineBody == null || !hostsLinePattern.matcher(baselineBody).find())) {
+                    return new ConfirmedRead("/etc/hosts content: 127.0.0.1\\tlocalhost found");
                 }
                 break;
             }
@@ -759,16 +788,26 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "UNIX_NGINX": {
-                if ((body.contains("server") && (body.contains("listen") || body.contains("location")))
-                        && (baselineBody == null || !baselineBody.contains("listen"))) {
-                    return new ConfirmedRead("nginx.conf content: server block found");
+                // Require 'server {' (with brace) AND (listen OR server_name)
+                if (body.contains("server {") || body.contains("server{")) {
+                    if ((body.contains("listen") || body.contains("server_name"))
+                            && (baselineBody == null || !baselineBody.contains("server {"))) {
+                        return new ConfirmedRead("nginx.conf content: server { block with listen/server_name");
+                    }
                 }
                 break;
             }
             case "UNIX_APACHE": {
-                if ((body.contains("ServerRoot") || body.contains("DocumentRoot") || body.contains("ServerName"))
-                        && (baselineBody == null || !baselineBody.contains("ServerRoot"))) {
-                    return new ConfirmedRead("apache2.conf content: Apache config found");
+                // Require at least 2 of: ServerRoot, DocumentRoot, ServerName, <VirtualHost, LoadModule
+                int apacheMarkers = 0;
+                if (body.contains("ServerRoot")) apacheMarkers++;
+                if (body.contains("DocumentRoot")) apacheMarkers++;
+                if (body.contains("ServerName")) apacheMarkers++;
+                if (body.contains("<VirtualHost")) apacheMarkers++;
+                if (body.contains("LoadModule")) apacheMarkers++;
+                if (apacheMarkers >= 2 && (baselineBody == null
+                        || (!baselineBody.contains("ServerRoot") && !baselineBody.contains("DocumentRoot")))) {
+                    return new ConfirmedRead("apache2.conf content: " + apacheMarkers + " Apache directives found");
                 }
                 break;
             }
@@ -808,10 +847,9 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "WIN_SAM": {
-                if (body.length() > 20 && body.length() < 50000
-                        && !body.equals(baselineBody)) {
-                    return new ConfirmedRead("SAM file content (binary data detected)");
-                }
+                // REMOVED: The check (body differs from baseline) has zero specificity.
+                // Any different response would match. No structural signature exists for
+                // the SAM binary format that we can reliably detect in HTTP responses.
                 break;
             }
         }

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.14-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.16-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -193,7 +193,7 @@ That's it. Findings appear in Burp's Dashboard and the OmniStrike tab.
 <details>
 <summary><strong>SQLi Detector</strong></summary>
 
-Authentication bypass (52 payloads), error-based (45 payloads), UNION-based (5 variants), **time-based blind** (68 payloads across MySQL, PostgreSQL, MSSQL, Oracle, SQLite, DB2, CockroachDB with **multi-baseline measurement**), boolean-blind with confirmation (32 pairs), OOB via Collaborator, XML body injection. DB fingerprinting for 15 database engines. Comment-as-space and encoding bypasses.
+Authentication bypass with auth-artifact proof (session cookie + success content required), error-based with baseline stability verification (DB-specific error patterns only), UNION-based with marker exfiltration confirmation, **time-based blind** with **3-step verification** (stable baseline, true-condition delay, false-condition must NOT delay), **boolean-blind** with **2-round reproducibility** (4 consistency checks), OOB via Collaborator, XML body injection. DB fingerprinting (INFO-only). Comment-as-space and encoding bypasses.
 </details>
 
 <details>
@@ -244,7 +244,7 @@ Time-based blind (32 Unix `sleep` + 13 Windows `ping` payloads), output-based (3
 <details>
 <summary><strong>GraphQL Scanner</strong></summary>
 
-**7-phase testing**: introspection & discovery (4 bypass techniques, IDE detection across 9 paths), schema analysis (sensitive field detection, dangerous mutations, debug types), injection via arguments (SQLi, NoSQLi, CMDi, SSTI, path traversal + OOB), authorization & IDOR testing (ID enumeration, mutation auth bypass), DoS & resource abuse (batch queries, 50-alias fan-out, 10-level nesting, circular fragments), HTTP-level tests (GET-based queries, content-type bypass, CSRF), error & info disclosure (framework fingerprinting for Apollo/Hasura/GraphQL Yoga/Absinthe/Strawberry/Ariadne/Lighthouse/Juniper/Sangria/Hot Chocolate/GraphQL.js). Auto-generates executable queries from introspection schema.
+**7-phase testing**: introspection & discovery (4 bypass techniques, IDE detection with HTML markup validation), schema analysis (INFO-only — field/mutation/type observations require manual verification), injection via arguments (SQLi with DB-specific errors + time-based false-condition verification, NoSQLi with MongoDB-specific error patterns, CMDi, SSTI, path traversal + OOB), IDOR observation (INFO-only — requires manual two-session verification), DoS configuration observations (INFO-only — batch, depth, alias, circular fragments, directives), HTTP-level tests (GET queries, content-type, CSRF), error & info disclosure (stack trace detection with standard GraphQL error filtering, framework fingerprinting). Auto-generates executable queries from introspection schema.
 </details>
 
 <details>
@@ -280,13 +280,13 @@ Password reset poisoning via Collaborator, routing-based SSRF, duplicate `Host` 
 <details>
 <summary><strong>Prototype Pollution</strong></summary>
 
-Server-side `__proto__` and `constructor.prototype` injection via JSON body manipulation. Express and Fastify gadget detection. Automatic cleanup after testing.
+Server-side `__proto__` and `constructor.prototype` injection with **canary persistence verification** (random canary keys, echo-back disqualification, 400/422 rejection detection). Behavioral gadgets: JSON spaces indentation, content-type mutation, status code change. Automatic cleanup verification after testing.
 </details>
 
 <details>
 <summary><strong>Path Traversal / LFI</strong></summary>
 
-Unix file reads (16 target files) and Windows file reads (8 targets). 20 encoding bypasses: double URL encoding, null byte, UTF-8 overlong, `....//` sequences, Tomcat `..;/` bypass. 4 PHP wrappers: `php://filter`, `php://input`, `zip://`, `data://`. Pattern-based content confirmation with 16+ detection signatures.
+Unix file reads and Windows file reads with **structural content validation** — every finding requires file-specific signatures (e.g., `root:x:0:0:` for passwd, `nameserver` + IP for resolv.conf, `server {` + `listen` for nginx.conf). 20 encoding bypasses. PHP wrappers with decoded content validation: `php://filter` base64 decode check for PHP/HTML markers, `data://` phpinfo structural verification, ROT13 marker detection. Zero response-difference-only findings.
 </details>
 
 </details>
@@ -298,7 +298,7 @@ Unix file reads (16 target files) and Windows file reads (8 targets). 20 encodin
 
 | Module | Capabilities |
 |---|---|
-| **Client-Side Analyzer** | DOM XSS source-to-sink flow analysis, prototype pollution via client JS, hardcoded secrets/API keys, insecure `postMessage` handlers, open redirect patterns, dangerous `eval`/`Function` usage, endpoint extraction. 10 check categories. |
+| **Client-Side Analyzer** | DOM XSS source-to-sink flow analysis with sanitizer detection, prototype pollution with defensive-check filtering, hardcoded secrets with entropy validation and placeholder detection, insecure `postMessage` handlers, open redirect patterns with URL-validation filtering, endpoint extraction. **Minified library auto-skip** — skips analysis on jQuery/React/Angular/Vue/Bootstrap bundles. **Comment-aware** — all findings inside HTML/JS comments are discarded. 10 check categories. |
 | **Hidden Endpoint Finder** | Extracts API endpoints, internal paths, and URLs from JavaScript, HTML, and JSON responses using 13+ regex patterns. Results shared via the internal data bus. |
 | **Subdomain Collector** | Discovers subdomains from CSP headers, CORS headers, HTTP redirects, and response body content. |
 | **Security Header Analyzer** | Audits HSTS, CSP, CORS, cookie flags (Secure, HttpOnly, SameSite), X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, server version disclosure. Per-host deduplication. |
@@ -327,11 +327,13 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 
 | Capability | Detail |
 |---|---|
-| **Multi-baseline timing** | Time-based blind detectors take 3 baseline samples and apply `Math.max()` to reduce false positives from network jitter |
-| **Boolean-blind confirmation** | Tentative findings are re-verified with a confirmation request before reporting |
+| **Zero-FP philosophy** | Every finding requires detection-specific proof — structural content validation, behavioral confirmation, or canary persistence. Response differences alone never constitute a finding. |
+| **Multi-step timing verification** | 3-step confirmation: stable baseline → true condition delays → false condition does NOT delay. Baseline stability check rejects unstable endpoints. |
+| **2-round boolean confirmation** | Boolean-blind findings require reproducible distinction across 2 independent rounds (4 consistency checks). |
+| **Structural content validation** | Path traversal confirms file reads via file-specific signatures, not response differences. PHP wrappers decode and validate content. |
 | **Smart filter probing** | Probes which characters survive server-side filtering, then selects only viable payloads and generates adaptive evasions |
 | **Context-aware XSS** | Payloads adapt to 6 distinct reflection contexts with per-context evasion strategies |
-| **WAF bypass** | Comment-as-space, newline injection, `$IFS` substitution, encoding variants, null bytes, and other techniques across all modules |
+| **Comment & library awareness** | Passive analyzer auto-skips minified libraries and discards matches inside HTML/JS comments |
 | **OOB detection** | Blind SQLi, XXE, SSRF, RCE, and deserialization via Burp Collaborator callbacks |
 | **Deduplication** | Findings deduplicated by normalized URL with cross-module overlap prevention |
 

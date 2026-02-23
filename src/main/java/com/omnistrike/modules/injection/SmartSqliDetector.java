@@ -714,6 +714,26 @@ public class SmartSqliDetector implements ScanModule {
     // ==================== PHASE 2: ERROR-BASED ====================
 
     private void testErrorBased(HttpRequestResponse original, InjectionPoint ip, String baselineBody) {
+        // Baseline stability check: verify baseline body is stable across requests
+        try {
+            HttpRequestResponse stabCheck = sendWithPayload(original, ip, ip.originalValue);
+            if (stabCheck != null && stabCheck.response() != null) {
+                String stabBody = stabCheck.response().bodyToString();
+                // Check for SQL error patterns already present in fresh baseline
+                for (Map.Entry<String, List<Pattern>> entry : ERROR_PATTERNS.entrySet()) {
+                    for (Pattern p : entry.getValue()) {
+                        if (p.matcher(stabBody != null ? stabBody : "").find()
+                                && (baselineBody == null || !p.matcher(baselineBody).find())) {
+                            // Baseline is producing different error content on repeated requests
+                            api.logging().logToOutput("[SQLi] Skipping error-based for " + ip.name
+                                    + " — baseline response contains unstable error patterns");
+                            return;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
         for (String payload : ERROR_PAYLOADS) {
             try {
 
@@ -870,9 +890,19 @@ public class SmartSqliDetector implements ScanModule {
                     }
                 }
 
-                // Report if we have strong signals
-                if (signals.size() >= 2) {
-                    // Multiple signals — high confidence
+                // Report only if we have strong structural signals
+                // Must have at least 2 signals AND at least one must be an authentication artifact
+                // (session cookie or success keyword — not just status/length changes)
+                boolean hasAuthArtifact = false;
+                for (String signal : signals) {
+                    if (signal.contains("session cookie") || signal.contains("Success keyword")) {
+                        hasAuthArtifact = true;
+                        break;
+                    }
+                }
+
+                if (signals.size() >= 2 && hasAuthArtifact) {
+                    // Multiple signals with auth artifact — confirmed bypass
                     findingsStore.addFinding(Finding.builder("sqli-detector",
                                     "SQL Injection — Authentication Bypass",
                                     Severity.CRITICAL, Confidence.FIRM)
@@ -880,10 +910,9 @@ public class SmartSqliDetector implements ScanModule {
                             .parameter(ip.name)
                             .evidence("Payload: " + payload + "\n" + String.join("\n", signals))
                             .description("Authentication bypass via SQL injection. The payload '" + payload
-                                    + "' in parameter '" + ip.name + "' caused a different response indicating "
-                                    + "successful login. The SQL comment (--) likely terminated the password check "
-                                    + "in the query (e.g., SELECT * FROM users WHERE username='" + payload
-                                    + "' AND password='...' → password check is commented out).")
+                                    + "' in parameter '" + ip.name + "' caused a response with authentication "
+                                    + "artifacts (session cookie and/or authenticated-area content) that were "
+                                    + "absent in the baseline failed-login response.")
                             .remediation("Use parameterized queries (prepared statements) instead of string "
                                     + "concatenation in SQL queries. Never build SQL queries by concatenating "
                                     + "user input directly.")
@@ -892,25 +921,9 @@ public class SmartSqliDetector implements ScanModule {
                     api.logging().logToOutput("[SQLi] Auth bypass CONFIRMED for param '" + ip.name
                             + "' with payload: " + payload + " | Signals: " + signals);
                     return;
-                } else if (signals.size() == 1) {
-                    // Single signal — tentative
-                    findingsStore.addFinding(Finding.builder("sqli-detector",
-                                    "Potential SQL Injection — Authentication Bypass",
-                                    Severity.HIGH, Confidence.TENTATIVE)
-                            .url(original.request().url())
-                            .parameter(ip.name)
-                            .evidence("Payload: " + payload + "\n" + signals.get(0))
-                            .description("Possible authentication bypass via SQL injection. The payload '"
-                                    + payload + "' in parameter '" + ip.name + "' caused a response change "
-                                    + "that may indicate successful login bypass. Manual verification recommended.")
-                            .remediation("Use parameterized queries (prepared statements) instead of string "
-                                    + "concatenation in SQL queries.")
-                            .requestResponse(result)
-                            .build());
-                    api.logging().logToOutput("[SQLi] Auth bypass possible for param '" + ip.name
-                            + "' with payload: " + payload + " | Signal: " + signals.get(0));
-                    return;
                 }
+                // Single-signal findings are NOT reported — they are too FP-prone.
+                // A 302 redirect or body length change alone is not evidence of auth bypass.
 
                 perHostDelay();
             } catch (InterruptedException e) {
@@ -1024,16 +1037,8 @@ public class SmartSqliDetector implements ScanModule {
 
         if (columnCount <= 0) return;
 
-        // Report column count detection
-        findingsStore.addFinding(Finding.builder("sqli-detector",
-                        "Potential SQL Injection - Column count detected: " + columnCount,
-                        Severity.MEDIUM, Confidence.TENTATIVE)
-                .url(original.request().url())
-                .parameter(ip.name)
-                .evidence("ORDER BY " + columnCount + " succeeded, ORDER BY " + (columnCount + 1) + " failed")
-                .description("Column count detection via ORDER BY suggests injectable parameter.")
-                .requestResponse(lastOrderByResult)
-                .build());
+        // Column count detection is a prerequisite step, not a finding.
+        // Only report if UNION marker exfiltration succeeds.
 
         // Step 2: UNION SELECT with NULLs (try multiple UNION variants)
         try {
@@ -1125,19 +1130,8 @@ public class SmartSqliDetector implements ScanModule {
                 perHostDelay();
             }
 
-            // Anomaly-only detection (no reflected column found)
-            if (anomaly) {
-                findingsStore.addFinding(Finding.builder("sqli-detector",
-                                "Potential SQL Injection (Union-Based) - Anomaly detected",
-                                Severity.HIGH, Confidence.FIRM)
-                        .url(original.request().url())
-                        .parameter(ip.name)
-                        .evidence("UNION SELECT with " + columnCount + " NULLs caused response change. "
-                                + "Baseline length: " + baselineLength + ", Union length: " + unionLength)
-                        .description("Union injection suspected. Response changed with UNION SELECT but marker not reflected.")
-                        .requestResponse(unionResult)
-                        .build());
-            }
+            // Anomaly-only detection REMOVED: a response that differs from baseline is not a finding.
+            // Only confirmed UNION marker exfiltration constitutes a finding.
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -1208,13 +1202,16 @@ public class SmartSqliDetector implements ScanModule {
                     boolean responseChanged = !body.equals(baselineBody)
                             && Math.abs(body.length() - baselineLength) > 20;
                     if (hasDbVersion || (responseChanged && !body.contains(UNION_MARKER))) {
+                        // DB fingerprinting is informational context, not a standalone finding.
+                        // The UNION injection itself was already reported as CRITICAL.
                         findingsStore.addFinding(Finding.builder("sqli-detector",
                                         "Database Fingerprint: " + probe[0],
-                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                        Severity.INFO, Confidence.CERTAIN)
                                 .url(original.request().url())
                                 .parameter(ip.name)
                                 .evidence("DB probe " + probe[1] + " returned data")
-                                .description("Database identified as " + probe[0] + " via UNION-based extraction.")
+                                .description("Database identified as " + probe[0] + " via UNION-based extraction. "
+                                        + "This is informational context for the confirmed UNION injection.")
                                 .requestResponse(result)
                                 .build());
                         return;
@@ -1233,41 +1230,94 @@ public class SmartSqliDetector implements ScanModule {
     private void testTimeBased(HttpRequestResponse original, InjectionPoint ip, long baselineTime) {
         int delayThreshold = config.getInt("sqli.time.threshold", 4000);
 
+        // Step 0: Collect 3 baseline measurements and check stability
+        long[] baselines = new long[3];
+        for (int i = 0; i < 3; i++) {
+            try {
+                TimedResult bt = measureResponseTime(original, ip, ip.originalValue);
+                baselines[i] = bt.response != null ? bt.elapsedMs : 0;
+            } catch (Exception e) {
+                return;
+            }
+        }
+        long baselineMax = Math.max(baselines[0], Math.max(baselines[1], baselines[2]));
+        double baselineMean = (baselines[0] + baselines[1] + baselines[2]) / 3.0;
+        double baselineVariance = 0;
+        for (long b : baselines) baselineVariance += (b - baselineMean) * (b - baselineMean);
+        double baselineStdDev = Math.sqrt(baselineVariance / 3.0);
+
+        // If baseline is too unstable (stddev > 30% of mean), skip time-based testing
+        if (baselineMean > 0 && baselineStdDev / baselineMean > 0.3) {
+            api.logging().logToOutput("[SQLi] Skipping time-based for " + ip.name
+                    + " — baseline too unstable (mean=" + Math.round(baselineMean)
+                    + "ms, stddev=" + Math.round(baselineStdDev) + "ms)");
+            return;
+        }
+
         for (Map.Entry<String, String[]> entry : TIME_PAYLOADS.entrySet()) {
             String dbType = entry.getKey();
             for (String payload : entry.getValue()) {
                 try {
-
+                    // Step 1: Send true-condition delay payload
                     TimedResult result1 = measureResponseTime(original, ip, payload);
 
-                    if (result1.elapsedMs >= baselineTime + delayThreshold) {
-                        // Confirm with second attempt
+                    if (result1.elapsedMs >= baselineMax + delayThreshold) {
+                        // Step 2: Build false-condition payload (replace SLEEP(5) → IF(1=2,SLEEP(5),0) etc.)
+                        String falsePayload = buildFalseConditionPayload(payload, dbType);
 
-                        TimedResult result2 = measureResponseTime(original, ip, payload);
+                        if (falsePayload != null) {
+                            TimedResult falseResult = measureResponseTime(original, ip, falsePayload);
 
-                        if (result2.elapsedMs >= baselineTime + delayThreshold) {
-                            findingsStore.addFinding(Finding.builder("sqli-detector",
-                                            "SQL Injection (Time-Based Blind) - " + dbType,
-                                            Severity.HIGH, Confidence.FIRM)
-                                    .url(original.request().url())
-                                    .parameter(ip.name)
-                                    .evidence("Payload: " + payload + " | Baseline: " + baselineTime
-                                            + "ms | Attempt 1: " + result1.elapsedMs + "ms | Attempt 2: " + result2.elapsedMs + "ms")
-                                    .description("Time-based blind SQL injection confirmed (2 hits). DB type: " + dbType)
-                                    .requestResponse(result2.response)
-                                    .build());
-                            return;
+                            // False condition must return within baseline range
+                            boolean falseInRange = falseResult.elapsedMs <= baselineMax + 1000;
+
+                            if (falseInRange) {
+                                // Step 3: Confirm true-condition with a second attempt
+                                TimedResult result2 = measureResponseTime(original, ip, payload);
+
+                                if (result2.elapsedMs >= baselineMax + delayThreshold) {
+                                    // All 3 steps passed: baseline stable, true delays, false doesn't
+                                    findingsStore.addFinding(Finding.builder("sqli-detector",
+                                                    "SQL Injection (Time-Based Blind) - " + dbType,
+                                                    Severity.HIGH, Confidence.CERTAIN)
+                                            .url(original.request().url())
+                                            .parameter(ip.name)
+                                            .evidence("Payload: " + payload
+                                                    + "\nBaseline max: " + baselineMax + "ms (mean=" + Math.round(baselineMean) + "ms)"
+                                                    + "\nTrue condition #1: " + result1.elapsedMs + "ms"
+                                                    + "\nFalse condition: " + falseResult.elapsedMs + "ms (payload: " + falsePayload + ")"
+                                                    + "\nTrue condition #2: " + result2.elapsedMs + "ms")
+                                            .description("Time-based blind SQL injection confirmed via 3-step verification. "
+                                                    + "True condition delays, false condition does not, baseline is stable. "
+                                                    + "DB type: " + dbType)
+                                            .requestResponse(result2.response)
+                                            .build());
+                                    return;
+                                }
+                            }
+                            // If false condition also delays or true doesn't reproduce → inconclusive, discard
                         } else {
-                            findingsStore.addFinding(Finding.builder("sqli-detector",
-                                            "Potential SQL Injection (Time-Based) - " + dbType,
-                                            Severity.MEDIUM, Confidence.TENTATIVE)
-                                    .url(original.request().url())
-                                    .parameter(ip.name)
-                                    .evidence("Payload: " + payload + " | Single hit: " + result1.elapsedMs + "ms (baseline: " + baselineTime + "ms)")
-                                    .description("Single time-delay hit. May be false positive (network latency).")
-                                    .requestResponse(result1.response)
-                                    .build());
+                            // No false-condition payload available — require 2 consistent true hits
+                            TimedResult result2 = measureResponseTime(original, ip, payload);
+                            if (result2.elapsedMs >= baselineMax + delayThreshold) {
+                                findingsStore.addFinding(Finding.builder("sqli-detector",
+                                                "SQL Injection (Time-Based Blind) - " + dbType,
+                                                Severity.HIGH, Confidence.FIRM)
+                                        .url(original.request().url())
+                                        .parameter(ip.name)
+                                        .evidence("Payload: " + payload
+                                                + "\nBaseline max: " + baselineMax + "ms"
+                                                + "\nTrue #1: " + result1.elapsedMs + "ms"
+                                                + "\nTrue #2: " + result2.elapsedMs + "ms"
+                                                + "\n(No false-condition payload available for this DB type)")
+                                        .description("Time-based blind SQL injection detected (2 consistent hits). "
+                                                + "DB type: " + dbType)
+                                        .requestResponse(result2.response)
+                                        .build());
+                                return;
+                            }
                         }
+                        // Single hit without confirmation → discard (not reported)
                     }
                     perHostDelay();
                 } catch (InterruptedException e) {
@@ -1278,61 +1328,138 @@ public class SmartSqliDetector implements ScanModule {
         }
     }
 
+    /**
+     * Build a false-condition version of a time-based payload.
+     * E.g., SLEEP(5) → IF(1=2,SLEEP(5),0), PG_SLEEP(5) → CASE WHEN 1=2 THEN PG_SLEEP(5) END
+     */
+    private String buildFalseConditionPayload(String truePayload, String dbType) {
+        // Try to convert common patterns to false conditions
+        if (truePayload.contains("SLEEP(5)") && !truePayload.contains("IF(")) {
+            return truePayload.replace("SLEEP(5)", "IF(1=2,SLEEP(5),0)");
+        }
+        if (truePayload.contains("IF(1=1,SLEEP(5)")) {
+            return truePayload.replace("IF(1=1,SLEEP(5)", "IF(1=2,SLEEP(5)");
+        }
+        if (truePayload.contains("WHEN 1=1 THEN SLEEP(5)")) {
+            return truePayload.replace("WHEN 1=1 THEN SLEEP(5)", "WHEN 1=2 THEN SLEEP(5)");
+        }
+        if (truePayload.contains("PG_SLEEP(5)") && !truePayload.contains("CASE")) {
+            return truePayload.replace("PG_SLEEP(5)", "CASE WHEN 1=2 THEN PG_SLEEP(5) END");
+        }
+        if (truePayload.contains("WHEN 1=1 THEN") && truePayload.contains("PG_SLEEP")) {
+            return truePayload.replace("WHEN 1=1 THEN", "WHEN 1=2 THEN");
+        }
+        if (truePayload.contains("WAITFOR DELAY") && !truePayload.contains("IF(")) {
+            return truePayload.replace("WAITFOR DELAY", "IF 1=2 WAITFOR DELAY");
+        }
+        if (truePayload.contains("IF(1=1) WAITFOR") || truePayload.contains("IF 1=1 WAITFOR")) {
+            return truePayload.replace("1=1", "1=2");
+        }
+        if (truePayload.contains("WHEN 1=1 THEN") && truePayload.contains("WAITFOR")) {
+            return truePayload.replace("WHEN 1=1 THEN", "WHEN 1=2 THEN");
+        }
+        if (truePayload.contains("DBMS_PIPE.RECEIVE_MESSAGE")) {
+            if (truePayload.contains("WHEN 1=1")) {
+                return truePayload.replace("WHEN 1=1", "WHEN 1=2");
+            }
+        }
+        if (truePayload.contains("DBMS_LOCK.SLEEP") || truePayload.contains("DBMS_SESSION.SLEEP")) {
+            return truePayload.replace("BEGIN", "BEGIN IF 1=2 THEN")
+                    .replace("END;", "END IF; END;");
+        }
+        // BENCHMARK: replace with a tiny count
+        if (truePayload.contains("BENCHMARK(")) {
+            return truePayload.replaceFirst("BENCHMARK\\(\\d+", "BENCHMARK(1");
+        }
+        return null; // No false condition available
+    }
+
     // ==================== PHASE 5: BOOLEAN-BASED BLIND ====================
 
     private void testBooleanBased(HttpRequestResponse original, InjectionPoint ip,
                                    int baselineLength, int baselineStatus, String baselineBody) {
+        // Baseline stability check: send the same request twice to detect unstable endpoints
+        try {
+            HttpRequestResponse stab1 = sendWithPayload(original, ip, ip.originalValue);
+            HttpRequestResponse stab2 = sendWithPayload(original, ip, ip.originalValue);
+            if (stab1 != null && stab2 != null && stab1.response() != null && stab2.response() != null) {
+                int len1 = stab1.response().bodyToString().length();
+                int len2 = stab2.response().bodyToString().length();
+                if (stab1.response().statusCode() != stab2.response().statusCode()
+                        || Math.abs(len1 - len2) > 100) {
+                    api.logging().logToOutput("[SQLi] Skipping boolean-based for " + ip.name
+                            + " — endpoint is unstable (identical requests produce different responses)");
+                    return;
+                }
+            }
+        } catch (Exception ignored) {}
+
         for (String[] pair : BOOLEAN_PAIRS) {
             try {
-    
-                HttpRequestResponse trueResult = sendWithPayload(original, ip, pair[0]);
-                if (trueResult == null || trueResult.response() == null) continue;
+                // Round 1: true + false
+                HttpRequestResponse trueResult1 = sendWithPayload(original, ip, pair[0]);
+                if (trueResult1 == null || trueResult1.response() == null) continue;
+                HttpRequestResponse falseResult1 = sendWithPayload(original, ip, pair[1]);
+                if (falseResult1 == null || falseResult1.response() == null) continue;
 
-    
-                HttpRequestResponse falseResult = sendWithPayload(original, ip, pair[1]);
-                if (falseResult == null || falseResult.response() == null) continue;
-
-                int trueLen = trueResult.response().bodyToString().length();
-                int falseLen = falseResult.response().bodyToString().length();
-                int trueStatus = trueResult.response().statusCode();
-                int falseStatus = falseResult.response().statusCode();
+                int trueLen1 = trueResult1.response().bodyToString().length();
+                int falseLen1 = falseResult1.response().bodyToString().length();
+                int trueStatus1 = trueResult1.response().statusCode();
+                int falseStatus1 = falseResult1.response().statusCode();
 
                 // True condition should be similar to baseline, false should differ
-                boolean trueMatchesBaseline = Math.abs(trueLen - baselineLength) < 50
-                        && trueStatus == baselineStatus;
-                boolean falseDiffers = Math.abs(falseLen - baselineLength) > 100
-                        || falseStatus != baselineStatus;
+                boolean trueMatchesBaseline = Math.abs(trueLen1 - baselineLength) < 50
+                        && trueStatus1 == baselineStatus;
+                boolean falseDiffers = Math.abs(falseLen1 - baselineLength) > 100
+                        || falseStatus1 != baselineStatus;
 
-                if (trueMatchesBaseline && falseDiffers) {
-                    // Confirmation pass: resend true payload to upgrade TENTATIVE→FIRM
-                    HttpRequestResponse confirmResult = sendWithPayload(original, ip, pair[0]);
-                    boolean confirmed = false;
-                    if (confirmResult != null && confirmResult.response() != null) {
-                        int confirmLen = confirmResult.response().bodyToString().length();
-                        int confirmStatus = confirmResult.response().statusCode();
-                        confirmed = Math.abs(confirmLen - baselineLength) < 50
-                                && confirmStatus == baselineStatus;
-                    }
+                // If true response differs from baseline, the app is reacting to injected
+                // syntax itself, not evaluating the condition → discard
+                if (!trueMatchesBaseline) continue;
+                if (!falseDiffers) continue;
 
-                    Severity sev = confirmed ? Severity.HIGH : Severity.MEDIUM;
-                    Confidence conf = confirmed ? Confidence.FIRM : Confidence.TENTATIVE;
-                    String title = confirmed
-                            ? "SQL Injection (Boolean-Based Blind) - Confirmed"
-                            : "Potential SQL Injection (Boolean-Based Blind)";
+                // Round 2: repeat both to confirm reproducibility
+                HttpRequestResponse trueResult2 = sendWithPayload(original, ip, pair[0]);
+                if (trueResult2 == null || trueResult2.response() == null) continue;
+                HttpRequestResponse falseResult2 = sendWithPayload(original, ip, pair[1]);
+                if (falseResult2 == null || falseResult2.response() == null) continue;
 
-                    findingsStore.addFinding(Finding.builder("sqli-detector", title, sev, conf)
+                int trueLen2 = trueResult2.response().bodyToString().length();
+                int falseLen2 = falseResult2.response().bodyToString().length();
+                int trueStatus2 = trueResult2.response().statusCode();
+                int falseStatus2 = falseResult2.response().statusCode();
+
+                // Verify Round 2 matches Round 1
+                boolean trueConsistent = Math.abs(trueLen2 - trueLen1) < 50
+                        && trueStatus2 == trueStatus1;
+                boolean falseConsistent = Math.abs(falseLen2 - falseLen1) < 50
+                        && falseStatus2 == falseStatus1;
+                boolean trueStillMatchesBaseline = Math.abs(trueLen2 - baselineLength) < 50
+                        && trueStatus2 == baselineStatus;
+                boolean falseStillDiffers = Math.abs(falseLen2 - baselineLength) > 100
+                        || falseStatus2 != baselineStatus;
+
+                if (trueConsistent && falseConsistent && trueStillMatchesBaseline && falseStillDiffers) {
+                    findingsStore.addFinding(Finding.builder("sqli-detector",
+                                    "SQL Injection (Boolean-Based Blind) - Confirmed",
+                                    Severity.HIGH, Confidence.FIRM)
                             .url(original.request().url())
                             .parameter(ip.name)
-                            .evidence("True payload: " + pair[0] + " (len=" + trueLen + ", status=" + trueStatus + ")"
-                                    + " | False payload: " + pair[1] + " (len=" + falseLen + ", status=" + falseStatus + ")"
-                                    + " | Baseline: len=" + baselineLength + ", status=" + baselineStatus
-                                    + (confirmed ? " | Confirmation pass: true payload consistent" : ""))
-                            .description("Boolean-based blind SQLi" + (confirmed ? " confirmed" : " indicator")
-                                    + ". True/false conditions produce different responses.")
-                            .requestResponse(trueResult)
+                            .evidence("True payload: " + pair[0]
+                                    + "\n  Round 1: len=" + trueLen1 + ", status=" + trueStatus1
+                                    + "\n  Round 2: len=" + trueLen2 + ", status=" + trueStatus2
+                                    + "\nFalse payload: " + pair[1]
+                                    + "\n  Round 1: len=" + falseLen1 + ", status=" + falseStatus1
+                                    + "\n  Round 2: len=" + falseLen2 + ", status=" + falseStatus2
+                                    + "\nBaseline: len=" + baselineLength + ", status=" + baselineStatus)
+                            .description("Boolean-based blind SQL injection confirmed. True/false conditions "
+                                    + "produce consistently different responses across 2 rounds. "
+                                    + "True condition matches baseline, false condition differs.")
+                            .requestResponse(trueResult1)
                             .build());
                     return;
                 }
+                // If distinction is not reproducible → discard
                 perHostDelay();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
