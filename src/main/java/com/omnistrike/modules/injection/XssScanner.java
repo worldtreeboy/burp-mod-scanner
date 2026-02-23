@@ -37,9 +37,11 @@ public class XssScanner implements ScanModule {
     // ==================== DOM XSS: SOURCES, SINKS, PATTERNS ====================
 
     // HIGH risk: directly user-controllable via URL
+    // Removed: location.protocol — returns "http:" or "https:", NOT user-controllable
+    // Removed: location.host, location.hostname — not attacker-controlled in same-origin context
+    //   (these reflect the current page's host, which the attacker does not control)
     private static final String[] DOM_SOURCES_HIGH = {
             "location.href", "location.search", "location.hash", "location.pathname",
-            "location.protocol", "location.host", "location.hostname",
             "document.URL", "document.documentURI", "document.baseURI",
             "window.location", "self.location",
             "URLSearchParams", "new URL(", ".searchParams.get(", ".searchParams",

@@ -901,15 +901,21 @@ public class DeserializationScanner implements ScanModule {
             }
         }
 
-        // Java Fastjson @type in response
-        if (JAVA_FASTJSON_TYPE.matcher(body).find()) {
+        // Java Fastjson @type in response — but NOT JSON-LD @type (schema.org)
+        // JSON-LD uses @type for semantic web markup (e.g., "@type": "Person", "@type": "WebPage")
+        // Fastjson uses @type for Java class paths (e.g., "@type": "com.sun.rowset.JdbcRowSetImpl")
+        if (JAVA_FASTJSON_TYPE.matcher(body).find()
+                && !body.contains("@context")         // JSON-LD always has @context
+                && !body.contains("schema.org")        // schema.org structured data
+                && !body.contains("\"@graph\"")        // JSON-LD graph
+                && body.matches("(?s).*\"@type\"\\s*:\\s*\"[a-z]+\\..*")) {  // Require Java package path (lowercase.dot.notation)
             findings.add(Finding.builder("deser-scanner",
                             "Fastjson @type polymorphic deserialization in response",
                             Severity.HIGH, Confidence.FIRM)
                     .url(url)
-                    .evidence("@type property found in JSON response body")
-                    .description("Fastjson @type property detected in response. The server uses Fastjson with "
-                            + "AutoType which allows type injection attacks. "
+                    .evidence("@type property with Java class path found in JSON response body")
+                    .description("Fastjson @type property detected in response with a Java class path value. "
+                            + "The server uses Fastjson with AutoType which allows type injection attacks. "
                             + "Remediation: Upgrade Fastjson to latest version with safeMode or migrate to Gson/Jackson.")
                     .build());
         }
