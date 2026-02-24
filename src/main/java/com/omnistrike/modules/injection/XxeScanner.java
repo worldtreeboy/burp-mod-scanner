@@ -1799,7 +1799,7 @@ public class XxeScanner implements ScanModule {
                 if (body.contains("XINCLUDE_FALLBACK") && !baselineBody.contains("XINCLUDE_FALLBACK")) {
                     findingsStore.addFinding(Finding.builder("xxe-scanner",
                                     "XInclude processing detected (fallback triggered)",
-                                    Severity.MEDIUM, Confidence.FIRM)
+                                    Severity.MEDIUM, Confidence.TENTATIVE)
                             .url(url).parameter(target.name)
                             .evidence("XInclude fallback element content appeared in response")
                             .description("The server processes XInclude directives in parameter '"
