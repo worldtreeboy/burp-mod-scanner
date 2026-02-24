@@ -143,19 +143,19 @@ public class MainPanel extends JPanel {
         // --- Row 2: Buttons, Status, Thread Status, Collaborator, Progress Bar ---
         JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
 
-        startStopBtn = new JToggleButton("Start");
+        startStopBtn = new JToggleButton("Start Auto-Scan");
         startStopBtn.setBackground(new Color(50, 150, 50));
         startStopBtn.setForeground(Color.WHITE);
         startStopBtn.setFocusPainted(false);
-        startStopBtn.setToolTipText("Start or stop the automated traffic interception scanner");
+        startStopBtn.setToolTipText("Start or stop automated scanning of all in-scope proxied traffic");
         startStopBtn.addActionListener(e -> toggleScanning());
         row2.add(startStopBtn);
 
-        JButton stopScansBtn = new JButton("Stop Scans");
+        JButton stopScansBtn = new JButton("Stop Manual Scans");
         stopScansBtn.setBackground(new Color(200, 50, 50));
         stopScansBtn.setForeground(Color.WHITE);
         stopScansBtn.setFocusPainted(false);
-        stopScansBtn.setToolTipText("Stop all running manual scans (right-click context menu scans)");
+        stopScansBtn.setToolTipText("Stop all scans launched via right-click context menu");
         stopScansBtn.addActionListener(e -> {
             int stopped = interceptor.stopManualScans();
             int purged = executor.cancelAll();
@@ -432,7 +432,7 @@ public class MainPanel extends JPanel {
             }
 
             interceptor.setRunning(true);
-            startStopBtn.setText("Stop");
+            startStopBtn.setText("Stop Auto-Scan");
             startStopBtn.setBackground(new Color(200, 50, 50));
             statusLabel.setText("Running");
             statusLabel.setForeground(new Color(50, 150, 50));
@@ -446,7 +446,7 @@ public class MainPanel extends JPanel {
             // Stop scanning
             interceptor.setRunning(false);
             executor.cancelAll();
-            startStopBtn.setText("Start");
+            startStopBtn.setText("Start Auto-Scan");
             startStopBtn.setBackground(new Color(50, 150, 50));
             statusLabel.setText("Stopped");
             statusLabel.setForeground(Color.RED);
