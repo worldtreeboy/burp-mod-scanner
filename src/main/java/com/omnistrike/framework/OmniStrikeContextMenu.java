@@ -428,6 +428,14 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         String contextParam = findParamFromContext(request, selection, params);
         if (contextParam != null) return contextParam;
 
+        // 2e: Selected text matches a request header name (e.g., "Referer", "User-Agent").
+        //     Scanners extract these as header injection targets with the header name.
+        for (var header : request.headers()) {
+            if (header.name().equalsIgnoreCase(selectedText)) {
+                return header.name();
+            }
+        }
+
         return null;
     }
 
