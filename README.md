@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.17-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.18-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -113,8 +113,8 @@ A typical Burp setup for thorough testing requires 15-20 standalone extensions: 
 
 ```
  CRITICAL  SQLi: Time-Based Blind (MySQL) — param 'q'
-           Payload: test' AND SLEEP(5)-- -
-           Baseline: 142ms (max of 3) → Injected: 5,203ms (+5,061ms)
+           Payload: test' AND SLEEP(18)-- -
+           Baseline: 142ms (max of 3) → Injected: 18,203ms (+18,061ms)
            DB: MySQL (fingerprinted via error pattern)
 
  CRITICAL  Blind SSRF via Collaborator — param 'q'
@@ -217,7 +217,7 @@ Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebbl
 <details>
 <summary><strong>Command Injection</strong></summary>
 
-**3-step time-based verification** (true delay → control with zero delay returns within baseline → true delay again) with 80% threshold and error-page discard. **Output-based with structural regexes** — `uid=\d+` not "uid=", `Linux\s+\S+\s+\d+\.\d+` not "Linux", `inet\s+IP` not "inet", `[d-][rwx-]{9}\s+\d+` for `ls -la` output, unique 6-digit math markers (131337) instead of "42". **Header injection restricted** — User-Agent, Referer, X-Forwarded-For, X-Forwarded-Host, and Origin are only tested via time-based 3-step and OOB Collaborator (never output-based — header changes cause WAF blocks and routing differences unrelated to command execution). 403/404/500 responses with body < 500 bytes automatically discarded. **141 payloads per parameter**: 33 Unix `sleep` + 13 Windows `ping` time payloads, 36 Unix + 18 Windows output probes (including `ls -la` with permission-string regex matching), 26 Unix + 15 Windows OOB via Collaborator. `$IFS` space bypass, `%0a` newline injection, env variable concatenation, backtick nesting, CRLF variants, double-encoding, wildcard globbing.
+**3-step time-based verification** (true delay → control with zero delay returns within baseline → true delay again) with 18s delay, 80% threshold, error-page discard, and serialized execution via global timing lock. **Output-based with structural regexes** — `uid=\d+` not "uid=", `Linux\s+\S+\s+\d+\.\d+` not "Linux", `inet\s+IP` not "inet", `[d-][rwx-]{9}\s+\d+` for `ls -la` output, unique 6-digit math markers (131337) instead of "42". **Header injection restricted** — User-Agent, Referer, X-Forwarded-For, X-Forwarded-Host, and Origin are only tested via time-based 3-step and OOB Collaborator (never output-based — header changes cause WAF blocks and routing differences unrelated to command execution). 403/404/500 responses with body < 500 bytes automatically discarded. **141 payloads per parameter**: 33 Unix `sleep` + 13 Windows `ping` time payloads, 36 Unix + 18 Windows output probes (including `ls -la` with permission-string regex matching), 26 Unix + 15 Windows OOB via Collaborator. `$IFS` space bypass, `%0a` newline injection, env variable concatenation, backtick nesting, CRLF variants, double-encoding, wildcard globbing.
 </details>
 
 <details>
@@ -316,7 +316,7 @@ Server-side `__proto__` and `constructor.prototype` injection with **canary pers
 | **WAF Bypass** | When payloads are blocked, the LLM generates evasion variants specific to the observed blocking behavior. |
 | **Adaptive Scanning** | Multi-round testing where each round's results inform the next payload set. Timing-aware — detects time-based blind injection via response latency analysis. |
 | **Cross-File Batch Scan** | Queue multiple JS/HTML responses and analyze them together for cross-file DOM XSS, shared prototype pollution chains, and cross-file data flows. |
-| **Hardened Detection** | SSTI uses large unique math canaries (131803, 3072383) instead of generic `7*7=49`. XSS only confirms verbatim payload reflection. CMDi uses OS-specific output patterns. Time-based blind detection for SQLi and CMDi (>5s threshold). No generic 500-error findings. |
+| **Hardened Detection** | SSTI uses large unique math canaries (131803, 3072383) instead of generic `7*7=49`. XSS only confirms verbatim payload reflection. CMDi uses OS-specific output patterns. Time-based blind detection for SQLi and CMDi (18s delay, serialized via global timing lock). No generic 500-error findings. |
 
 Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No API keys configured in the extension — uses locally authenticated CLI tools.
 
@@ -329,7 +329,7 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 | Capability | Detail |
 |---|---|
 | **Zero-FP philosophy** | Every finding requires detection-specific proof — structural content validation, behavioral confirmation, or canary persistence. Response differences alone never constitute a finding. |
-| **Multi-step timing verification** | 3-step confirmation: stable baseline → true condition delays → false condition does NOT delay. Baseline stability check rejects unstable endpoints. |
+| **Multi-step timing verification** | 3-step confirmation: stable baseline → true condition delays (18s) → false condition does NOT delay. Baseline stability check rejects unstable endpoints. Time-based tests are serialized across all modules via a global timing lock to prevent concurrent timing measurements from corrupting each other's baselines. |
 | **2-round boolean confirmation** | Boolean-blind findings require reproducible distinction across 2 independent rounds (4 consistency checks). |
 | **Structural content validation** | Path traversal confirms file reads via file-specific signatures, not response differences. PHP wrappers decode and validate content. |
 | **Smart payload encoding** | Custom `PayloadEncoder` handles all parameter types: query/body params encode HTTP-breaking characters (space, `&`, `#`, `+`, `;`, bare `%`) while preserving pre-encoded bypass sequences (`%0a`, `%00`, `%252e`, `%c0%af`). Cookie injection bypasses Burp's parser via raw header replacement — no `;` splitting. JSON/XML bodies use format-native escaping. |

@@ -116,13 +116,13 @@ public class ScanConfigDialog extends JDialog {
                 boolEntry("cmdi.windows.enabled", true),
                 boolEntry("cmdi.output.enabled", true),
                 boolEntry("cmdi.oob.enabled", true),
-                intEntry("cmdi.delaySecs", 5),
+                intEntry("cmdi.delaySecs", 18),
                 intEntry("cmdi.perHostDelay", 500)
         ));
 
         // Deserialization Scanner
         KNOWN_CONFIGS.put("deser-scanner", List.of(
-                intEntry("deser.timeThreshold", 4000),
+                intEntry("deser.timeThreshold", 14000),
                 intEntry("deser.perHostDelay", 500)
         ));
 

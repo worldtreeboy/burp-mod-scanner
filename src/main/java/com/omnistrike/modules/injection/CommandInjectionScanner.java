@@ -9,6 +9,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
 
@@ -311,7 +312,7 @@ public class CommandInjectionScanner implements ScanModule {
 
     private void testCommandInjection(HttpRequestResponse original, CmdiTarget target) throws InterruptedException {
         String url = original.request().url();
-        int delaySecs = config.getInt("cmdi.delaySecs", 5);
+        int delaySecs = config.getInt("cmdi.delaySecs", 18);
 
         // Phase 1: Baseline (multi-measurement for accuracy)
         TimedResult baselineResult = measureResponseTime(original, target, target.originalValue);
@@ -327,33 +328,39 @@ public class CommandInjectionScanner implements ScanModule {
                 b2.response != null ? b2.elapsedMs : 0,
                 b3.response != null ? b3.elapsedMs : 0));
 
-        // Phase 2: Time-based detection (Unix)
-        if (config.getBool("cmdi.unix.enabled", true)) {
-            if (testTimeBased(original, target, url, baselineTime, delaySecs, UNIX_TIME_PAYLOADS, "Unix")) return;
-        }
-
-        // Phase 3: Time-based detection (Windows)
-        if (config.getBool("cmdi.windows.enabled", true)) {
-            if (testTimeBased(original, target, url, baselineTime, delaySecs, WINDOWS_TIME_PAYLOADS, "Windows")) return;
-        }
-
-        // Phase 4: Output-based detection (Unix)
+        // Phase 2: Output-based detection (Unix)
         // Skip output-based for header targets — header injection causes response differences
         // (WAF blocks, routing changes, logging errors) unrelated to command execution.
-        // Headers are only tested via time-based (above) and OOB Collaborator (below).
+        // Headers are only tested via time-based (below) and OOB Collaborator (below).
         if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_UNIX, "Unix")) return;
         }
 
-        // Phase 5: Output-based detection (Windows)
+        // Phase 3: Output-based detection (Windows)
         if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_WINDOWS, "Windows")) return;
         }
 
-        // Phase 6: OOB via Collaborator
+        // Phase 4: OOB via Collaborator
         if (config.getBool("cmdi.oob.enabled", true)
                 && collaboratorManager != null && collaboratorManager.isAvailable()) {
             testOob(original, target, url);
+        }
+
+        // Phase 5: Time-based blind (LAST — serialized via TimingLock)
+        try {
+            TimingLock.acquire();
+            if (config.getBool("cmdi.unix.enabled", true)) {
+                if (testTimeBased(original, target, url, baselineTime, delaySecs, UNIX_TIME_PAYLOADS, "Unix")) return;
+            }
+            if (config.getBool("cmdi.windows.enabled", true)) {
+                if (testTimeBased(original, target, url, baselineTime, delaySecs, WINDOWS_TIME_PAYLOADS, "Windows")) return;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        } finally {
+            TimingLock.release();
         }
     }
 

