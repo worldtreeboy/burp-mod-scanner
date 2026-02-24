@@ -1436,6 +1436,7 @@ public class AiVulnAnalyzer implements ScanModule {
 
     public void setConnectionMode(AiConnectionMode mode) {
         this.connectionMode = mode;
+        this.llmClient.setConnectionMode(mode);
         if (mode == AiConnectionMode.NONE) {
             cancelAllScans();
         } else {

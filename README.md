@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.18-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.19-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -81,7 +81,7 @@
 
 ${\color{#FF0000}\textbf{S}}{\color{#FF4500}\textbf{c}}{\color{#FF8C00}\textbf{a}}{\color{#FFA500}\textbf{n}}$ ${\color{#FFD700}\textbf{W}}{\color{#ADFF2F}\textbf{h}}{\color{#32CD32}\textbf{i}}{\color{#00CC00}\textbf{l}}{\color{#00CED1}\textbf{e}}$ ${\color{#1E90FF}\textbf{Y}}{\color{#4169E1}\textbf{o}}{\color{#6A5ACD}\textbf{u}}$ ${\color{#8A2BE2}\textbf{B}}{\color{#9400D3}\textbf{r}}{\color{#BA55D3}\textbf{o}}{\color{#FF00FF}\textbf{w}}{\color{#FF1493}\textbf{s}}{\color{#FF69B4}\textbf{e}}$ &mdash; Set your target scope, click Start, and just browse. OmniStrike automatically scans every in-scope request in real time — no manual triggering needed. Want more control? Right-click any request to scan it ad-hoc.
 
-**AI-Augmented** &mdash; Optionally delegate analysis to Claude, Gemini, Codex, or OpenCode CLI. The AI generates targeted payloads, bypasses WAFs, and performs multi-round adaptive scanning.
+**AI-Augmented** &mdash; Optionally delegate analysis to Claude, GPT, or Gemini via API key, or use Claude/Gemini/Codex/OpenCode CLI tools. The AI generates targeted payloads, bypasses WAFs, and performs multi-round adaptive scanning.
 
 **Built for Speed** &mdash; **Smart character filter probing** reduces active payloads from 35+ to 5-10 per parameter. Concurrent execution on a bounded thread pool. Non-blocking passive analysis.
 
@@ -373,9 +373,28 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 
 ### AI Scanning Setup
 
+**Option A: API Key (recommended — no CLI tool needed)**
+
+1. In the OmniStrike tab, select **API Key** mode.
+2. Choose a provider: **Anthropic (Claude)**, **OpenAI**, or **Google Gemini**.
+3. Select a model from the dropdown, paste your API key, click **Apply Settings** and **Test Connection**.
+4. Right-click any request > select a module > **AI Scan**.
+
+| Provider | Models | Get an API Key |
+|---|---|---|
+| Anthropic (Claude) | `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` | [console.anthropic.com](https://console.anthropic.com/) |
+| OpenAI | `gpt-5.2`, `gpt-4o`, `o3-mini` | [platform.openai.com](https://platform.openai.com/) |
+| Google Gemini | `gemini-3.1-pro`, `gemini-3-flash-preview`, `gemini-2.5-flash` | [aistudio.google.com](https://aistudio.google.com/) |
+
+> API keys are stored in memory only — they are never persisted to disk.
+
+**Option B: CLI Tool**
+
 1. Install and authenticate a CLI tool: `npm install -g @anthropic-ai/claude-code` (or Gemini/Codex/OpenCode).
-2. In the OmniStrike tab, select the CLI tool, click **Apply Settings** and **Test Connection**.
+2. In the OmniStrike tab, select **CLI Tool** mode, configure the binary path, click **Apply Settings** and **Test Connection**.
 3. Right-click any request > select a module > **AI Scan**.
+
+> Only one mode (CLI or API Key) can be active at a time.
 
 ---
 
@@ -385,7 +404,7 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 |---|---|
 | **Burp Suite** | Professional (recommended) or Community. OOB detection requires Professional. |
 | **Java** | JDK/JRE 17+ |
-| **AI module** (optional) | [Claude CLI](https://www.npmjs.com/package/@anthropic-ai/claude-code), [Gemini CLI](https://www.npmjs.com/package/@google/gemini-cli), [Codex CLI](https://www.npmjs.com/package/@openai/codex), or [OpenCode CLI](https://github.com/opencode-ai/opencode) |
+| **AI module** (optional) | **API Key** for Anthropic / OpenAI / Google Gemini, **or** a CLI tool: [Claude CLI](https://www.npmjs.com/package/@anthropic-ai/claude-code), [Gemini CLI](https://www.npmjs.com/package/@google/gemini-cli), [Codex CLI](https://www.npmjs.com/package/@openai/codex), or [OpenCode CLI](https://github.com/opencode-ai/opencode) |
 
 ---
 

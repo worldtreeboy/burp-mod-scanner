@@ -6,8 +6,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Unified client for calling LLM providers via CLI tools.
- * Supports CLI providers (Claude CLI, Gemini CLI, Codex CLI, OpenCode CLI).
+ * Unified client for calling LLM providers.
+ * Supports two mutually exclusive backends:
+ *   - CLI providers (Claude CLI, Gemini CLI, Codex CLI, OpenCode CLI)
+ *   - API Key providers (Anthropic, OpenAI, Google Gemini via HTTP)
+ *
+ * Only one mode can be active at a time. The active connection mode determines
+ * which backend is used when call() is invoked.
  *
  * All config fields are volatile — written from the EDT, read from the LLM background thread.
  */
@@ -16,17 +21,37 @@ public class LlmClient {
     private static final Gson GSON = new Gson();
 
     private final CliBackend cliBackend = new CliBackend();
+    private final ApiKeyBackend apiKeyBackend = new ApiKeyBackend();
 
-    // Volatile config — written from EDT, read from LLM thread
+    // Connection mode — determines which backend is used
+    private volatile AiConnectionMode connectionMode = AiConnectionMode.NONE;
+
+    // CLI config — written from EDT, read from LLM thread
     private volatile LlmProvider provider = LlmProvider.CLI_CLAUDE;
     private volatile String model = LlmProvider.CLI_CLAUDE.getDefaultModel();
     private volatile boolean configured = false;
-
-    // CLI binary path override (empty = use default)
     private volatile String cliBinaryPath = "";
+
+    // API Key config — written from EDT, read from LLM thread
+    private volatile ApiKeyProvider apiKeyProvider = ApiKeyProvider.ANTHROPIC;
+    private volatile String apiKey = "";
+    private volatile String apiKeyModel = ApiKeyProvider.ANTHROPIC.getDefaultModel();
+    private volatile boolean apiKeyConfigured = false;
 
     public LlmClient() {
     }
+
+    // ==================== Connection mode ====================
+
+    public void setConnectionMode(AiConnectionMode mode) {
+        this.connectionMode = mode;
+    }
+
+    public AiConnectionMode getConnectionMode() {
+        return connectionMode;
+    }
+
+    // ==================== CLI configuration ====================
 
     /**
      * Updates the client configuration for CLI providers.
@@ -38,18 +63,57 @@ public class LlmClient {
         this.configured = true;
     }
 
+    // ==================== API Key configuration ====================
+
     /**
-     * Sends a prompt to the configured CLI tool and returns the raw text response.
+     * Updates the client configuration for API key providers.
+     */
+    public void configureApiKey(ApiKeyProvider provider, String apiKey, String model) {
+        this.apiKeyProvider = provider;
+        this.apiKey = apiKey != null ? apiKey : "";
+        this.apiKeyModel = (model != null && !model.isBlank()) ? model : provider.getDefaultModel();
+        this.apiKeyConfigured = true;
+    }
+
+    // ==================== Unified call / test ====================
+
+    /**
+     * Sends a prompt to the active backend and returns the raw text response.
+     * Routes to CLI or API Key backend based on the current connection mode.
      */
     public String call(String prompt) throws LlmException {
-        return cliBackend.call(provider, cliBinaryPath, prompt);
+        if (connectionMode == AiConnectionMode.API_KEY) {
+            if (!apiKeyConfigured) {
+                throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
+                        "API key not configured — select a provider and enter your API key");
+            }
+            return apiKeyBackend.call(apiKeyProvider, apiKey, apiKeyModel, prompt);
+        } else if (connectionMode == AiConnectionMode.CLI) {
+            if (!configured) {
+                throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
+                        "CLI tool not configured — select a provider and set the binary path");
+            }
+            return cliBackend.call(provider, cliBinaryPath, prompt);
+        }
+        throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
+                "AI not configured — select CLI Tool or API Key mode");
     }
 
     /**
-     * Tests connectivity to the configured CLI tool. Returns a status message.
+     * Tests connectivity to the active backend. Returns a status message.
      */
     public String testConnection() throws LlmException {
-        return cliBackend.testConnection(provider, cliBinaryPath);
+        if (connectionMode == AiConnectionMode.API_KEY) {
+            if (!apiKeyConfigured) {
+                throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
+                        "API key not configured");
+            }
+            return apiKeyBackend.testConnection(apiKeyProvider, apiKey, apiKeyModel);
+        } else if (connectionMode == AiConnectionMode.CLI) {
+            return cliBackend.testConnection(provider, cliBinaryPath);
+        }
+        throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
+                "No connection mode selected");
     }
 
     // ==================== Response parsing ====================
@@ -128,15 +192,20 @@ public class LlmClient {
         return (el != null && !el.isJsonNull()) ? el.getAsString() : "";
     }
 
-    // ==================== Getters / Setters ====================
+    // ==================== Getters ====================
 
     public LlmProvider getProvider() { return provider; }
     public String getModel() { return model; }
 
-    /** Returns true if the client has been configured with a provider. */
+    /** Returns true if the active backend has been configured. */
     public boolean isConfigured() {
-        return configured;
+        if (connectionMode == AiConnectionMode.API_KEY) return apiKeyConfigured;
+        if (connectionMode == AiConnectionMode.CLI) return configured;
+        return false;
     }
 
     public String getCliBinaryPath() { return cliBinaryPath; }
+
+    public ApiKeyProvider getApiKeyProvider() { return apiKeyProvider; }
+    public String getApiKeyModel() { return apiKeyModel; }
 }
