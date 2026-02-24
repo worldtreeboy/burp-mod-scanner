@@ -28,6 +28,7 @@ public class MainPanel extends JPanel {
     private final ActiveScanExecutor executor;
     private final TrafficInterceptor interceptor;
     private final CollaboratorManager collaboratorManager;
+    private final SessionKeepAlive sessionKeepAlive;
     private final MontoyaApi api;
     private final LogPanel logPanel;
 
@@ -61,18 +62,23 @@ public class MainPanel extends JPanel {
     // Scan progress bar
     private final JProgressBar progressBar;
 
+    // Session keep-alive status label
+    private final JLabel sessionStatusLabel;
+
     // Default border for thread field (saved for resetting after validation)
     private final Border defaultThreadFieldBorder;
 
     public MainPanel(ModuleRegistry registry, FindingsStore findingsStore, ScopeManager scopeManager,
                      ActiveScanExecutor executor, TrafficInterceptor interceptor,
-                     CollaboratorManager collaboratorManager, MontoyaApi api) {
+                     CollaboratorManager collaboratorManager, SessionKeepAlive sessionKeepAlive,
+                     MontoyaApi api) {
         this.registry = registry;
         this.findingsStore = findingsStore;
         this.scopeManager = scopeManager;
         this.executor = executor;
         this.interceptor = interceptor;
         this.collaboratorManager = collaboratorManager;
+        this.sessionKeepAlive = sessionKeepAlive;
         this.api = api;
         this.logPanel = new LogPanel();
 
@@ -214,6 +220,76 @@ public class MainPanel extends JPanel {
 
         topContainer.add(row2);
 
+        // --- Row 3: Session Keep-Alive controls ---
+        JPanel sessionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
+
+        JCheckBox sessionCheckbox = new JCheckBox("Session Keep-Alive");
+        sessionCheckbox.setSelected(false);
+        sessionCheckbox.setToolTipText(
+                "Periodically replay a saved login request to keep session cookies fresh. "
+                + "Right-click any request > 'Set as Session Login Request' to configure.");
+        sessionRow.add(sessionCheckbox);
+
+        sessionRow.add(new JLabel("Interval:"));
+        JComboBox<String> intervalCombo = new JComboBox<>(new String[]{
+                "1 min", "2 min", "3 min", "5 min", "10 min", "15 min", "30 min"});
+        intervalCombo.setSelectedItem("5 min");
+        intervalCombo.setToolTipText("How often to replay the login request");
+        sessionRow.add(intervalCombo);
+
+        sessionStatusLabel = new JLabel("Session: Not configured");
+        sessionStatusLabel.setForeground(Color.GRAY);
+        sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        sessionRow.add(sessionStatusLabel);
+
+        // Wire checkbox to SessionKeepAlive
+        sessionCheckbox.addActionListener(e -> {
+            boolean selected = sessionCheckbox.isSelected();
+            if (selected && !sessionKeepAlive.hasLoginRequest()) {
+                JOptionPane.showMessageDialog(this,
+                        "No login request configured.\n"
+                        + "Right-click any request in Burp and select\n"
+                        + "'Set as Session Login Request' first.",
+                        "Session Keep-Alive", JOptionPane.INFORMATION_MESSAGE);
+                sessionCheckbox.setSelected(false);
+                return;
+            }
+            sessionKeepAlive.setEnabled(selected);
+            logPanel.log("INFO", "SessionKeepAlive",
+                    selected ? "Enabled" : "Disabled");
+        });
+
+        // Wire interval combo to SessionKeepAlive
+        intervalCombo.addActionListener(e -> {
+            String selected = (String) intervalCombo.getSelectedItem();
+            if (selected != null) {
+                int minutes = Integer.parseInt(selected.split(" ")[0]);
+                sessionKeepAlive.setIntervalMinutes(minutes);
+            }
+        });
+
+        // Wire status callback from SessionKeepAlive to update label
+        sessionKeepAlive.setStatusCallback(status -> {
+            SwingUtilities.invokeLater(() -> {
+                sessionStatusLabel.setText(status);
+                if (status.contains("ERROR")) {
+                    sessionStatusLabel.setForeground(Color.RED);
+                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.BOLD, 11f));
+                } else if (status.contains("Active")) {
+                    sessionStatusLabel.setForeground(new Color(50, 150, 50));
+                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+                } else if (status.contains("Disabled")) {
+                    sessionStatusLabel.setForeground(new Color(200, 150, 50));
+                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+                } else {
+                    sessionStatusLabel.setForeground(Color.GRAY);
+                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+                }
+            });
+        });
+
+        topContainer.add(sessionRow);
+
         // --- Stats Bar: severity count badges ---
         JPanel statsBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
         statsBar.setBorder(BorderFactory.createEmptyBorder(1, 6, 1, 6));
@@ -332,11 +408,12 @@ public class MainPanel extends JPanel {
                     }));
         }
 
-        // Timer to periodically update finding counts, thread status, and stats bar
+        // Timer to periodically update finding counts, thread status, stats bar, and session status
         updateTimer = new Timer(3000, e -> {
             moduleListPanel.updateFindingsCounts();
             updateThreadStatus();
             updateStatsBar();
+            updateSessionStatus();
         });
         updateTimer.start();
     }
@@ -493,6 +570,17 @@ public class MainPanel extends JPanel {
         label.setFont(label.getFont().deriveFont(Font.BOLD, 11f));
         label.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
         return label;
+    }
+
+    /**
+     * Polls the SessionKeepAlive status and updates the label.
+     * Acts as a fallback in case the callback-based update misses an event.
+     */
+    private void updateSessionStatus() {
+        SwingUtilities.invokeLater(() -> {
+            String status = sessionKeepAlive.getStatusMessage();
+            sessionStatusLabel.setText(status);
+        });
     }
 
     private void updateStatsBar() {

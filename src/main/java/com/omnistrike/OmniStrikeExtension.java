@@ -15,7 +15,7 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.17 — Entry Point
+ * OmniStrike v1.22 — Entry Point
  *
  * A unified vulnerability scanning framework for Burp Suite with 20 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
@@ -34,13 +34,14 @@ public class OmniStrikeExtension implements BurpExtension {
     private ActiveScanExecutor executor;
     private TrafficInterceptor interceptor;
     private CollaboratorManager collaboratorManager;
+    private SessionKeepAlive sessionKeepAlive;
     private volatile MainPanel mainPanel;
     private volatile Audit persistentAudit;
 
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.17 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.22 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -156,6 +157,11 @@ public class OmniStrikeExtension implements BurpExtension {
         api.proxy().registerResponseHandler(interceptor);
         api.logging().logToOutput("Traffic interceptor registered.");
 
+        // ==================== SESSION KEEP-ALIVE ====================
+        sessionKeepAlive = new SessionKeepAlive(api);
+        // uiLogger is wired below after MainPanel is created (it needs logPanel)
+        api.logging().logToOutput("Session Keep-Alive initialized (disabled by default).");
+
         // ==================== SCANNER INTEGRATION ====================
         // Register OmniStrike modules as a native Burp ScanCheck so findings
         // appear in Dashboard task boxes (same as Burp's built-in active scan).
@@ -182,15 +188,19 @@ public class OmniStrikeExtension implements BurpExtension {
 
         // ==================== CONTEXT MENU ====================
         api.userInterface().registerContextMenuItemsProvider(
-                new OmniStrikeContextMenu(api, registry, interceptor, scanCheck));
+                new OmniStrikeContextMenu(api, registry, interceptor, scanCheck, sessionKeepAlive));
         api.logging().logToOutput("Context menu registered (right-click > Send to OmniStrike).");
 
         // ==================== UI ====================
         SwingUtilities.invokeLater(() -> {
             mainPanel = new MainPanel(
                     registry, findingsStore, scopeManager,
-                    executor, interceptor, collaboratorManager, api);
+                    executor, interceptor, collaboratorManager, sessionKeepAlive, api);
             api.userInterface().registerSuiteTab("OmniStrike", mainPanel);
+            // Wire SessionKeepAlive log messages to the Activity Log
+            sessionKeepAlive.setUiLogger((module, message) ->
+                    javax.swing.SwingUtilities.invokeLater(() ->
+                            mainPanel.getLogPanel().log("INFO", module, message)));
             api.logging().logToOutput("UI tab registered.");
         });
 
@@ -201,6 +211,9 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
             interceptor.setRunning(false);
             interceptor.shutdown(); // stop passive executor
+            if (sessionKeepAlive != null) {
+                sessionKeepAlive.shutdown();
+            }
             // Stop UI timers to prevent leaks
             if (mainPanel != null) {
                 SwingUtilities.invokeLater(() -> mainPanel.stopTimers());
@@ -217,7 +230,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.17 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.22 ready ===");
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");

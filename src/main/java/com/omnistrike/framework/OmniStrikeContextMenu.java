@@ -54,6 +54,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
     private final ModuleRegistry registry;
     private final TrafficInterceptor interceptor;
     private final OmniStrikeScanCheck scanCheck;
+    private final SessionKeepAlive sessionKeepAlive;
 
 
     // Static file extensions where active injection testing is pointless
@@ -66,11 +67,13 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
 
     public OmniStrikeContextMenu(MontoyaApi api, ModuleRegistry registry,
                                   TrafficInterceptor interceptor,
-                                  OmniStrikeScanCheck scanCheck) {
+                                  OmniStrikeScanCheck scanCheck,
+                                  SessionKeepAlive sessionKeepAlive) {
         this.api = api;
         this.registry = registry;
         this.interceptor = interceptor;
         this.scanCheck = scanCheck;
+        this.sessionKeepAlive = sessionKeepAlive;
     }
 
     @Override
@@ -395,6 +398,31 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
 
         if (subMenu.getItemCount() > 0) {
             items.add(subMenu);
+        }
+
+        // ============ Session Keep-Alive ============
+        items.add(new JSeparator());
+
+        // "Set as Session Login Request" — saves the selected request for periodic replay
+        JMenuItem setLoginItem = new JMenuItem("Set as Session Login Request");
+        setLoginItem.setToolTipText("Save this request for periodic replay to keep session cookies fresh");
+        setLoginItem.addActionListener(e -> {
+            sessionKeepAlive.setLoginRequest(reqResp);
+            showToast("Session Keep-Alive",
+                    "Login request saved:\n" + url
+                    + "\n\nEnable 'Session Keep-Alive' in the OmniStrike tab to start.");
+        });
+        items.add(setLoginItem);
+
+        // "Clear Session Login Request" — only shown when a login request is set
+        if (sessionKeepAlive.hasLoginRequest()) {
+            JMenuItem clearLoginItem = new JMenuItem("Clear Session Login Request");
+            clearLoginItem.setToolTipText("Remove the saved login request and stop session refresh");
+            clearLoginItem.addActionListener(e -> {
+                sessionKeepAlive.clearLoginRequest();
+                showToast("Session Keep-Alive", "Login request cleared. Session refresh stopped.");
+            });
+            items.add(clearLoginItem);
         }
 
         // ============ "Stop OmniStrike Scans" ============

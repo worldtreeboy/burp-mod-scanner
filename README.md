@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.21-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.22-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -223,7 +223,7 @@ Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebbl
 <details>
 <summary><strong>XXE Scanner</strong></summary>
 
-**Target fingerprinting** via Server/X-Powered-By headers to detect OS and runtime — tailors file targets and skips irrelevant payloads. **SAML context detection**. Classic file read (130+ Linux + 65+ Windows targets), error-based XXE, blind OOB via Collaborator (14 payloads: parameter entity, FTP, JAR, netdoc, gopher, PHP filter/expect), XInclude injection, JSON-to-XML conversion. **Bypass techniques**: UTF-16 LE/BE encoding with BOM, HTML-encoded parameter entities, CDATA section wrapping, nested entity definitions.
+**4-phase attack pipeline**: Phase 1 (XML body) — classic SYSTEM/PUBLIC entity file read, error-based XXE, blind OOB via Collaborator (14 payloads: parameter entity, FTP, JAR, netdoc, gopher, PHP filter/expect). Phase 2 (XInclude) — injection into non-XML parameters via `xi:include`. Phase 3 (JSON→XML conversion) — sends XML with `application/xml` Content-Type to JSON endpoints. Phase 4 (Content-Type forcing) — probes non-XML/non-JSON endpoints by forcing `Content-Type: application/xml` to test hidden XML parser acceptance. **Target fingerprinting** via Server/X-Powered-By headers to detect OS and runtime — skips irrelevant payloads. **SAML context detection**. **Bypass techniques**: UTF-16 LE/BE encoding with BOM, HTML-encoded parameter entities, CDATA section wrapping, nested entity definitions.
 </details>
 
 <details>
@@ -386,6 +386,16 @@ This mirrors Burp Pro's "Scan defined insertion points" concept &mdash; focus yo
 Time-based blind injection tests (SQLi `SLEEP`, CmdI `sleep`/`ping`) are **disabled by default** — they are slow, generate heavy traffic, and can cause delays on the target server.
 
 To enable: tick the **Time-Based Testing** checkbox next to the **Stop Scans** button in the OmniStrike tab. This globally enables time-based phases in the SQLi Detector and Command Injection Scanner. Untick to disable at any time.
+
+### Session Keep-Alive (Opt-In)
+
+Long scans can outlast session timeouts — if your cookies expire mid-scan, all subsequent requests silently fail. OmniStrike's **Session Keep-Alive** periodically replays a saved login request so Burp's CookieJar stays fresh.
+
+1. Log in to the target app through Burp Proxy.
+2. Find the login request in Proxy History, right-click → **Set as Session Login Request**.
+3. In the OmniStrike tab, check **Session Keep-Alive** and choose an interval (default: 5 min).
+
+The extension replays the saved request via `api.http().sendRequest()` — Burp automatically stores `Set-Cookie` responses back into its CookieJar. No custom cookie jar, no localhost ports. Status indicator shows **Session: Active** (green), **Session: EXPIRED** (red), or **Session: Not configured** (gray). Right-click → **Clear Session Login Request** to remove.
 
 ### AI Scanning Setup
 
