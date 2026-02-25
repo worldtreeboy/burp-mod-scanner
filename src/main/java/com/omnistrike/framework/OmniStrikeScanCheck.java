@@ -40,7 +40,7 @@ public class OmniStrikeScanCheck implements ScanCheck {
     // Maps URL → module IDs to run. Empty list = all modules.
     private final ConcurrentHashMap<String, List<String>> pendingScans = new ConcurrentHashMap<>();
 
-    // Deferred findings queue — async AI findings land here and get drained
+    // Deferred findings queue — async findings (Collaborator callbacks, etc.) land here and get drained
     // the next time Burp calls passiveAudit(), so they appear in Dashboard.
     private final ConcurrentLinkedQueue<Finding> deferredFindings = new ConcurrentLinkedQueue<>();
 
@@ -73,7 +73,7 @@ public class OmniStrikeScanCheck implements ScanCheck {
     }
 
     /**
-     * Add a finding to the deferred queue. Used to bridge async AI findings
+     * Add a finding to the deferred queue. Used to bridge async findings
      * into Burp's Dashboard via the ScanCheck pipeline.
      */
     public void addDeferredFinding(Finding finding) {
@@ -90,13 +90,13 @@ public class OmniStrikeScanCheck implements ScanCheck {
         // Only scan if explicitly queued via context menu
         List<String> requestedModules = pendingScans.remove(urlBase);
 
-        // If not queued for normal scan, check if we have deferred AI findings to drain
+        // If not queued for normal scan, check if we have deferred findings to drain
         if (requestedModules == null) {
             if (!deferredFindings.isEmpty()) {
                 List<AuditIssue> deferredIssues = drainDeferredFindings(baseRequestResponse);
                 if (!deferredIssues.isEmpty()) {
                     api.logging().logToOutput("[OmniStrikeScanCheck] Drained " + deferredIssues.size()
-                            + " deferred AI finding(s) into Dashboard");
+                            + " deferred finding(s) into Dashboard");
                     return AuditResult.auditResult(deferredIssues);
                 }
             }
@@ -173,7 +173,7 @@ public class OmniStrikeScanCheck implements ScanCheck {
             }
         }
 
-        // Also drain any deferred AI findings that arrived while scanning
+        // Also drain any deferred findings that arrived while scanning
         issues.addAll(drainDeferredFindings(baseRequestResponse));
 
         api.logging().logToOutput("[OmniStrikeScanCheck] === DONE: " + issues.size() + " AuditIssue(s) ===");
