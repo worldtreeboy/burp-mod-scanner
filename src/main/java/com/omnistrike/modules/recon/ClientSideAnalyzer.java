@@ -497,13 +497,13 @@ public class ClientSideAnalyzer implements ScanModule {
                 int matchStart = m.start();
 
                 // Discard if inside a comment
-                if (isInsideComment(body, matchStart)) { break; }
+                if (isInsideComment(body, matchStart)) { continue; }
 
                 // Discard if value is a placeholder/dummy
-                if (isDummyOrPlaceholder(matched)) { break; }
+                if (isDummyOrPlaceholder(matched)) { continue; }
 
                 // For generic patterns, require sufficient entropy
-                if (GENERIC_SECRET_NAMES.contains(sp.name) && hasLowEntropy(matched)) { break; }
+                if (GENERIC_SECRET_NAMES.contains(sp.name) && hasLowEntropy(matched)) { continue; }
 
                 // Determine severity — downgrade certain public-facing keys
                 Severity effectiveSeverity = sp.severity;
@@ -665,8 +665,8 @@ public class ClientSideAnalyzer implements ScanModule {
             String attrBefore = body.substring(attrLookback, matchStart).toLowerCase();
             if (attrBefore.contains("src=") || attrBefore.contains("href=")) continue;
 
-            // Skip common version-like patterns: 10.0.0 followed by nothing or space
-            if (ip.matches("10\\.0\\.0\\.\\d+")) continue;
+            // Skip common version-like patterns: 10.0.0.0 and 10.0.0.1 (often used as examples/defaults)
+            if (ip.equals("10.0.0.0") || ip.equals("10.0.0.1")) continue;
 
             if (seenIps.add(ip)) {
                 String evidence = extractContext(body, matchStart, 60);

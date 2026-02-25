@@ -499,12 +499,12 @@ public class CommandInjectionScanner implements ScanModule {
                     if (matched) {
                         matchedEvidence = regexMatcher.group();
                     }
-                    baselineMatched = baselineBody.isEmpty() || regexPattern.matcher(baselineBody).find();
+                    baselineMatched = !baselineBody.isEmpty() && regexPattern.matcher(baselineBody).find();
                 } else {
                     // Simple string contains matching
                     matched = body.contains(expectedOutput);
                     matchedEvidence = expectedOutput;
-                    baselineMatched = baselineBody.isEmpty() || baselineBody.contains(expectedOutput);
+                    baselineMatched = !baselineBody.isEmpty() && baselineBody.contains(expectedOutput);
                 }
 
                 if (matched && !baselineMatched) {
@@ -563,6 +563,12 @@ public class CommandInjectionScanner implements ScanModule {
                 "cmdi-scanner", url, target.name,
                 "CmdI OOB " + technique,
                 interaction -> {
+                    // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                    // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                    // wait is almost always enough for the sending thread to complete its set() call.
+                    for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
                     // Mark parameter as confirmed — skip all remaining phases
                     oobConfirmedParams.add(target.name);
                     findingsStore.addFinding(Finding.builder("cmdi-scanner",
@@ -578,7 +584,7 @@ public class CommandInjectionScanner implements ScanModule {
                                     + interaction.type().name() + " callback. "
                                     + "Parameter '" + target.name + "' allows arbitrary command execution.")
                             .payload(sentPayload.get())
-                            .requestResponse(sentRequest.get())
+                            .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
                             .build());
                     api.logging().logToOutput("[CmdI OOB] Confirmed! " + interaction.type()
                             + " interaction for " + url + " param=" + target.name

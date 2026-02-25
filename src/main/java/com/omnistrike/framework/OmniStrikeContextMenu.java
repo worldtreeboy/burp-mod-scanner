@@ -226,10 +226,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         // Build module lists early (needed for both parameter menu and per-module submenu)
         List<ScanModule> activeModules = new ArrayList<>();
         List<ScanModule> passiveModules = new ArrayList<>();
-        for (ScanModule m : registry.getAllModules()) {
-            // Skip AI module — it's embedded inside each module's submenu
-            if (ModuleRegistry.AI_MODULE_ID.equals(m.getId())) continue;
-
+        for (ScanModule m : registry.getEnabledNonAiModules()) {
             if (m.isPassive()) {
                 passiveModules.add(m);
             } else {

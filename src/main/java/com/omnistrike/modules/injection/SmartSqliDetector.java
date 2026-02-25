@@ -760,11 +760,13 @@ public class SmartSqliDetector implements ScanModule {
                                               List<InjectionPoint> injectionPoints, String urlPath) {
         for (InjectionPoint ip : injectionPoints) {
             String dedupKey = "sqli:" + urlPath + ":" + ip.name;
-            if (tested.containsKey(dedupKey)) continue;
+            // Atomic mark-before-test: putIfAbsent returns null only on first caller,
+            // preventing both the TOCTOU race (containsKey/put) and the retry-on-exception
+            // bug (parameter retested forever if testParameter throws).
+            if (tested.putIfAbsent(dedupKey, Boolean.TRUE) != null) continue;
 
             try {
                 testParameter(requestResponse, ip, urlPath);
-                tested.put(dedupKey, Boolean.TRUE);
             } catch (Exception e) {
                 api.logging().logToError("SQLi test error on " + ip.name + ": " + e.getMessage());
             }
@@ -795,9 +797,10 @@ public class SmartSqliDetector implements ScanModule {
                     b2.response != null ? b2.elapsedMs : 0,
                     b3.response != null ? b3.elapsedMs : 0));
 
-            int baselineLength = baseline.response().bodyToString().length();
-            int baselineStatus = baseline.response().statusCode();
             String baselineBody = baseline.response().bodyToString();
+            if (baselineBody == null) baselineBody = "";
+            int baselineLength = baselineBody.length();
+            int baselineStatus = baseline.response().statusCode();
 
             // Phase 3: Auth bypass (if enabled and looks like a login param)
             if (oobConfirmedParams.contains(ip.name)) return;
@@ -1502,6 +1505,8 @@ public class SmartSqliDetector implements ScanModule {
             if (truePayload.contains("WHEN 1=1")) {
                 return truePayload.replace("WHEN 1=1", "WHEN 1=2");
             }
+            // Fallback for direct payloads like "' OR 1=DBMS_PIPE.RECEIVE_MESSAGE('a',18)-- -"
+            return truePayload.replace("DBMS_PIPE.RECEIVE_MESSAGE('a',18)", "DBMS_PIPE.RECEIVE_MESSAGE('a',0)");
         }
         if (truePayload.contains("DBMS_LOCK.SLEEP") || truePayload.contains("DBMS_SESSION.SLEEP")) {
             return truePayload.replace("BEGIN", "BEGIN IF 1=2 THEN")
@@ -1626,6 +1631,12 @@ public class SmartSqliDetector implements ScanModule {
                             "sqli-detector", url, ip.name,
                             "OOB SQLi (" + dbType + ")",
                             interaction -> {
+                                // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                                // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                                // wait is almost always enough for the sending thread to complete its set() call.
+                                for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                                    try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                                }
                                 // Mark parameter as confirmed — skip all remaining phases
                                 oobConfirmedParams.add(ip.name);
                                 findingsStore.addFinding(Finding.builder("sqli-detector",
@@ -1642,7 +1653,7 @@ public class SmartSqliDetector implements ScanModule {
                                                 + "The server made a " + interaction.type().name()
                                                 + " request to the Collaborator server, proving code execution "
                                                 + "within the SQL query. DB type: " + dbType)
-                                        .requestResponse(sentRequest.get())
+                                        .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
                                         .build());
                                 api.logging().logToOutput("[SQLi OOB] Confirmed! " + interaction.type()
                                         + " interaction for " + url + " param=" + ip.name + " DB=" + dbType);

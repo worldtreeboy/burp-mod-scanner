@@ -1001,19 +1001,49 @@ public class GraphqlTool implements ScanModule {
                 // Skip error responses — servers echo input in error pages
                 if (result.response().statusCode() >= 400) continue;
 
-                // Time-based detection
+                // Time-based detection — require delay above baseline AND false-condition verification
                 if (elapsed > 14400) {
-                    findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                    "GraphQL OS Command Injection (Time-Based) via " + arg.argName,
-                                    Severity.HIGH, Confidence.FIRM)
-                            .url(url)
-                            .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
-                            .evidence("Technique: " + technique + " | Response time: " + elapsed + "ms")
-                            .description("Time-based command injection detected in GraphQL argument '" + arg.argName + "'.")
-                            .requestResponse(result)
-                            .payload(payload)
-                            .build());
-                    return;
+                    // Step 1: measure fresh baseline
+                    long measuredBaselineTime = 0;
+                    try {
+                        long bstart = System.currentTimeMillis();
+                        api.http().sendRequest(buildGqlRequest(originalRequest, path,
+                                new Gson().toJson(Map.of("query", buildQueryForArg(arg, "test123")))));
+                        measuredBaselineTime = System.currentTimeMillis() - bstart;
+                    } catch (Exception ignored) {}
+
+                    if (elapsed > measuredBaselineTime + 14000) {
+                        // Step 2: false-condition verification — replace sleep delays with 0
+                        String falsePayload = payload.replace("sleep 18", "sleep 0")
+                                .replace("sleep(18)", "sleep(0)")
+                                .replace("ping -n 18", "ping -n 1");
+                        String falseQuery = buildQueryForArg(arg, falsePayload);
+                        String falseBody = new Gson().toJson(Map.of("query", falseQuery));
+                        HttpRequest falseReq = buildGqlRequest(originalRequest, path, falseBody);
+                        long fstart = System.currentTimeMillis();
+                        api.http().sendRequest(falseReq);
+                        long falseElapsed = System.currentTimeMillis() - fstart;
+                        perHostDelay();
+
+                        // False condition must NOT delay (within baseline + 5s tolerance)
+                        if (falseElapsed < measuredBaselineTime + 5000) {
+                            findingsStore.addFinding(Finding.builder(MODULE_ID,
+                                            "GraphQL OS Command Injection (Time-Based) via " + arg.argName,
+                                            Severity.HIGH, Confidence.CERTAIN)
+                                    .url(url)
+                                    .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
+                                    .evidence("Technique: " + technique + " | Payload: " + payload
+                                            + " | True condition: " + elapsed + "ms | False condition: "
+                                            + falseElapsed + "ms | Baseline: " + measuredBaselineTime + "ms")
+                                    .description("Time-based command injection confirmed in GraphQL argument '"
+                                            + arg.argName + "'. True condition delayed " + (elapsed / 1000)
+                                            + "s while false condition returned in " + falseElapsed + "ms.")
+                                    .requestResponse(result)
+                                    .payload(payload)
+                                    .build());
+                            return;
+                        }
+                    }
                 }
             }
         } catch (InterruptedException e) {
@@ -1139,6 +1169,12 @@ public class GraphqlTool implements ScanModule {
                     MODULE_ID, url, argPath,
                     "GraphQL " + technique,
                     interaction -> {
+                        // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                        // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                        // wait is almost always enough for the sending thread to complete its set() call.
+                        for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                            try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                        }
                         findingsStore.addFinding(Finding.builder(MODULE_ID,
                                         "GraphQL SQL Injection (OOB) via " + arg.argName,
                                         Severity.CRITICAL, Confidence.CERTAIN)
@@ -1149,7 +1185,7 @@ public class GraphqlTool implements ScanModule {
                                         + " interaction from " + interaction.clientIp())
                                 .description("Out-of-band SQL injection confirmed in GraphQL argument '"
                                         + arg.argName + "' via Burp Collaborator callback.")
-                                .requestResponse(sentRequest.get())
+                                .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
                                 .payload(payloadTemplate)
                                 .build());
                     }
@@ -1173,6 +1209,10 @@ public class GraphqlTool implements ScanModule {
                     MODULE_ID, url, argPath,
                     "GraphQL SSRF OOB via " + arg.argName,
                     interaction -> {
+                        // Brief spin-wait to let the sending thread complete set()
+                        for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                            try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                        }
                         findingsStore.addFinding(Finding.builder(MODULE_ID,
                                         "GraphQL SSRF (OOB) via " + arg.argName,
                                         Severity.HIGH, Confidence.CERTAIN)
@@ -1182,7 +1222,7 @@ public class GraphqlTool implements ScanModule {
                                         + " interaction from " + interaction.clientIp())
                                 .description("SSRF confirmed in GraphQL argument '" + arg.argName
                                         + "'. The server made an outbound request to the Collaborator payload.")
-                                .requestResponse(sentRequest.get())
+                                .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
                                 .payload("GraphQL SSRF OOB via " + arg.argName)
                                 .build());
                     }
@@ -1264,7 +1304,7 @@ public class GraphqlTool implements ScanModule {
                 String respBody = result.response().bodyToString();
                 if (respBody != null && result.response().statusCode() == 200
                         && respBody.contains("\"data\"") && !respBody.contains("\"errors\"")
-                        && !respBody.contains("null")) {
+                        && !respBody.equals("null")) {  // Only reject literal "null" body, not responses containing null fields
                     // Verify data object actually contains fields (not empty {})
                     try {
                         JsonObject obj = JsonParser.parseString(respBody).getAsJsonObject();
@@ -1504,7 +1544,7 @@ public class GraphqlTool implements ScanModule {
                 "POST " + path + " HTTP/1.1\r\n"
                         + "Host: " + originalRequest.httpService().host() + "\r\n"
                         + "Content-Type: application/x-www-form-urlencoded\r\n"
-                        + "Content-Length: " + formBody.length() + "\r\n\r\n"
+                        + "Content-Length: " + formBody.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + "\r\n\r\n"
                         + formBody);
 
         HttpRequestResponse result = api.http().sendRequest(req);
@@ -1560,7 +1600,7 @@ public class GraphqlTool implements ScanModule {
                 "POST " + path + " HTTP/1.1\r\n"
                         + "Host: " + originalRequest.httpService().host() + "\r\n"
                         + "Content-Type: application/json\r\n"
-                        + "Content-Length: " + body.length() + "\r\n\r\n"
+                        + "Content-Length: " + body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + "\r\n\r\n"
                         + body);
 
         HttpRequestResponse result = api.http().sendRequest(req);
@@ -1790,9 +1830,6 @@ public class GraphqlTool implements ScanModule {
      * Build a valid GraphQL query for a specific argument with an injected value.
      */
     private String buildQueryForArg(InjectableArg arg, String value) {
-        // Escape the value for GraphQL string
-        String escaped = value.replace("\\", "\\\\").replace("\"", "\\\"");
-
         StringBuilder query = new StringBuilder();
         boolean isMutation = "Mutation".equalsIgnoreCase(arg.parentType)
                 || arg.parentType.toLowerCase().contains("mutation");
@@ -1806,7 +1843,15 @@ public class GraphqlTool implements ScanModule {
             JsonObject argDef = argEl.getAsJsonObject();
             String name = safeString(argDef, "name");
             if (name.equals(arg.argName)) {
-                argParts.add(name + ": \"" + escaped + "\"");
+                // Pass JSON objects/arrays raw (unquoted) for NoSQL injection testing;
+                // quote everything else as a GraphQL string
+                String trimmed = value.trim();
+                if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+                    argParts.add(name + ": " + trimmed);
+                } else {
+                    String escaped = value.replace("\\", "\\\\").replace("\"", "\\\"");
+                    argParts.add(name + ": \"" + escaped + "\"");
+                }
             } else {
                 argParts.add(name + ": " + getPlaceholder(argDef.getAsJsonObject("type")));
             }
@@ -2048,7 +2093,7 @@ public class GraphqlTool implements ScanModule {
         headers.append("POST ").append(path).append(" HTTP/1.1\r\n");
         headers.append("Host: ").append(originalRequest.httpService().host()).append("\r\n");
         headers.append("Content-Type: application/json\r\n");
-        headers.append("Content-Length: ").append(jsonBody.length()).append("\r\n");
+        headers.append("Content-Length: ").append(jsonBody.getBytes(java.nio.charset.StandardCharsets.UTF_8).length).append("\r\n");
 
         // Carry over cookies and authorization from original request
         for (var h : originalRequest.headers()) {

@@ -565,9 +565,22 @@ public class SstiScanner implements ScanModule {
             String payloadTemplate = payloadInfo[0];
             String technique = payloadInfo[1];
 
-            // If engine was identified, only send OOB payloads for that engine
-            if (identifiedEngine != null && !technique.toLowerCase().contains(identifiedEngine.toLowerCase())) {
-                continue;
+            // If engine was identified, only send OOB payloads for that engine and related engines
+            if (identifiedEngine != null) {
+                String techLower = technique.toLowerCase();
+                String engineLower = identifiedEngine.toLowerCase();
+                // Use word-boundary match to avoid substring false positives
+                // (e.g., engine "EL" matching "mod*el*" in an unrelated technique)
+                boolean match = techLower.matches(".*\\b" + Pattern.quote(engineLower) + "\\b.*");
+                // Thymeleaf uses Spring EL, so include Spring EL payloads when Thymeleaf is detected
+                if (!match && engineLower.contains("thymeleaf")) {
+                    match = techLower.contains("spring el");
+                }
+                // Spring EL apps often use Thymeleaf as the view layer
+                if (!match && engineLower.contains("spring")) {
+                    match = techLower.contains("thymeleaf");
+                }
+                if (!match) continue;
             }
 
             // AtomicReference to capture the sent request/response for the finding
@@ -577,6 +590,12 @@ public class SstiScanner implements ScanModule {
                     "ssti-scanner", url, target.name,
                     "SSTI OOB " + technique,
                     interaction -> {
+                        // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                        // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                        // wait is almost always enough for the sending thread to complete its set() call.
+                        for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                            try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                        }
                         // Mark parameter as confirmed — skip all remaining phases
                         oobConfirmedParams.add(target.name);
                         findingsStore.addFinding(Finding.builder("ssti-scanner",
@@ -589,7 +608,7 @@ public class SstiScanner implements ScanModule {
                                 .description("Server-Side Template Injection confirmed via Burp Collaborator. "
                                         + "The template engine executed the injected command, triggering a "
                                         + interaction.type().name() + " callback.")
-                                .requestResponse(sentRequest.get())
+                                .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
                                 .payload(payloadTemplate)
                                 .build());
                         api.logging().logToOutput("[SSTI OOB] Confirmed! " + technique

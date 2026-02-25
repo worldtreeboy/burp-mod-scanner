@@ -6,11 +6,11 @@
 
 <p align="center">
   <strong>One extension to replace them all.</strong><br>
-  21 vulnerability scanners, 4 passive analyzers, and AI-powered analysis — in a single JAR.
+  14 active scanners, 4 passive analyzers, and AI-powered analysis — in a single JAR.
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.26-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.27-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -57,7 +57,7 @@
                         │    ┌──┼──┐                      │
                         │    ▼  ▼  ▼                      │
                         │  ┌──────────────────────────┐   │
-                        │  │ 16 Active   4 Passive    │   │
+                        │  │ 14 Active   4 Passive    │   │
                         │  │ Scanners    Analyzers    │   │
                         │  │        AI Analyzer       │   │
                         │  └──────────┬───────────────┘   │
@@ -77,7 +77,7 @@
 
 ## Key Highlights
 
-**21 Modules, One JAR** &mdash; SQLi, XSS, SSRF, SSTI, RCE, XXE, deserialization, GraphQL, CORS, cache poisoning, path traversal, CRLF, auth bypass, host header injection, HPP, prototype pollution, and more. All deduplicated, all in one place.
+**19 Modules, One JAR** &mdash; SQLi, XSS, SSRF, SSTI, RCE, XXE, deserialization, GraphQL, CORS, cache poisoning, path traversal, host header injection, HPP, prototype pollution, and more. All deduplicated, all in one place.
 
 ${\color{#FF0000}\textbf{S}}{\color{#FF4500}\textbf{c}}{\color{#FF8C00}\textbf{a}}{\color{#FFA500}\textbf{n}}$ ${\color{#FFD700}\textbf{W}}{\color{#ADFF2F}\textbf{h}}{\color{#32CD32}\textbf{i}}{\color{#00CC00}\textbf{l}}{\color{#00CED1}\textbf{e}}$ ${\color{#1E90FF}\textbf{Y}}{\color{#4169E1}\textbf{o}}{\color{#6A5ACD}\textbf{u}}$ ${\color{#8A2BE2}\textbf{B}}{\color{#9400D3}\textbf{r}}{\color{#BA55D3}\textbf{o}}{\color{#FF00FF}\textbf{w}}{\color{#FF1493}\textbf{s}}{\color{#FF69B4}\textbf{e}}$ &mdash; Set your target scope, click Start, and just browse. OmniStrike's static scanners automatically test every in-scope request in real time. AI scanning is manual-only (right-click) to prevent token waste. Want more control? Right-click any request to scan it ad-hoc with any module.
 
@@ -186,7 +186,7 @@ That's it. Findings appear in Burp's Dashboard and the OmniStrike tab.
 ## Scanner Modules
 
 <details>
-<summary><strong>Active Scanners (16 Modules)</strong> &mdash; click to expand</summary>
+<summary><strong>Active Scanners (14 Modules)</strong> &mdash; click to expand</summary>
 
 <br>
 
@@ -257,12 +257,6 @@ Reflected `Origin` header, `null` origin trust, subdomain trust validation, sche
 <summary><strong>Cache Poisoning</strong></summary>
 
 Unkeyed header reflection detection across 30 header vectors, 29 unkeyed query parameter tests, cacheability analysis, optional cache poison confirmation with clean request verification.
-</details>
-
-<details>
-<summary><strong>CRLF Injection</strong></summary>
-
-Header injection via query/body parameters with 8 encoding variants. HTTP response splitting via double CRLF. Header-to-header injection via reflected headers. Set-Cookie injection for session fixation.
 </details>
 
 <details>
@@ -347,7 +341,7 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, **OpenCode CLI**, and di
 | **Smart filter probing** | Probes which characters survive server-side filtering, then selects only viable payloads and generates adaptive evasions |
 | **Context-aware XSS** | Payloads adapt to 6 distinct reflection contexts with per-context evasion strategies |
 | **Comment & library awareness** | Passive analyzer auto-skips minified libraries and discards matches inside HTML/JS comments |
-| **Request/response highlighting** | Findings in Burp's Dashboard highlight the injected payload in the request and the matched evidence in the response — just like Burp's native scanner. All 21 modules annotate findings with byte-range markers. |
+| **Request/response highlighting** | Findings in Burp's Dashboard highlight the injected payload in the request and the matched evidence in the response — just like Burp's native scanner. All 19 modules annotate findings with byte-range markers. |
 | **OOB detection** | Blind SQLi, XXE, SSRF, RCE, and deserialization via Burp Collaborator callbacks |
 | **Deduplication** | Findings deduplicated by normalized URL with cross-module overlap prevention |
 
@@ -357,7 +351,7 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, **OpenCode CLI**, and di
 |---|---|
 | **A01 Broken Access Control** | Auth Bypass, CORS Misconfiguration, IDOR via GraphQL |
 | **A02 Cryptographic Failures** | Security Header Analyzer (cookie flags, HSTS) |
-| **A03 Injection** | SQLi, XSS, SSTI, CMDi, CRLF, XXE, HPP |
+| **A03 Injection** | SQLi, XSS, SSTI, CMDi, XXE, HPP |
 | **A04 Insecure Design** | GraphQL schema analysis, Hidden Endpoint Finder |
 | **A05 Security Misconfiguration** | Security Headers, CORS, Cache Poisoning, Host Header |
 | **A06 Vulnerable Components** | Deserialization gadget chains (Java/.NET/PHP/Python/Ruby/Node.js), Prototype Pollution |
@@ -473,7 +467,41 @@ For bugs and feature requests: [GitHub Issues](https://github.com/worldtreeboy/O
 
 ---
 
-## What's New in v1.26
+## What's New in v1.27
+
+**Comprehensive Bug Audit** &mdash; Full codebase audit across all 19 modules with 30+ bug fixes covering thread safety, false positives, race conditions, and logic errors.
+
+- **Removed CRLF Injection module** &mdash; Redundant with XSS scanner's response header injection. 20 → 19 modules.
+- **Fixed OOB AtomicReference race condition** &mdash; All 7 injection modules using Collaborator OOB callbacks now use spin-wait pattern to prevent null request/response in findings when the poller fires before the sending thread completes.
+- **Fixed FindingsStore thread safety** &mdash; `addFinding()` and `clearModule()` now synchronized. Cross-module dedup keys (`xmod:`) properly rebuilt on module clear.
+- **Fixed OmniStrikeScanCheck stale findings** &mdash; Dashboard integration uses snapshot diff to avoid re-reporting cleared findings. Deferred findings use own request/response instead of unrelated audit trigger.
+- **Fixed TimingLock semaphore ownership** &mdash; Replaced `Semaphore` with `ReentrantLock` so only the owning thread can release, preventing cross-thread unlock corruption.
+- **Fixed CommandInjectionScanner empty baseline** &mdash; Skips output-based detection when baseline body is empty instead of false-matching against blank response.
+- **Fixed GraphQL NoSQL injection** &mdash; `buildQueryForArg()` now passes JSON objects/arrays raw (unquoted) so MongoDB operators like `$ne` are not turned into string literals.
+- **Fixed GraphQL Content-Length** &mdash; Uses `getBytes(UTF_8).length` instead of `String.length()` for correct byte-level Content-Length on multi-byte characters.
+- **Fixed GraphQL IDOR null check** &mdash; Changed `!body.contains("null")` to `!body.equals("null")` so responses containing null JSON fields are not incorrectly filtered.
+- **Fixed XXE/PathTraversal localhost false positive** &mdash; Evidence pattern for Windows hosts file changed from `"localhost"` (matches any page) to `"127.0.0.1\s+localhost"`.
+- **Fixed SQLi Oracle DBMS_PIPE false condition** &mdash; Added fallback for direct DBMS_PIPE payloads without `WHEN 1=1`, replacing delay 18→0 for proper 3-step verification.
+- **Fixed ScopeManager userinfo bypass** &mdash; Strips `user:pass@` from URLs before host extraction to prevent scope bypass via `http://attacker@target.com/`.
+- **Fixed CollaboratorManager thread leak** &mdash; Shuts down existing poller before creating new one on re-initialization.
+- **Fixed AI batch scan context loss** &mdash; Multi-pass analysis now accumulates summaries across passes instead of replacing, so later passes retain full context.
+- **Fixed LlmClient JSON extraction** &mdash; Replaced naive first-`{`-to-last-`}` with proper brace-depth matching to avoid spanning multiple JSON objects.
+- **Fixed SSTI engine filtering** &mdash; Thymeleaf detection now also fires Spring EL OOB payloads (and vice versa) since the two engines are closely related.
+- **Fixed HPP false privilege escalation** &mdash; Removed `"session"` from Set-Cookie check — any session cookie being set was falsely flagged as privilege escalation.
+- **Fixed context menu showing disabled modules** &mdash; Per-module submenu now uses `getEnabledNonAiModules()` instead of `getAllModules()`.
+- **Fixed ClientSideAnalyzer IP skip** &mdash; Narrowed blanket `10.0.0.0/24` skip to only `10.0.0.0` and `10.0.0.1` to avoid suppressing real internal IP disclosures.
+- **Fixed SecurityHeaderAnalyzer CSP scoping** &mdash; `data:`/`blob:` check now scoped to `script-src` directive only, not the entire CSP string.
+- **Fixed SecurityHeaderAnalyzer duplicate headers** &mdash; Multiple instances of the same header are merged instead of overwritten.
+- **Fixed CachePoisonScanner no-store/private** &mdash; `no-store` and `private` Cache-Control directives now correctly mark response as non-cacheable.
+- **Fixed SmartSqliDetector race condition** &mdash; Uses atomic `putIfAbsent()` to prevent duplicate scans of the same parameter.
+- **Fixed AiVulnAnalyzer cookie injection** &mdash; Uses `replaceCookieValue()` to preserve other cookies instead of replacing the entire Cookie header.
+- **Fixed ActiveScanExecutor cancel count** &mdash; `cancelAll()` uses `shutdownNow()` return count instead of double-counting.
+- **Fixed ModuleRegistry thread safety** &mdash; Uses `Collections.synchronizedMap()` with synchronized iteration.
+- **Fixed CliBackend RCE** &mdash; User prompt now piped via stdin instead of interpolated into shell command arguments.
+- **Fixed CollaboratorManager fuzzy matching** &mdash; Replaced substring search with exact `get()` by payload ID.
+- **Fixed ClientSideAnalyzer secret detection** &mdash; `break` → `continue` in hardcoded secret checks so comment/placeholder/entropy filters apply to each match instead of aborting the entire scan.
+
+### Previous (v1.26)
 
 - **Deserialization OOB Payload Audit** &mdash; Triple-checked every OOB payload across all 6 languages. Removed ~21 non-functional payloads that could never trigger Collaborator callbacks (false negatives), fixed ~10 payloads with broken syntax/encoding. Net result: fewer wasted Collaborator interactions, zero false OOB positives.
 - **Fixed .NET XML OOB** &mdash; All 5 .NET XML payloads were sending the payload name instead of the actual XML due to an array index swap. Now correctly sends XAML/XXE/XSLT payloads.
@@ -510,6 +538,6 @@ MIT License. See [LICENSE](LICENSE).
 ---
 
 <p align="center">
-  <strong>One JAR. 21 modules. Zero configuration.</strong><br>
+  <strong>One JAR. 19 modules. Zero configuration.</strong><br>
   <sub>Stop managing extensions. Start finding vulnerabilities.</sub>
 </p>

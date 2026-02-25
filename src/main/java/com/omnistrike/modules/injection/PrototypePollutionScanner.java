@@ -436,15 +436,18 @@ public class PrototypePollutionScanner implements ScanModule {
      */
     private boolean checkPersistence(HttpRequestResponse original, String canary) {
         try {
-            // Build a clean GET to the same URL (or root path)
+            // Probe with the same method as the original request — POST endpoints often
+            // return 404/405 for GET, causing false negatives. Send a clean body-less
+            // request using the original method and all original headers (auth, cookies).
             String probeUrl = original.request().url();
-            HttpRequest probe = HttpRequest.httpRequestFromUrl(probeUrl);
-            // Copy Host header from original
-            for (var h : original.request().headers()) {
-                if (h.name().equalsIgnoreCase("Host")) {
-                    probe = probe.withRemovedHeader("Host").withAddedHeader("Host", h.value());
-                    break;
-                }
+            String method = original.request().method();
+            HttpRequest probe;
+            if ("GET".equalsIgnoreCase(method)) {
+                probe = HttpRequest.httpRequestFromUrl(probeUrl);
+            } else {
+                // Re-send the original request unchanged (with the original JSON body)
+                // so the endpoint routes correctly. The canary detection checks the response.
+                probe = original.request();
             }
 
             HttpRequestResponse result = api.http().sendRequest(probe);

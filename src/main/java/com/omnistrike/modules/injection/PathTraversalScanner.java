@@ -42,7 +42,7 @@ public class PathTraversalScanner implements ScanModule {
     private static final Pattern UNIX_HOSTNAME_PATTERN = Pattern.compile("^[a-zA-Z0-9][a-zA-Z0-9._-]+$", Pattern.MULTILINE);
     private static final Pattern UNIX_ENVIRON_PATTERN = Pattern.compile("(PATH=|HOME=|USER=|SHELL=)");
     private static final Pattern WIN_INI_PATTERN = Pattern.compile("\\[(fonts|extensions|mci extensions|files)\\]", Pattern.CASE_INSENSITIVE);
-    private static final Pattern WIN_HOSTS_PATTERN = Pattern.compile("localhost", Pattern.CASE_INSENSITIVE);
+    private static final Pattern WIN_HOSTS_PATTERN = Pattern.compile("127\\.0\\.0\\.1\\s+localhost", Pattern.CASE_INSENSITIVE);
     private static final Pattern PHP_INFO_PATTERN = Pattern.compile("(phpinfo\\(\\)|PHP Version|PHP Extension|Zend Engine)", Pattern.CASE_INSENSITIVE);
     // Require root: followed by a hash algorithm identifier ($1$, $5$, $6$, $y$) or locked markers
     private static final Pattern UNIX_SHADOW_PATTERN = Pattern.compile("root:\\$[156y]\\$|root:!:|root:\\*:");

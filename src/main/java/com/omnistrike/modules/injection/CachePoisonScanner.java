@@ -317,6 +317,7 @@ public class CachePoisonScanner implements ScanModule {
 
     private CacheInfo analyzeCacheability(HttpRequestResponse response) {
         boolean cacheable = false;
+        boolean explicitlyNotCacheable = false; // no-store/private is authoritative
         List<String> indicators = new ArrayList<>();
 
         for (var h : response.response().headers()) {
@@ -326,10 +327,12 @@ public class CachePoisonScanner implements ScanModule {
             switch (name) {
                 case "cache-control":
                     if (value.contains("no-store") || value.contains("private")) {
+                        explicitlyNotCacheable = true;
+                        cacheable = false;
                         indicators.add("Cache-Control: " + h.value() + " (not cacheable)");
                     } else if (value.contains("public") || value.contains("max-age")
                             || value.contains("s-maxage")) {
-                        cacheable = true;
+                        if (!explicitlyNotCacheable) cacheable = true;
                         indicators.add("Cache-Control: " + h.value() + " (cacheable)");
                     }
                     break;
@@ -342,7 +345,8 @@ public class CachePoisonScanner implements ScanModule {
                     try {
                         int age = Integer.parseInt(value.trim());
                         if (age > 0) {
-                            cacheable = true;
+                            // Age > 0 means a cache served this, but respect no-store/private
+                            if (!explicitlyNotCacheable) cacheable = true;
                             indicators.add("Age: " + h.value() + " (served from cache)");
                         } else {
                             indicators.add("Age: 0 (freshly fetched from origin)");
@@ -353,7 +357,7 @@ public class CachePoisonScanner implements ScanModule {
                     break;
                 case "x-cache":
                     if (value.contains("hit")) {
-                        cacheable = true;
+                        if (!explicitlyNotCacheable) cacheable = true;
                         indicators.add("X-Cache: " + h.value() + " (cached)");
                     } else if (value.contains("miss")) {
                         indicators.add("X-Cache: " + h.value() + " (not cached)");
@@ -361,7 +365,7 @@ public class CachePoisonScanner implements ScanModule {
                     break;
                 case "cf-cache-status":
                     if (value.contains("hit")) {
-                        cacheable = true;
+                        if (!explicitlyNotCacheable) cacheable = true;
                         indicators.add("CF-Cache-Status: " + h.value() + " (cached)");
                     } else if (value.contains("miss") || value.contains("dynamic") || value.contains("bypass")) {
                         indicators.add("CF-Cache-Status: " + h.value() + " (not cached)");
@@ -369,7 +373,7 @@ public class CachePoisonScanner implements ScanModule {
                     break;
                 case "x-cache-status":
                     if (value.contains("hit")) {
-                        cacheable = true;
+                        if (!explicitlyNotCacheable) cacheable = true;
                         indicators.add("X-Cache-Status: " + h.value() + " (cached)");
                     } else {
                         indicators.add("X-Cache-Status: " + h.value());
@@ -380,7 +384,7 @@ public class CachePoisonScanner implements ScanModule {
                     break;
                 case "expires":
                     if (!value.equals("0") && !value.equals("-1")) {
-                        cacheable = true;
+                        if (!explicitlyNotCacheable) cacheable = true;
                         indicators.add("Expires: " + h.value());
                     }
                     break;

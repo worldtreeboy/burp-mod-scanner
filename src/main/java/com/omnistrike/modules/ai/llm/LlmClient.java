@@ -23,6 +23,9 @@ public class LlmClient {
     private final CliBackend cliBackend = new CliBackend();
     private final ApiKeyBackend apiKeyBackend = new ApiKeyBackend();
 
+    // Logger callback — set by the extension to route to Montoya api.logging().logToError()
+    private volatile java.util.function.Consumer<String> errorLogger;
+
     // Connection mode — determines which backend is used
     private volatile AiConnectionMode connectionMode = AiConnectionMode.NONE;
 
@@ -39,6 +42,18 @@ public class LlmClient {
     private volatile boolean apiKeyConfigured = false;
 
     public LlmClient() {
+    }
+
+    /** Sets the error logger (should route to api.logging().logToError()). */
+    public void setErrorLogger(java.util.function.Consumer<String> logger) {
+        this.errorLogger = logger;
+    }
+
+    private void logError(String message) {
+        java.util.function.Consumer<String> logger = errorLogger;
+        if (logger != null) {
+            logger.accept(message);
+        }
     }
 
     // ==================== Connection mode ====================
@@ -149,8 +164,8 @@ public class LlmClient {
                 ));
             }
         } catch (Exception e) {
-            // Log parse failure — don't silently swallow
-            System.err.println("[LlmClient] Failed to parse AI findings JSON: " + e.getMessage()
+            // Log parse failure via Montoya logger — never use System.err
+            logError("[LlmClient] Failed to parse AI findings JSON: " + e.getMessage()
                     + " | json snippet: " + (json != null ? json.substring(0, Math.min(json.length(), 300)) : "null"));
         }
 
@@ -178,11 +193,26 @@ public class LlmClient {
                 if (block.startsWith("{")) return block;
             }
         }
-        // Try to find raw JSON object
+        // Try to find raw JSON object using brace matching
         start = text.indexOf('{');
-        int end = text.lastIndexOf('}');
-        if (start >= 0 && end > start) {
-            return text.substring(start, end + 1);
+        if (start >= 0) {
+            int depth = 0;
+            boolean inString = false;
+            boolean escaped = false;
+            for (int i = start; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (escaped) { escaped = false; continue; }
+                if (c == '\\' && inString) { escaped = true; continue; }
+                if (c == '"') { inString = !inString; continue; }
+                if (inString) continue;
+                if (c == '{') depth++;
+                else if (c == '}') {
+                    depth--;
+                    if (depth == 0) {
+                        return text.substring(start, i + 1);
+                    }
+                }
+            }
         }
         return null;
     }

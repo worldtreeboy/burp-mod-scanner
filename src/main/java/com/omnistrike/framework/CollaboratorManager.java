@@ -53,6 +53,11 @@ public class CollaboratorManager {
      */
     public boolean initialize() {
         try {
+            // Shutdown existing poller to prevent thread leak on re-initialization
+            if (poller != null) {
+                poller.shutdownNow();
+                poller = null;
+            }
             // Try to restore from persistence first
             String savedKey = api.persistence().extensionData().getString("omnistrike_collab_key");
             if (savedKey != null) {
@@ -155,29 +160,14 @@ public class CollaboratorManager {
 
                 List<Interaction> interactions = client.getAllInteractions();
                 for (Interaction interaction : interactions) {
-                    // Match interaction to a pending payload using the interaction ID.
-                    // Burp's interaction.id() is a PayloadId that can be compared to
-                    // the payload.id() we stored via exact string match.
+                    // Match interaction to a pending payload using exact payload ID match.
+                    // Burp's interaction.id() returns the PayloadId we stored at generation time.
+                    // The old bidirectional contains() fallback was removed because short payload
+                    // IDs (e.g., "abc") could substring-match longer unrelated IDs ("xyzabcdef"),
+                    // consuming the wrong payload and orphaning the real match until TTL expiry.
                     String interactionId = interaction.id().toString();
-                    PendingPayload matched = null;
-                    String matchedKey = null;
-
-                    // Try exact match first (most reliable)
-                    matched = pendingPayloads.get(interactionId);
-                    if (matched != null) {
-                        matchedKey = interactionId;
-                    } else {
-                        // Fallback: interaction ID may be a prefix/suffix of our stored key
-                        // (Burp may append subdomain info). Use contains as fallback.
-                        for (Map.Entry<String, PendingPayload> entry : pendingPayloads.entrySet()) {
-                            if (interactionId.contains(entry.getKey())
-                                    || entry.getKey().contains(interactionId)) {
-                                matched = entry.getValue();
-                                matchedKey = entry.getKey();
-                                break;
-                            }
-                        }
-                    }
+                    PendingPayload matched = pendingPayloads.get(interactionId);
+                    String matchedKey = matched != null ? interactionId : null;
 
                     if (matched != null) {
                         pendingPayloads.remove(matchedKey);

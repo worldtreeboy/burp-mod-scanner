@@ -2085,6 +2085,12 @@ public class DeserializationScanner implements ScanModule {
                     "deser-scanner", url, dp.name,
                     "Deser OOB " + dp.language + " " + technique,
                     interaction -> {
+                        // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                        // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                        // wait is almost always enough for the sending thread to complete its set() call.
+                        for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                            try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                        }
                         oobConfirmedParams.add(dp.name);
                         findingsStore.addFinding(Finding.builder("deser-scanner",
                                         dp.language + " Deserialization RCE (Out-of-Band)",
@@ -2099,7 +2105,7 @@ public class DeserializationScanner implements ScanModule {
                                         + "Remediation: Do not deserialize untrusted data. Use safe alternatives "
                                         + "(JSON with strict typing, signed serialization, allowlist-based filters).")
                                 .payload(payloadTemplate)
-                                .requestResponse(sentRequest.get())
+                                .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
                                 .build());
                         api.logging().logToOutput("[Deser OOB] Confirmed! " + dp.language + " " + technique
                                 + " at " + url + " param=" + dp.name);

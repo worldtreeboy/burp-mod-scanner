@@ -124,6 +124,12 @@ public class HostHeaderScanner implements ScanModule {
         String collabPayload = collaboratorManager.generatePayload(
                 "host-header", url, "Host", "Password reset poisoning via Host header",
                 interaction -> {
+                    // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                    // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                    // wait is almost always enough for the sending thread to complete its set() call.
+                    for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
                     findingsStore.addFinding(Finding.builder("host-header",
                                     "Host Header Injection: Password Reset Poisoning",
                                     Severity.CRITICAL, Confidence.CERTAIN)
@@ -136,7 +142,7 @@ public class HostHeaderScanner implements ScanModule {
                                     + "the link would leak their reset token to the attacker.")
                             .remediation("Never use the Host header to generate URLs in emails or password reset links. "
                                     + "Use a hardcoded, server-side configured base URL instead.")
-                            .requestResponse(sentRequest.get())
+                            .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
                             .payload(sentHost.get())
                             .build());
                     api.logging().logToOutput("[Host Header] Password reset poisoning confirmed! " + url);

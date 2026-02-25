@@ -430,7 +430,10 @@ public class HttpParamPollutionScanner implements ScanModule {
     private HttpRequest appendDuplicateParamWithValues(HttpRequest request, HppTarget target,
                                                         String firstValue, String secondValue) {
         try {
-            String suffix = target.name + "=" + secondValue;
+            // Encode second value for safe inclusion in query/body — prevents malformed
+            // requests when secondValue contains special chars (e.g., WAF bypass payloads).
+            String encodedSecondValue = PayloadEncoder.encode(secondValue);
+            String suffix = target.name + "=" + encodedSecondValue;
 
             switch (target.location) {
                 case QUERY: {
@@ -524,7 +527,7 @@ public class HttpParamPollutionScanner implements ScanModule {
             if (h.name().equalsIgnoreCase("Set-Cookie")) {
                 String cookieVal = h.value().toLowerCase();
                 if (cookieVal.contains("admin") || cookieVal.contains("role")
-                        || cookieVal.contains("privilege") || cookieVal.contains("session")) {
+                        || cookieVal.contains("privilege")) {
                     return "Modified session cookie set: " + h.value().substring(0, Math.min(h.value().length(), 100));
                 }
             }

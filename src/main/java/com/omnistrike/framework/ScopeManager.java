@@ -57,6 +57,12 @@ public class ScopeManager {
             if (stripped.contains("://")) {
                 stripped = stripped.substring(stripped.indexOf("://") + 3);
             }
+            // Strip userinfo (user:pass@) to prevent bypass via http://attacker@target.com/
+            int atSign = stripped.indexOf('@');
+            int slashBeforeAt = stripped.indexOf('/');
+            if (atSign > 0 && (slashBeforeAt < 0 || atSign < slashBeforeAt)) {
+                stripped = stripped.substring(atSign + 1);
+            }
             // Handle IPv6 bracket notation [::1]
             if (stripped.startsWith("[")) {
                 int closeBracket = stripped.indexOf(']');

@@ -2,6 +2,7 @@ package com.omnistrike.framework;
 
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Thread pool for active scan modules. All active modules submit their
@@ -15,12 +16,24 @@ public class ActiveScanExecutor {
     private volatile int threadPoolSize;
     private volatile int rateLimitMs = 0;
     private final Object resizeLock = new Object();
+    private final AtomicLong discardedTaskCount = new AtomicLong(0);
+    private volatile java.util.function.Consumer<String> logger;
 
     private static final int MAX_QUEUE_SIZE = 5000;
 
     public ActiveScanExecutor(int threadPoolSize) {
         this.threadPoolSize = threadPoolSize;
         this.executor = createPool(threadPoolSize);
+    }
+
+    /** Sets the logger for warnings (should route to api.logging().logToOutput()). */
+    public void setLogger(java.util.function.Consumer<String> logger) {
+        this.logger = logger;
+    }
+
+    /** Returns the total number of scan tasks silently discarded due to queue overflow. */
+    public long getDiscardedTaskCount() {
+        return discardedTaskCount.get();
     }
 
     private ExecutorService createPool(int size) {
@@ -32,7 +45,16 @@ public class ActiveScanExecutor {
                     t.setDaemon(true);
                     return t;
                 },
-                new ThreadPoolExecutor.DiscardOldestPolicy()
+                (rejectedTask, pool) -> {
+                    // Log instead of silently discarding — user needs to know scans are being dropped
+                    long total = discardedTaskCount.incrementAndGet();
+                    java.util.function.Consumer<String> log = logger;
+                    if (log != null) {
+                        log.accept("[ActiveScanExecutor] WARNING: Scan task discarded (queue full at "
+                                + MAX_QUEUE_SIZE + " tasks). Total discarded: " + total
+                                + ". Consider reducing scan scope or increasing thread pool size.");
+                    }
+                }
         );
     }
 
@@ -139,14 +161,11 @@ public class ActiveScanExecutor {
         synchronized (resizeLock) {
             ExecutorService old = this.executor;
             if (old == null) return 0;
-            int purged = 0;
-            if (old instanceof ThreadPoolExecutor tpe) {
-                purged = tpe.getQueue().size();
-            }
+            // shutdownNow() returns all queued + not-yet-started tasks — use its count
+            // directly instead of also counting queue.size() which would double-count.
             List<Runnable> notRun = old.shutdownNow();
-            purged += notRun.size();
             this.executor = createPool(threadPoolSize);
-            return purged;
+            return notRun.size();
         }
     }
 

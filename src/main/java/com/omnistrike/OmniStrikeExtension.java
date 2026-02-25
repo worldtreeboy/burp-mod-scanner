@@ -15,15 +15,15 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.26 — Entry Point
+ * OmniStrike v1.27 — Entry Point
  *
- * A unified vulnerability scanning framework for Burp Suite with 20 modules:
+ * A unified vulnerability scanning framework for Burp Suite with 19 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
  *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer
  *   Injection (Active): SQLi Detector, SSTI Scanner, SSRF Scanner, XSS Scanner,
  *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner,
  *       CORS Misconfiguration, Cache Poisoning, Host Header Injection, Prototype Pollution, Path Traversal,
- *       CRLF Injection, HTTP Parameter Pollution
+ *       HTTP Parameter Pollution
  *
  * Built exclusively on the Montoya API.
  */
@@ -41,7 +41,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.26 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.27 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -138,10 +138,6 @@ public class OmniStrikeExtension implements BurpExtension {
         pathTraversal.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(pathTraversal);
 
-        CrlfInjectionScanner crlfInjection = new CrlfInjectionScanner();
-        crlfInjection.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(crlfInjection);
-
         HttpParamPollutionScanner hpp = new HttpParamPollutionScanner();
         hpp.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(hpp);
@@ -231,7 +227,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.26 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.27 ready ===");
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");

@@ -445,7 +445,8 @@ public class XssScanner implements ScanModule {
     @Override
     public List<Finding> processHttpFlowForParameter(
             HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
-        List<Finding> findings = new ArrayList<>();
+        // Snapshot count before active testing — active findings go directly to findingsStore
+        int countBefore = findingsStore.getCount();
 
         // Active: Reflected XSS testing — filtered to target parameter only
         HttpRequest request = requestResponse.request();
@@ -453,7 +454,9 @@ public class XssScanner implements ScanModule {
         List<XssTarget> targets = extractTargets(request);
         targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
         runXssTargets(requestResponse, targets, urlPath);
-        return findings;
+
+        // Collect findings that were added directly to findingsStore during active testing
+        return collectNewFindings(countBefore);
     }
 
     @Override
@@ -465,6 +468,9 @@ public class XssScanner implements ScanModule {
             findings.addAll(analyzeForDomXss(requestResponse));
         }
 
+        // Snapshot count before active testing — active findings go directly to findingsStore
+        int countBefore = findingsStore.getCount();
+
         // Active: Reflected XSS testing
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
@@ -474,7 +480,25 @@ public class XssScanner implements ScanModule {
                 + " | params found: " + targets.size());
 
         runXssTargets(requestResponse, targets, urlPath);
+
+        // Collect findings that were added directly to findingsStore during active testing
+        findings.addAll(collectNewFindings(countBefore));
         return findings;
+    }
+
+    /**
+     * Collects findings added to findingsStore since countBefore by this module.
+     */
+    private List<Finding> collectNewFindings(int countBefore) {
+        List<Finding> newFindings = new ArrayList<>();
+        List<Finding> all = findingsStore.getAllFindings();
+        for (int i = countBefore; i < all.size(); i++) {
+            Finding f = all.get(i);
+            if ("xss-scanner".equals(f.getModuleId())) {
+                newFindings.add(f);
+            }
+        }
+        return newFindings;
     }
 
     private void runXssTargets(HttpRequestResponse requestResponse,
@@ -2667,6 +2691,12 @@ public class XssScanner implements ScanModule {
             String collabDomain = collaboratorManager.generatePayload(
                     "xss-scanner", url, target.name, "Blind XSS OOB (" + technique + ")",
                     interaction -> {
+                        // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                        // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                        // wait is almost always enough for the sending thread to complete its set() call.
+                        for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                            try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                        }
                         findingsStore.addFinding(Finding.builder("xss-scanner",
                                         "Blind XSS via Out-of-Band Interaction (" + technique + ")",
                                         Severity.CRITICAL, Confidence.CERTAIN)
@@ -2679,7 +2709,7 @@ public class XssScanner implements ScanModule {
                                         + "The injected payload was rendered in a different context (e.g., admin panel, "
                                         + "log viewer, email) and triggered an out-of-band " + interaction.type().name()
                                         + " callback. Parameter '" + target.name + "' is vulnerable.")
-                                .requestResponse(sentRequest.get())
+                                .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
                                 .payload(template)
                                 .build());
                         api.logging().logToOutput("[XSS Blind] Confirmed OOB interaction! "

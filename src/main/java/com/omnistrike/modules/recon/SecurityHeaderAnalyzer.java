@@ -107,9 +107,13 @@ public class SecurityHeaderAnalyzer implements ScanModule {
         // Only do full header analysis once per host
         boolean firstTimeHost = analyzedHosts.putIfAbsent(host, Boolean.TRUE) == null;
 
+        // Use merge to preserve ALL values for multi-valued headers (e.g., multiple
+        // Content-Security-Policy or Set-Cookie headers). Values are joined with \n
+        // so downstream checks analyze every header, not just the last one.
         Map<String, String> responseHeaderMap = new LinkedHashMap<>();
         for (var h : response.headers()) {
-            responseHeaderMap.put(h.name().toLowerCase(), h.value());
+            responseHeaderMap.merge(h.name().toLowerCase(), h.value(),
+                    (existing, newVal) -> existing + "\n" + newVal);
         }
 
         List<HeaderFinding> hostFindings = headerFindings.computeIfAbsent(host,
@@ -292,8 +296,9 @@ public class SecurityHeaderAnalyzer implements ScanModule {
             }
         }
 
-        // Check for data: or blob: in script-src
-        if (csp.contains("script-src") && (csp.contains("data:") || csp.contains("blob:"))) {
+        // Check for data: or blob: specifically within script-src directive
+        String scriptSrcDirective = extractDirective(csp, "script-src");
+        if (scriptSrcDirective != null && (scriptSrcDirective.contains("data:") || scriptSrcDirective.contains("blob:"))) {
             findings.add(Finding.builder("header-analyzer",
                             "CSP script-src allows data: or blob: URIs",
                             Severity.MEDIUM, Confidence.CERTAIN)
@@ -401,6 +406,24 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                     .description("HSTS does not include subdomains. Subdomains may be accessed over HTTP.")
                     .build());
         }
+    }
+
+    /**
+     * Extracts a specific CSP directive's value from a full CSP string.
+     * Returns null if the directive is not present.
+     * E.g., extractDirective("default-src 'self'; script-src cdn.example.com data:", "script-src")
+     *   → "script-src cdn.example.com data:"
+     */
+    private static String extractDirective(String csp, String directiveName) {
+        if (csp == null) return null;
+        // CSP directives are separated by ';'
+        for (String directive : csp.split(";")) {
+            String trimmed = directive.trim();
+            if (trimmed.toLowerCase().startsWith(directiveName.toLowerCase())) {
+                return trimmed;
+            }
+        }
+        return null;
     }
 
     private String extractCookieName(String setCookieValue) {

@@ -279,7 +279,15 @@ public class SsrfScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> httpSentRequest = new AtomicReference<>();
         String collabPayload = collaboratorManager.generatePayload(
                 "ssrf-scanner", url, target.name, "SSRF OOB HTTP",
-                interaction -> reportOobFinding(interaction, url, target, "HTTP/DNS", httpSentRequest.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                    // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                    // wait is almost always enough for the sending thread to complete its set() call.
+                    for (int _w = 0; _w < 10 && httpSentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, target, "HTTP/DNS", httpSentRequest.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload == null) return;
 
         // URL-encode the collaborator domain for double-encoding bypass
@@ -310,7 +318,13 @@ public class SsrfScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> dnsSentRequest = new AtomicReference<>();
         String dnsPayload = collaboratorManager.generatePayload(
                 "ssrf-scanner", url, target.name, "SSRF OOB DNS-only",
-                interaction -> reportOobFinding(interaction, url, target, "DNS-only", dnsSentRequest.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && dnsSentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, target, "DNS-only", dnsSentRequest.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (dnsPayload != null) {
             HttpRequestResponse dnsResult = sendPayload(original, target, dnsPayload); // Just the hostname, no scheme
             dnsSentRequest.set(dnsResult);
@@ -322,6 +336,10 @@ public class SsrfScanner implements ScanModule {
         String headerCollab = collaboratorManager.generatePayload(
                 "ssrf-scanner", url, target.name, "SSRF OOB Host header",
                 interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && hostSentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
                     oobConfirmedParams.add(target.name);
                     findingsStore.addFinding(Finding.builder("ssrf-scanner",
                                     "SSRF via Host Header Injection",
@@ -329,7 +347,7 @@ public class SsrfScanner implements ScanModule {
                             .url(url).parameter("Host header")
                             .evidence("Collaborator " + interaction.type() + " interaction from " + interaction.clientIp())
                             .description("Server followed a manipulated Host header to make an external request.")
-                            .requestResponse(hostSentRequest.get())
+                            .requestResponse(hostSentRequest.get())  // may be null if callback fires before set() — finding is still reported
                             .payload("SSRF OOB Host header")
                             .build());
                 });

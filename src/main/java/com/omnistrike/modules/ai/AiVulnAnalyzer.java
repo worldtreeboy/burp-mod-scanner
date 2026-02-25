@@ -1359,12 +1359,50 @@ public class AiVulnAnalyzer implements ScanModule {
             case "header" -> original
                     .withRemovedHeader(payload.parameter)
                     .withAddedHeader(payload.parameter, payload.payload);
-            case "cookie" -> original
-                    .withRemovedHeader("Cookie")
-                    .withAddedHeader("Cookie", payload.parameter + "=" + payload.payload);
+            case "cookie" -> {
+                // Replace only the target cookie, preserving all other cookies (session, CSRF, etc.)
+                String existingCookies = "";
+                for (var h : original.headers()) {
+                    if ("Cookie".equalsIgnoreCase(h.name())) {
+                        existingCookies = h.value();
+                        break;
+                    }
+                }
+                String newCookies = replaceCookieValue(existingCookies, payload.parameter, payload.payload);
+                yield original.withRemovedHeader("Cookie").withAddedHeader("Cookie", newCookies);
+            }
             default -> original.withParameter(
                     HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.URL));
         };
+    }
+
+    /**
+     * Replaces a single cookie's value in a cookie header string, preserving all other cookies.
+     * If the target cookie doesn't exist, appends it.
+     */
+    private static String replaceCookieValue(String cookieHeader, String name, String newValue) {
+        if (cookieHeader == null || cookieHeader.isEmpty()) {
+            return name + "=" + newValue;
+        }
+        StringBuilder result = new StringBuilder();
+        boolean replaced = false;
+        for (String pair : cookieHeader.split(";")) {
+            String trimmed = pair.trim();
+            if (result.length() > 0) result.append("; ");
+            int eq = trimmed.indexOf('=');
+            String cookieName = eq > 0 ? trimmed.substring(0, eq).trim() : trimmed.trim();
+            if (cookieName.equalsIgnoreCase(name)) {
+                result.append(name).append("=").append(newValue);
+                replaced = true;
+            } else {
+                result.append(trimmed);
+            }
+        }
+        if (!replaced) {
+            if (result.length() > 0) result.append("; ");
+            result.append(name).append("=").append(newValue);
+        }
+        return result.toString();
     }
 
     // ==================== WAF Detection ====================
@@ -2725,8 +2763,9 @@ public class AiVulnAnalyzer implements ScanModule {
 
                     batchFindings += processBatchFindings(rawResponse, files);
 
-                    // Build summary for next pass
-                    previousSummary = buildPassSummary(rawResponse, files, batchStart, fileIdx);
+                    // Accumulate summary across passes so later passes retain full context
+                    String passSummary = buildPassSummary(rawResponse, files, batchStart, fileIdx);
+                    previousSummary = previousSummary.isEmpty() ? passSummary : previousSummary + "\n" + passSummary;
                     pass++;
                 }
             }
