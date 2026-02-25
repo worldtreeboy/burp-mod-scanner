@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.24-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.25-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -229,16 +229,16 @@ Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebbl
 <details>
 <summary><strong>Deserialization Scanner</strong></summary>
 
-**6-language coverage** with passive fingerprinting, active payload injection, and OOB confirmation:
+**6-language coverage** with passive fingerprinting, active payload injection, and **OOB-first Collaborator detection** (~77 OOB payloads fired before any other technique):
 
-- **Java** — 16 time-based gadget chains (CommonsCollections 1-7, Spring1-2, BeanUtils, Groovy1, Hibernate1, C3P0, JRMPClient, ROME, BeanShell1, Myfaces1, Jdk7u21, Vaadin1, Click1), 32 vulnerable library signatures
-- **.NET** — 12 BinaryFormatter + 15 JSON.NET + 7 XML serializer payloads
-- **PHP** — 14 chains (WordPress, Magento, Laravel, Monolog, Drupal, ThinkPHP, CakePHP)
-- **Python** — 12 payloads (pickle, YAML `unsafe_load`, jsonpickle, subprocess pickle)
-- **Ruby** — 8 payloads (Marshal.load gadget chains, YAML/Psych `!!ruby/object` ERB template, `Gem::Installer`, `Gem::Requirement`, `Net::FTP`, `OpenURI`), 3 OOB payloads. Detects Marshal data in cookies and YAML object tags in responses.
-- **Node.js** — `node-serialize` IIFE/require/Buffer payloads, `cryo`, `funcster`, `js-yaml` detection, 3 OOB payloads (HTTP callback, nslookup, curl). Detects serialization library markers in responses.
+- **Java** — 16 time-based gadget chains (CommonsCollections 1-7, Spring1-2, BeanUtils, Groovy1, Hibernate1, C3P0, JRMPClient, ROME, BeanShell1, Myfaces1, Jdk7u21, Vaadin1, Click1), 32 vulnerable library signatures, ~25 OOB payloads (JNDI, Fastjson, Jackson, XStream, SnakeYAML — all Collaborator-confirmed)
+- **.NET** — 12 BinaryFormatter + 15 JSON.NET + 7 XML serializer payloads, ~12 OOB payloads (ObjectDataProvider, JSON.NET Assembly.Load/Uri, XAML, SoapFormatter, WebClient, XmlDocument XXE)
+- **PHP** — 14 framework chains (WordPress, Magento, Laravel, Monolog, Drupal, ThinkPHP, CakePHP), 8 OOB payloads (SoapClient SSRF, Monolog SocketHandler, Guzzle PSR7, Laravel PendingBroadcast, Symfony Process, SwiftMailer SMTP, SplFileObject)
+- **Python** — 12 active payloads + 12 OOB payloads (Pickle os.system/subprocess/urllib/builtins.exec, PyYAML os.system/subprocess, jsonpickle)
+- **Ruby** — 8 active payloads + 8 OOB payloads (Gem::Source, Net::FTP, OpenURI, ERB nslookup/curl, Net::HTTP, Resolv::DNS). Detects Marshal data in cookies and YAML object tags.
+- **Node.js** — 8 active payloads + 12 OOB payloads (node-serialize HTTP/nslookup/curl/wget/DNS, cryo HTTP/nslookup, funcster HTTP/nslookup, js-yaml HTTP/nslookup, prototype pollution)
 
-38 suspect cookie name patterns. Time-based, error-based, and OOB detection across all languages.
+38 suspect cookie name patterns. **OOB-first architecture**: Collaborator payloads fire before time-based/error-based phases; if OOB confirms, remaining phases are skipped.
 </details>
 
 <details>
@@ -473,16 +473,17 @@ For bugs and feature requests: [GitHub Issues](https://github.com/worldtreeboy/O
 
 ---
 
-## What's New in v1.24
+## What's New in v1.25
 
-- **Evidence-Based Exploit Confidence** &mdash; AI exploitation results are now FIRM only when concrete evidence is found in the response (e.g., `/etc/passwd` content, database schema dumps, OS command output, password hashes, cloud metadata). No evidence = not reported. Eliminates noise from 200 OK responses with no actual exploitation proof.
-- **Exploit Response Highlighting** &mdash; matched evidence is set as `responseEvidence` so Burp highlights the exact extracted content (file data, DB tables, command output) in the response viewer.
-- **Per-Vuln-Type Evidence Detection** &mdash; exploitation evidence matching is attack-type-aware: deserialization/path traversal checks for file contents, SQLi checks for schema/hash dumps, CMDi checks for OS output, SSTI checks for math canary evaluation and config leaks, SSRF checks for cloud metadata, XXE checks for file exfil, XSS checks for verbatim reflection.
+- **Deserialization OOB-First Architecture** &mdash; Deserialization scanner now fires all Collaborator OOB payloads before any other detection phase (time-based, error-based). If OOB confirms, remaining phases are skipped — consistent with SQLi, SSRF, and Command Injection scanners.
+- **~77 Deserialization OOB Payloads** &mdash; Massively expanded OOB coverage across all 6 languages: Java (Fastjson, Jackson, XStream, SnakeYAML), .NET (JSON.NET, XAML, SoapFormatter, WebClient), PHP (SoapClient, Monolog, Guzzle, Laravel, Symfony, SwiftMailer, SplFileObject), Python (Pickle, PyYAML, jsonpickle, urllib), Ruby (Gem, ERB, Net::FTP, Net::HTTP, OpenURI, Resolv::DNS), Node.js (node-serialize, cryo, funcster, js-yaml, DNS resolve).
+- **Fixed Java/PHP OOB** &mdash; Java sub-framework payloads (Fastjson/Jackson/XStream/SnakeYAML) now properly route through Collaborator with real callback URLs. PHP OOB replaced broken payloads (non-functional stdClass/GuzzleHt) with real gadget chains.
 
-### Previous (v1.23)
+### Previous (v1.24)
 
-- **Fuzz History** &mdash; AI scanner remembers every payload already sent per URL + parameter + vulnerability type. On re-scan, only novel payloads are generated.
-- **Manual-Only AI Scanning** &mdash; AI fires exclusively via right-click context menu. No auto-fire from proxy traffic.
+- **Evidence-Based Exploit Confidence** &mdash; AI exploitation results are FIRM only with concrete evidence. No evidence = not reported.
+- **Fuzz History** &mdash; AI remembers every payload tested per URL/param/vuln type. Re-scan generates only novel payloads.
+- **Manual-Only AI Scanning** &mdash; AI fires exclusively via right-click context menu.
 
 ---
 
