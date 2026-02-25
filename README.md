@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.25-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.26-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -229,13 +229,13 @@ Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebbl
 <details>
 <summary><strong>Deserialization Scanner</strong></summary>
 
-**6-language coverage** with passive fingerprinting, active payload injection, and **OOB-first Collaborator detection** (~77 OOB payloads fired before any other technique):
+**6-language coverage** with passive fingerprinting, active payload injection, and **OOB-first Collaborator detection** (~56 verified OOB payloads — all validated for real-world exploitability):
 
-- **Java** — 16 time-based gadget chains (CommonsCollections 1-7, Spring1-2, BeanUtils, Groovy1, Hibernate1, C3P0, JRMPClient, ROME, BeanShell1, Myfaces1, Jdk7u21, Vaadin1, Click1), 32 vulnerable library signatures, ~25 OOB payloads (JNDI, Fastjson, Jackson, XStream, SnakeYAML — all Collaborator-confirmed)
-- **.NET** — 12 BinaryFormatter + 15 JSON.NET + 7 XML serializer payloads, ~12 OOB payloads (ObjectDataProvider, JSON.NET Assembly.Load/Uri, XAML, SoapFormatter, WebClient, XmlDocument XXE)
-- **PHP** — 14 framework chains (WordPress, Magento, Laravel, Monolog, Drupal, ThinkPHP, CakePHP), 8 OOB payloads (SoapClient SSRF, Monolog SocketHandler, Guzzle PSR7, Laravel PendingBroadcast, Symfony Process, SwiftMailer SMTP, SplFileObject)
-- **Python** — 12 active payloads + 12 OOB payloads (Pickle os.system/subprocess/urllib/builtins.exec, PyYAML os.system/subprocess, jsonpickle)
-- **Ruby** — 8 active payloads + 8 OOB payloads (Gem::Source, Net::FTP, OpenURI, ERB nslookup/curl, Net::HTTP, Resolv::DNS). Detects Marshal data in cookies and YAML object tags.
+- **Java** — 16 time-based gadget chains (CommonsCollections 1-7, Spring1-2, BeanUtils, Groovy1, Hibernate1, C3P0, JRMPClient, ROME, BeanShell1, Myfaces1, Jdk7u21, Vaadin1, Click1), 32 vulnerable library signatures, ~19 OOB payloads (JNDI LDAP/RMI/DNS, Fastjson JdbcRowSetImpl/JndiDataSourceFactory/UnixPrintService/1.2.68+/LdapAttribute, Jackson JdbcRowSetImpl/C3P0/Logback, XStream ProcessBuilder/EventHandler/SortedSet, SnakeYAML ScriptEngineManager/JdbcRowSet/C3P0)
+- **.NET** — 12 BinaryFormatter + 15 JSON.NET + 7 XML serializer payloads, ~9 OOB payloads (ObjectDataProvider nslookup/certutil/PowerShell, XAML XamlReader/DataContractSerializer XXE/SoapFormatter SSRF, SoapFormatter ObjectDataProvider, XmlDocument XXE)
+- **PHP** — 14 framework chains (WordPress, Magento, Laravel, Monolog, Drupal, ThinkPHP, CakePHP), 3 OOB payloads (SoapClient SSRF + WSDL, Monolog SocketHandler — all with correct PHP null bytes and string lengths)
+- **Python** — 12 active payloads + 12 OOB payloads (Pickle os.system/os.popen/urllib/builtins.exec, PyYAML os.system/subprocess, jsonpickle, Pickle P2 binary variants)
+- **Ruby** — 8 active payloads + 5 OOB payloads (Gem::Source YAML, Marshal binary Gem::Source @uri, Marshal Gadget chain nslookup/curl/wget). Detects Marshal data in cookies and YAML object tags.
 - **Node.js** — 8 active payloads + 12 OOB payloads (node-serialize HTTP/nslookup/curl/wget/DNS, cryo HTTP/nslookup, funcster HTTP/nslookup, js-yaml HTTP/nslookup, prototype pollution)
 
 38 suspect cookie name patterns. **OOB-first architecture**: Collaborator payloads fire before time-based/error-based phases; if OOB confirms, remaining phases are skipped.
@@ -473,11 +473,21 @@ For bugs and feature requests: [GitHub Issues](https://github.com/worldtreeboy/O
 
 ---
 
-## What's New in v1.25
+## What's New in v1.26
 
-- **Deserialization OOB-First Architecture** &mdash; Deserialization scanner now fires all Collaborator OOB payloads before any other detection phase (time-based, error-based). If OOB confirms, remaining phases are skipped — consistent with SQLi, SSRF, and Command Injection scanners.
-- **~77 Deserialization OOB Payloads** &mdash; Massively expanded OOB coverage across all 6 languages: Java (Fastjson, Jackson, XStream, SnakeYAML), .NET (JSON.NET, XAML, SoapFormatter, WebClient), PHP (SoapClient, Monolog, Guzzle, Laravel, Symfony, SwiftMailer, SplFileObject), Python (Pickle, PyYAML, jsonpickle, urllib), Ruby (Gem, ERB, Net::FTP, Net::HTTP, OpenURI, Resolv::DNS), Node.js (node-serialize, cryo, funcster, js-yaml, DNS resolve).
-- **Fixed Java/PHP OOB** &mdash; Java sub-framework payloads (Fastjson/Jackson/XStream/SnakeYAML) now properly route through Collaborator with real callback URLs. PHP OOB replaced broken payloads (non-functional stdClass/GuzzleHt) with real gadget chains.
+- **Deserialization OOB Payload Audit** &mdash; Triple-checked every OOB payload across all 6 languages. Removed ~21 non-functional payloads that could never trigger Collaborator callbacks (false negatives), fixed ~10 payloads with broken syntax/encoding. Net result: fewer wasted Collaborator interactions, zero false OOB positives.
+- **Fixed .NET XML OOB** &mdash; All 5 .NET XML payloads were sending the payload name instead of the actual XML due to an array index swap. Now correctly sends XAML/XXE/XSLT payloads.
+- **Fixed PHP Serialization** &mdash; PHP OOB payloads now use real null bytes for protected/private properties (was using literal `\0`). Fixed string length prefixes (Monolog `connectionString` s:14→s:19, SoapClient `_user_agent` s:13→s:11). Removed 5 non-functional PHP chains (GuzzleHttp Uri, Laravel PendingBroadcast, Symfony Process, SwiftMailer, SplFileObject).
+- **Fixed Java OOB** &mdash; Removed Fastjson BasicDataSource (broken JNDI chain), Jackson/SnakeYAML SpringPropertyPathFactory (bean lookup, not JNDI), XStream ImageIO (no Collaborator URL). Fixed Fastjson LdapAttribute malformed JSON. Fixed doubled description prefixes ("Fastjson Fastjson JdbcRowSetImpl").
+- **Fixed Python OOB** &mdash; Replaced `subprocess.check_output` (fails with plain string on Linux) with `os.popen` (always uses shell).
+- **Fixed Ruby OOB** &mdash; Removed all 8 non-functional YAML payloads and 2 ERB Marshal payloads. Replaced with working Gem::Source payload.
+- **Fixed .NET SoapFormatter** &mdash; Corrected non-existent `ServerWebRequest` type to `HttpWebRequest`. Fixed ObjectDataProvider namespace from XAML presentation to CLR assembly format.
+
+### Previous (v1.25)
+
+- **Deserialization OOB-First Architecture** &mdash; Deserialization scanner now fires all Collaborator OOB payloads before any other detection phase (time-based, error-based). If OOB confirms, remaining phases are skipped.
+- **~77 Deserialization OOB Payloads** &mdash; Expanded OOB coverage across all 6 languages.
+- **Fixed Java/PHP OOB** &mdash; Java sub-framework payloads now properly route through Collaborator. PHP OOB replaced broken payloads with real gadget chains.
 
 ### Previous (v1.24)
 
