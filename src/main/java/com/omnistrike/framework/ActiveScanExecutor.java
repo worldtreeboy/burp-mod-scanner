@@ -18,6 +18,7 @@ public class ActiveScanExecutor {
     private final Object resizeLock = new Object();
     private final AtomicLong discardedTaskCount = new AtomicLong(0);
     private volatile java.util.function.Consumer<String> logger;
+    private volatile boolean unloading = false;
 
     private static final int MAX_QUEUE_SIZE = 5000;
 
@@ -104,10 +105,14 @@ public class ActiveScanExecutor {
             try {
                 task.run();
             } catch (NullPointerException e) {
-                // Burp invalidates its API proxy during extension unload while scan
-                // threads may still be running. Calls to api.logging() etc. throw NPE
-                // with messages like "Cannot invoke ... because the return value of
-                // burp.Zyg5.Za() is null". Silently discard — the extension is dying.
+                if (!unloading) {
+                    // Not during unload — this is a real bug in a scan module. Log it.
+                    java.util.function.Consumer<String> log = logger;
+                    if (log != null) {
+                        log.accept("[ActiveScanExecutor] NPE in scan task: " + e.getMessage());
+                    }
+                }
+                // During unload: Burp invalidates its API proxy, causing NPE — discard safely.
             }
         };
     }
@@ -167,6 +172,11 @@ public class ActiveScanExecutor {
             this.executor = createPool(threadPoolSize);
             return notRun.size();
         }
+    }
+
+    /** Signal that the extension is unloading — NPEs from Burp's dead API proxy are expected. */
+    public void setUnloading(boolean unloading) {
+        this.unloading = unloading;
     }
 
     public void shutdown() {

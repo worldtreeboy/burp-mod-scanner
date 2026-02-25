@@ -73,13 +73,27 @@ public class Finding {
         Finding finding = (Finding) o;
         return Objects.equals(moduleId, finding.moduleId)
                 && Objects.equals(title, finding.title)
-                && Objects.equals(url, finding.url)
+                && Objects.equals(normalizeUrlForDedup(url), normalizeUrlForDedup(finding.url))
                 && Objects.equals(parameter, finding.parameter);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(moduleId, title, url, parameter);
+        return Objects.hash(moduleId, title, normalizeUrlForDedup(url), parameter);
+    }
+
+    /**
+     * Normalize URL for dedup — strips query parameters and fragments, lowercases.
+     * Matches the normalization used by FindingsStore.addFinding() so that
+     * equals()/hashCode() and the store's dedup key agree on identity.
+     */
+    private static String normalizeUrlForDedup(String url) {
+        if (url == null || url.isEmpty()) return "";
+        int qIdx = url.indexOf('?');
+        if (qIdx > 0) url = url.substring(0, qIdx);
+        int fIdx = url.indexOf('#');
+        if (fIdx > 0) url = url.substring(0, fIdx);
+        return url.toLowerCase();
     }
 
     public static class Builder {

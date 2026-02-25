@@ -209,8 +209,12 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(findings);
                     }
-                } catch (NullPointerException ignored) {
-                    // Burp API proxy becomes null during extension unload — discard safely
+                } catch (NullPointerException e) {
+                    // During extension unload Burp's API proxy becomes null — discard safely.
+                    // But if we're still running, this is a real bug — log it.
+                    if (running) {
+                        uiLog(module.getId(), "ERROR (passive): NullPointerException: " + e.getMessage());
+                    }
                 } catch (Exception e) {
                     uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()
                             + ": " + e.getMessage());
@@ -253,8 +257,10 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(findings);
                     }
-                } catch (NullPointerException ignored) {
-                    // Burp API proxy becomes null during extension unload
+                } catch (NullPointerException e) {
+                    if (running) {
+                        uiLog(module.getId(), "ERROR (passive): NullPointerException: " + e.getMessage());
+                    }
                 } catch (Exception e) {
                     if (Thread.currentThread().isInterrupted()) return; // stopped
                     uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()

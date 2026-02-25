@@ -207,6 +207,7 @@ public class OmniStrikeExtension implements BurpExtension {
             try { api.logging().logToOutput("OmniStrike unloading..."); }
             catch (NullPointerException ignored) {}
             interceptor.setRunning(false);
+            executor.setUnloading(true); // Signal NPEs from dead API proxy are expected
             interceptor.shutdown(); // stop passive executor
             if (sessionKeepAlive != null) {
                 sessionKeepAlive.shutdown();

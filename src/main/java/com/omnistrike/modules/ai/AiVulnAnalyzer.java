@@ -122,7 +122,8 @@ public class AiVulnAnalyzer implements ScanModule {
     private final AtomicLong totalInputTokens = new AtomicLong(0);
     private final AtomicLong totalOutputTokens = new AtomicLong(0);
     private final AtomicInteger totalApiCalls = new AtomicInteger(0);
-    private volatile double estimatedCostUsd = 0.0;
+    // estimatedCostUsd removed — now computed on-the-fly from atomic token counters
+    // to avoid non-atomic read-compute-write race on volatile double.
 
     // ==================== Improvement 11: Multi-Step Exploitation ====================
     private static final int MAX_EXPLOIT_ROUNDS = 5;
@@ -1731,11 +1732,8 @@ public class AiVulnAnalyzer implements ScanModule {
     }
 
     private void updateEstimatedCost() {
-        // Default pricing: Anthropic Claude Sonnet-level pricing as baseline
-        // Input: $3/1M tokens, Output: $15/1M tokens
-        double inputCost = (totalInputTokens.get() / 1_000_000.0) * 3.0;
-        double outputCost = (totalOutputTokens.get() / 1_000_000.0) * 15.0;
-        estimatedCostUsd = inputCost + outputCost;
+        // No-op: cost is now computed on-the-fly in getEstimatedCostUsd()
+        // from the atomic token counters, eliminating the race condition.
     }
 
     // ==================== Payload Deduplication (Improvement 8) ====================
@@ -3224,7 +3222,12 @@ public class AiVulnAnalyzer implements ScanModule {
     public long getTotalInputTokens() { return totalInputTokens.get(); }
     public long getTotalOutputTokens() { return totalOutputTokens.get(); }
     public int getTotalApiCalls() { return totalApiCalls.get(); }
-    public double getEstimatedCostUsd() { return estimatedCostUsd; }
+    /** Computes cost on-the-fly from atomic token counters — no stored field, no race. */
+    public double getEstimatedCostUsd() {
+        double inputCost = (totalInputTokens.get() / 1_000_000.0) * 3.0;
+        double outputCost = (totalOutputTokens.get() / 1_000_000.0) * 15.0;
+        return inputCost + outputCost;
+    }
 
     /** Returns a formatted cost summary string for display in the UI. */
     public String getCostSummary() {
@@ -3233,7 +3236,7 @@ public class AiVulnAnalyzer implements ScanModule {
         int calls = totalApiCalls.get();
         if (calls == 0) return "No API calls yet";
         return String.format("%d calls | %,dK input / %,dK output tokens | est. $%.4f",
-                calls, inTok / 1000, outTok / 1000, estimatedCostUsd);
+                calls, inTok / 1000, outTok / 1000, getEstimatedCostUsd());
     }
 
     /** Resets cost tracking counters. */
@@ -3241,7 +3244,6 @@ public class AiVulnAnalyzer implements ScanModule {
         totalInputTokens.set(0);
         totalOutputTokens.set(0);
         totalApiCalls.set(0);
-        estimatedCostUsd = 0.0;
     }
 
     /** Clears the session findings context. */

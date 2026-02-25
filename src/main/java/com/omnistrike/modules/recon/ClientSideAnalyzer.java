@@ -655,10 +655,10 @@ public class ClientSideAnalyzer implements ScanModule {
             // Discard if inside a comment
             if (isInsideComment(body, matchStart)) continue;
 
-            // Skip IPs that look like version strings (preceded by 'v' or 'version')
-            int lookback = Math.max(0, matchStart - 10);
+            // Skip IPs that look like version strings (preceded by 'v' or 'version' immediately before IP)
+            int lookback = Math.max(0, matchStart - 15);
             String before = body.substring(lookback, matchStart).toLowerCase();
-            if (before.contains("v") || before.contains("version")) continue;
+            if (before.matches(".*\\bv(ersion)?\\s*[.:=]?\\s*$")) continue;
 
             // Skip IPs inside src= or href= pointing to CDN resources
             int attrLookback = Math.max(0, matchStart - 30);

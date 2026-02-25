@@ -58,17 +58,12 @@ public class CollaboratorManager {
                 poller.shutdownNow();
                 poller = null;
             }
-            // Try to restore from persistence first
-            String savedKey = api.persistence().extensionData().getString("omnistrike_collab_key");
-            if (savedKey != null) {
-                client = api.collaborator().restoreClient(SecretKey.secretKey(savedKey));
-                api.logging().logToOutput("Restored Collaborator client from saved key.");
-            } else {
-                client = api.collaborator().createClient();
-                api.persistence().extensionData().setString(
-                        "omnistrike_collab_key", client.getSecretKey().toString());
-                api.logging().logToOutput("Created new Collaborator client.");
-            }
+            // Always create a fresh Collaborator client each session.
+            // Persisting the secret key is a security risk (plaintext in project file),
+            // and pending callback handlers are in-memory only — a restored client can't
+            // match interactions to findings anyway.
+            client = api.collaborator().createClient();
+            api.logging().logToOutput("Created new Collaborator client.");
             available = true;
 
             // Start polling for interactions every 5 seconds
