@@ -17,6 +17,8 @@ import com.omnistrike.model.*;
 import java.io.ByteArrayOutputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import com.google.gson.*;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
@@ -531,20 +533,27 @@ public class DeserializationScanner implements ScanModule {
         public final String value;
         public final String language; // Java, .NET, PHP, Python
         public final String indicator; // what triggered detection
-        public final String encoding; // "none", "base64", "base64url" — tells active testing how to wrap payloads
+        public final String encoding; // "none", "base64", "base64url", "json+base64" — tells active testing how to wrap payloads
+        public final String jsonKey; // JSON field name containing serialized data, or null
 
         public DeserPoint(String location, String name, String value, String language, String indicator) {
-            this(location, name, value, language, indicator, "none");
+            this(location, name, value, language, indicator, "none", null);
         }
 
         public DeserPoint(String location, String name, String value, String language,
                            String indicator, String encoding) {
+            this(location, name, value, language, indicator, encoding, null);
+        }
+
+        public DeserPoint(String location, String name, String value, String language,
+                           String indicator, String encoding, String jsonKey) {
             this.location = location;
             this.name = name;
             this.value = value;
             this.language = language;
             this.indicator = indicator;
             this.encoding = encoding;
+            this.jsonKey = jsonKey;
         }
     }
 
@@ -2449,8 +2458,14 @@ public class DeserializationScanner implements ScanModule {
         try {
             // If the original value was base64-encoded, wrap the payload in base64 to match.
             // Skip if payload is already base64 (binary Java/Python/.NET payloads).
-            if (dp.encoding != null && dp.encoding.contains("base64") && !isAlreadyBase64(payload)) {
+            if (dp.encoding != null && dp.encoding.contains("base64") && !dp.encoding.contains("json") && !isAlreadyBase64(payload)) {
                 payload = Base64.getEncoder().encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+            }
+
+            // JSON wrapping: re-serialize payload into the original JSON structure
+            if (dp.encoding != null && dp.encoding.contains("json") && dp.jsonKey != null) {
+                payload = wrapPayloadInJson(dp, payload);
+                if (payload == null) return null;
             }
 
             HttpRequest request = original.request();
@@ -2792,6 +2807,10 @@ public class DeserializationScanner implements ScanModule {
             }
         }
 
+        // 2.5. JSON extraction — parse value (raw or URL-decoded) as JSON and scan each string field
+        String jsonCandidate = urlDecoded != null ? urlDecoded : rawValue;
+        all.addAll(scanJsonStringValues(jsonCandidate, rawValue, location, name, url, findings, foundLangs));
+
         // 3. Base64-decoded (tryBase64Decode already handles URL-decode → base64)
         String b64Decoded = tryBase64Decode(rawValue);
         if (b64Decoded != null) {
@@ -2806,6 +2825,110 @@ public class DeserializationScanner implements ScanModule {
         }
 
         return all;
+    }
+
+    /**
+     * Parses a value as a JSON object and scans each top-level string field for serialized data.
+     * Handles the common pattern of serialized data nested inside JSON string values, e.g.
+     * {"token":"BASE64_PHP_SERIALIZED","sig":"..."} (often URL-encoded in cookies).
+     *
+     * For each string value, tries: raw scan, then base64-decode → scan.
+     * If a match is found, creates a DeserPoint with encoding="json+base64" (or "json")
+     * and jsonKey set to the field name for accurate payload re-injection.
+     */
+    private List<DeserPoint> scanJsonStringValues(String jsonCandidate, String originalRawValue,
+                                                   String location, String name, String url,
+                                                   List<Finding> findings, Set<String> foundLangs) {
+        List<DeserPoint> jsonFindings = new ArrayList<>();
+        if (jsonCandidate == null || jsonCandidate.length() < 2) return jsonFindings;
+
+        String trimmed = jsonCandidate.trim();
+        if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return jsonFindings;
+
+        JsonObject jsonObj;
+        try {
+            JsonElement parsed = JsonParser.parseString(trimmed);
+            if (!parsed.isJsonObject()) return jsonFindings;
+            jsonObj = parsed.getAsJsonObject();
+        } catch (Exception e) {
+            return jsonFindings; // Not valid JSON — skip silently
+        }
+
+        for (Map.Entry<String, JsonElement> entry : jsonObj.entrySet()) {
+            if (!entry.getValue().isJsonPrimitive() || !entry.getValue().getAsJsonPrimitive().isString()) {
+                continue; // Only scan string values
+            }
+            String fieldKey = entry.getKey();
+            String fieldValue = entry.getValue().getAsString();
+            if (fieldValue.length() < 3) continue;
+
+            // Try raw field value
+            List<DeserPoint> rawHits = scanForAllPatterns(fieldValue, location, name, url, "json", findings);
+            for (DeserPoint dp : rawHits) {
+                String dedupKey = dp.language + ":" + dp.indicator;
+                if (!foundLangs.contains(dedupKey)) {
+                    jsonFindings.add(new DeserPoint(location, name, originalRawValue, dp.language,
+                            dp.indicator + " (json key '" + fieldKey + "')", "json", fieldKey));
+                    foundLangs.add(dedupKey);
+                }
+            }
+
+            // Try base64-decode the field value, then scan
+            String b64Decoded = tryBase64Decode(fieldValue);
+            if (b64Decoded != null) {
+                List<DeserPoint> b64Hits = scanForAllPatterns(b64Decoded, location, name, url, "json+base64", findings);
+                for (DeserPoint dp : b64Hits) {
+                    String dedupKey = dp.language + ":" + dp.indicator;
+                    if (!foundLangs.contains(dedupKey)) {
+                        jsonFindings.add(new DeserPoint(location, name, originalRawValue, dp.language,
+                                dp.indicator + " (json key '" + fieldKey + "')", "json+base64", fieldKey));
+                        foundLangs.add(dedupKey);
+                    }
+                }
+            }
+        }
+
+        return jsonFindings;
+    }
+
+    /**
+     * Wraps a payload into the original JSON structure for re-injection.
+     * URL-decodes dp.value if needed to get the JSON string, replaces the dp.jsonKey field
+     * with the payload (base64-encoded if encoding contains "base64"), re-serializes to JSON.
+     */
+    private String wrapPayloadInJson(DeserPoint dp, String payload) {
+        try {
+            // Recover the JSON string from the original (possibly URL-encoded) value
+            String jsonStr = dp.value;
+            String urlDecoded = tryUrlDecode(jsonStr);
+            if (urlDecoded != null) jsonStr = urlDecoded;
+
+            JsonObject jsonObj = JsonParser.parseString(jsonStr.trim()).getAsJsonObject();
+
+            // Base64-encode the payload if the original field value was base64-encoded
+            String injectedValue;
+            if (dp.encoding.contains("base64")) {
+                injectedValue = isAlreadyBase64(payload)
+                        ? payload
+                        : Base64.getEncoder().encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+            } else {
+                injectedValue = payload;
+            }
+
+            jsonObj.addProperty(dp.jsonKey, injectedValue);
+
+            // Re-serialize — Gson produces compact JSON matching typical app behavior
+            String result = new Gson().toJson(jsonObj);
+
+            // If original value was URL-encoded, re-encode the JSON
+            if (dp.value.contains("%7B") || dp.value.contains("%7b") || dp.value.contains("%22")) {
+                result = URLEncoder.encode(result, StandardCharsets.UTF_8);
+            }
+
+            return result;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
