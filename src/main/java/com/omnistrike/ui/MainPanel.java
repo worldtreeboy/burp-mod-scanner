@@ -378,6 +378,7 @@ public class MainPanel extends JPanel {
         passiveFindingsPanel = new FindingsOverviewPanel(findingsStore, passiveFilter);
         passiveFindingsPanel.setApi(api);
         requestResponsePanel = new RequestResponsePanel(findingsStore);
+        requestResponsePanel.setApi(api);
         bottomTabs.addTab("Active Findings", activeFindingsPanel);
         bottomTabs.addTab("Passive Findings", passiveFindingsPanel);
         bottomTabs.addTab("Request/Response", requestResponsePanel);
