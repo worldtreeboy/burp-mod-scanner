@@ -108,7 +108,6 @@ public class AiVulnAnalyzer implements ScanModule {
     // Token budget constants (approximate: 1 token ≈ 4 chars)
     private static final int CONTEXT_TOKEN_BUDGET = 8000;
     private static final int CONTEXT_CHAR_BUDGET = CONTEXT_TOKEN_BUDGET * 4; // ~32K chars
-    private static final int RESPONSE_BODY_TRUNCATE = 2000; // chars for adaptive results (keep script content visible)
 
     // ==================== Improvement 9: Structured Output Enforcement ====================
     private static final int MAX_JSON_RETRIES = 1;
@@ -1699,13 +1698,13 @@ public class AiVulnAnalyzer implements ScanModule {
     /**
      * Strips boilerplate from an HTTP response body for inclusion in prompts.
      */
-    private String stripResponseBoilerplate(String body, int maxLen) {
+    private String stripResponseBoilerplate(String body) {
         if (body == null) return "";
         // Remove CSS blocks only — keep <script> content for DOM XSS, reflected XSS, secrets analysis
         body = body.replaceAll("<style[^>]*>[\\s\\S]*?</style>", "");
         body = body.replaceAll("<(?!/?script)[^>]+>", " "); // Strip non-script HTML tags
         body = body.replaceAll("\\s+", " ");
-        return truncate(body, maxLen);
+        return body.trim();
     }
 
     // ==================== Structured Output Enforcement (Improvement 9) ====================
@@ -1908,7 +1907,7 @@ public class AiVulnAnalyzer implements ScanModule {
 
                 // Include response body (stripped of boilerplate, Improvement 7)
                 String body = r.response.response().bodyToString();
-                entry.append("Response Body: ").append(stripResponseBoilerplate(body, RESPONSE_BODY_TRUNCATE)).append("\n");
+                entry.append("Response Body: ").append(stripResponseBoilerplate(body)).append("\n");
             }
             entry.append("\n");
 
