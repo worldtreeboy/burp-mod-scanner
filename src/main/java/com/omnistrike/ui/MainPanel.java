@@ -403,12 +403,12 @@ public class MainPanel extends JPanel {
                 int x = (getWidth() - fm.stringWidth(text)) / 2;
                 int y = (getHeight() + fm.getAscent() - fm.getDescent()) / 2;
 
-                Color glowColor = hovered ? NEON_CYAN : FG_DIM;
+                Color glowColor = NEON_CYAN;
 
-                // Pulsing intensity: brighter on hover, subtle idle pulse
+                // Always glowing; hover intensifies
                 float pulse = hovered
-                        ? 0.7f + 0.3f * (float) Math.sin(glowPhase)
-                        : 0.15f + 0.1f * (float) Math.sin(glowPhase);
+                        ? 0.8f + 0.2f * (float) Math.sin(glowPhase)
+                        : 0.4f + 0.2f * (float) Math.sin(glowPhase);
 
                 // Draw glow layers (outer to inner, decreasing radius, increasing alpha)
                 g2.setFont(getFont());
@@ -424,7 +424,7 @@ public class MainPanel extends JPanel {
                 }
 
                 // Draw the crisp foreground text
-                g2.setColor(hovered ? NEON_CYAN : FG_DIM);
+                g2.setColor(NEON_CYAN);
                 g2.drawString(text, x, y);
                 g2.dispose();
             }
