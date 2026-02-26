@@ -29,15 +29,23 @@ public final class GlobalThemeManager {
 
     /** All available palettes. Index 0 is null (Default = Burp's native look). */
     public static final ThemePalette[] ALL_THEMES = {
-            null,                              // 0 - Default (no theme, Burp native)
-            ThemePalette.cyberpunk(),          // 1 - Cyberpunk
-            ThemePalette.ghost(),              // 2 - Ghost
-            ThemePalette.megacorp(),           // 3 - Megacorp
-            ThemePalette.junkyard(),           // 4 - Junkyard
-            ThemePalette.blackIce(),           // 5 - Black Ice
-            ThemePalette.solarpunk(),          // 6 - Solarpunk
-            ThemePalette.netrunner(),          // 7 - Netrunner
-            ThemePalette.vaporTech(),          // 8 - Vapor-Tech
+            null,                              //  0 - Default (no theme, Burp native)
+            ThemePalette.cyberpunk(),          //  1 - Cyberpunk
+            ThemePalette.ghost(),              //  2 - Ghost
+            ThemePalette.megacorp(),           //  3 - Megacorp
+            ThemePalette.junkyard(),           //  4 - Junkyard
+            ThemePalette.blackIce(),           //  5 - Black Ice
+            ThemePalette.solarpunk(),          //  6 - Solarpunk
+            ThemePalette.netrunner(),          //  7 - Netrunner
+            ThemePalette.vaporTech(),          //  8 - Vapor-Tech
+            ThemePalette.bloodMoon(),          //  9 - Blood Moon
+            ThemePalette.radioactive(),        // 10 - Radioactive
+            ThemePalette.deepOcean(),          // 11 - Deep Ocean
+            ThemePalette.sakura(),             // 12 - Sakura
+            ThemePalette.synthwave(),          // 13 - Synthwave
+            ThemePalette.amberTerminal(),      // 14 - Amber Terminal
+            ThemePalette.frozen(),             // 15 - Frozen
+            ThemePalette.dracula(),            // 16 - Dracula
     };
 
     /** Display names for the dropdown, matching ALL_THEMES order. */
@@ -51,6 +59,14 @@ public final class GlobalThemeManager {
             "Solarpunk",
             "Netrunner",
             "Vapor-Tech",
+            "Blood Moon",
+            "Radioactive",
+            "Deep Ocean",
+            "Sakura",
+            "Synthwave",
+            "Amber Terminal",
+            "Frozen",
+            "Dracula",
     };
 
     // ── UIManager keys to override ──────────────────────────────────────
