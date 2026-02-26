@@ -627,6 +627,365 @@ public final class ThemePalette {
                 false);
     }
 
+    // ═════════════════════════════════════════════════════════════════════
+    //  WAVE 2 THEMES
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * Predator — Thermal vision HUD.
+     * Infrared imaging: black base, hot yellows/reds/whites like heat signatures.
+     */
+    public static ThemePalette predator() {
+        Color base = new Color(0x08, 0x05, 0x10);  // deep thermal black
+        return new ThemePalette("Predator",
+                base,
+                lighten(base, 0.05f),
+                lighten(base, 0.08f),
+                lighten(base, 0.12f),
+                lighten(base, 0.18f),
+                lighten(base, 0.25f),
+                new Color(0xFF, 0xDD, 0x00),          // accentPrimary — heat signature yellow
+                new Color(0xFF, 0x44, 0x00),          // accentSecondary — hot red
+                new Color(0xFF, 0xFF, 0x44),          // successGreen → white-hot
+                new Color(0xFF, 0x88, 0x00),          // warningOrange — warm zone
+                new Color(0xFF, 0x00, 0x22),          // errorRed — critical heat
+                new Color(0xFF, 0xAA, 0x33),          // infoBlue → thermal amber
+                new Color(0xFF, 0xEE, 0xBB),          // fgPrimary — warm white
+                new Color(0xCC, 0x88, 0x44),          // fgSecondary — warm mid
+                new Color(0x66, 0x33, 0x22),          // fgDim — cool zone
+                new Color(0xFF, 0x00, 0x00),
+                new Color(0xFF, 0x66, 0x00),
+                new Color(0xFF, 0xDD, 0x00),
+                new Color(0xFF, 0xAA, 0x33),
+                new Color(0xCC, 0x88, 0x44),
+                false);
+    }
+
+    /**
+     * Void — Pure OLED black + single ultraviolet accent. Ultra-minimal.
+     * Staring into the abyss, the abyss stares back.
+     */
+    public static ThemePalette voidTheme() {
+        Color base = new Color(0x00, 0x00, 0x00);  // true black
+        return new ThemePalette("Void",
+                base,
+                new Color(0x0A, 0x0A, 0x0A),
+                new Color(0x11, 0x11, 0x11),
+                new Color(0x16, 0x16, 0x16),
+                new Color(0x22, 0x22, 0x22),
+                new Color(0x2A, 0x2A, 0x2A),
+                new Color(0x99, 0x55, 0xFF),          // accentPrimary — ultraviolet
+                new Color(0x55, 0x22, 0xAA),          // accentSecondary — deep UV
+                new Color(0x77, 0x55, 0xFF),          // successGreen → violet confirmation
+                new Color(0xBB, 0x77, 0xFF),          // warningOrange → light violet warning
+                new Color(0xFF, 0x33, 0x66),          // errorRed — the only warm color
+                new Color(0x77, 0x44, 0xDD),          // infoBlue → mid purple
+                new Color(0xBB, 0xBB, 0xBB),          // fgPrimary — neutral grey
+                new Color(0x66, 0x66, 0x66),          // fgSecondary
+                new Color(0x33, 0x33, 0x33),          // fgDim
+                new Color(0xFF, 0x33, 0x66),
+                new Color(0xBB, 0x77, 0xFF),
+                new Color(0xDD, 0xAA, 0xFF),
+                new Color(0x77, 0x55, 0xFF),
+                new Color(0x66, 0x66, 0x66),
+                false);
+    }
+
+    /**
+     * Honey Badger — Black + gold luxury. High-end watch UI meets hacker tool.
+     * Doesn't care. Takes what it wants.
+     */
+    public static ThemePalette honeyBadger() {
+        Color base = new Color(0x0C, 0x0A, 0x06);  // rich black with warm undertone
+        return new ThemePalette("Honey Badger",
+                base,
+                lighten(base, 0.05f),
+                lighten(base, 0.08f),
+                lighten(base, 0.12f),
+                lighten(base, 0.18f),
+                lighten(base, 0.25f),
+                new Color(0xFF, 0xD7, 0x00),          // accentPrimary — pure gold
+                new Color(0xBB, 0x99, 0x33),          // accentSecondary — antique gold
+                new Color(0xDD, 0xBB, 0x00),          // successGreen → gold success
+                new Color(0xFF, 0x99, 0x00),          // warningOrange — amber
+                new Color(0xFF, 0x33, 0x33),          // errorRed
+                new Color(0xCC, 0xAA, 0x44),          // infoBlue → warm gold
+                new Color(0xEE, 0xDD, 0xBB),          // fgPrimary — champagne
+                new Color(0xAA, 0x99, 0x66),          // fgSecondary — tarnished gold
+                new Color(0x66, 0x55, 0x33),          // fgDim
+                new Color(0xFF, 0x22, 0x22),
+                new Color(0xFF, 0x88, 0x00),
+                new Color(0xFF, 0xCC, 0x00),
+                new Color(0xCC, 0xAA, 0x44),
+                new Color(0xAA, 0x99, 0x66),
+                false);
+    }
+
+    /**
+     * Catppuccin Mocha — Beloved community pastel theme on warm dark base.
+     * Soothing pastels, cozy coding vibes, warm chocolate background.
+     */
+    public static ThemePalette catppuccinMocha() {
+        return new ThemePalette("Catppuccin",
+                new Color(0x1E, 0x1E, 0x2E),          // bgDark — Mocha Base
+                new Color(0x24, 0x24, 0x37),          // bgPanel — Mocha Mantle
+                new Color(0x2A, 0x2A, 0x40),          // bgInput
+                new Color(0x31, 0x32, 0x44),          // bgSurface — Mocha Surface0
+                new Color(0x45, 0x47, 0x5A),          // bgHover — Mocha Surface1
+                new Color(0x58, 0x5B, 0x70),          // border — Mocha Surface2
+                new Color(0x89, 0xB4, 0xFA),          // accentPrimary — Mocha Blue
+                new Color(0xF5, 0xC2, 0xE7),          // accentSecondary — Mocha Pink
+                new Color(0xA6, 0xE3, 0xA1),          // successGreen — Mocha Green
+                new Color(0xFA, 0xB3, 0x87),          // warningOrange — Mocha Peach
+                new Color(0xF3, 0x8B, 0xA8),          // errorRed — Mocha Red
+                new Color(0x74, 0xC7, 0xEC),          // infoBlue — Mocha Sapphire
+                new Color(0xCD, 0xD6, 0xF4),          // fgPrimary — Mocha Text
+                new Color(0xA6, 0xAD, 0xC8),          // fgSecondary — Mocha Subtext1
+                new Color(0x6C, 0x70, 0x86),          // fgDim — Mocha Overlay0
+                new Color(0xF3, 0x8B, 0xA8),
+                new Color(0xFA, 0xB3, 0x87),
+                new Color(0xF9, 0xE2, 0xAF),          // sevMedium — Mocha Yellow
+                new Color(0x74, 0xC7, 0xEC),
+                new Color(0x6C, 0x70, 0x86),
+                false);
+    }
+
+    /**
+     * Nord — Arctic, calm blue-grey palette. The legendary Nord color scheme.
+     * Aurora borealis over frozen lakes.
+     */
+    public static ThemePalette nord() {
+        return new ThemePalette("Nord",
+                new Color(0x2E, 0x34, 0x40),          // bgDark — Nord Polar Night
+                new Color(0x3B, 0x42, 0x52),          // bgPanel — Nord 1
+                new Color(0x43, 0x4C, 0x5E),          // bgInput — Nord 2
+                new Color(0x4C, 0x56, 0x6A),          // bgSurface — Nord 3
+                new Color(0x55, 0x60, 0x75),          // bgHover
+                new Color(0x5E, 0x6A, 0x82),          // border
+                new Color(0x88, 0xC0, 0xD0),          // accentPrimary — Nord Frost (cyan)
+                new Color(0x81, 0xA1, 0xC1),          // accentSecondary — Nord blue
+                new Color(0xA3, 0xBE, 0x8C),          // successGreen — Nord green
+                new Color(0xD0, 0x87, 0x70),          // warningOrange — Nord orange
+                new Color(0xBF, 0x61, 0x6A),          // errorRed — Nord red
+                new Color(0x5E, 0x81, 0xAC),          // infoBlue — Nord deep blue
+                new Color(0xEC, 0xEF, 0xF4),          // fgPrimary — Nord Snow Storm
+                new Color(0xD8, 0xDE, 0xE9),          // fgSecondary — Nord 4
+                new Color(0x7B, 0x88, 0xA1),          // fgDim
+                new Color(0xBF, 0x61, 0x6A),
+                new Color(0xD0, 0x87, 0x70),
+                new Color(0xEB, 0xCB, 0x8B),          // sevMedium — Nord yellow
+                new Color(0x88, 0xC0, 0xD0),
+                new Color(0x7B, 0x88, 0xA1),
+                false);
+    }
+
+    /**
+     * Gruvbox — Retro groove. Warm earthy browns, oranges, greens on dark.
+     * Looks like a wood-paneled 70s computer terminal.
+     */
+    public static ThemePalette gruvbox() {
+        return new ThemePalette("Gruvbox",
+                new Color(0x28, 0x28, 0x28),          // bgDark — Gruvbox bg0
+                new Color(0x32, 0x30, 0x2F),          // bgPanel — Gruvbox bg1
+                new Color(0x3C, 0x38, 0x36),          // bgInput — Gruvbox bg2
+                new Color(0x50, 0x49, 0x45),          // bgSurface — Gruvbox bg3
+                new Color(0x66, 0x5C, 0x54),          // bgHover — Gruvbox bg4
+                new Color(0x7C, 0x6F, 0x64),          // border — Gruvbox gray
+                new Color(0xFE, 0x80, 0x19),          // accentPrimary — Gruvbox orange
+                new Color(0xB8, 0xBB, 0x26),          // accentSecondary — Gruvbox green
+                new Color(0xB8, 0xBB, 0x26),          // successGreen — Gruvbox green
+                new Color(0xFE, 0x80, 0x19),          // warningOrange — Gruvbox orange
+                new Color(0xFB, 0x49, 0x34),          // errorRed — Gruvbox red
+                new Color(0x83, 0xA5, 0x98),          // infoBlue — Gruvbox aqua
+                new Color(0xEB, 0xDB, 0xB2),          // fgPrimary — Gruvbox fg
+                new Color(0xBD, 0xAE, 0x93),          // fgSecondary — Gruvbox fg4
+                new Color(0x92, 0x83, 0x74),          // fgDim — Gruvbox gray
+                new Color(0xFB, 0x49, 0x34),
+                new Color(0xFE, 0x80, 0x19),
+                new Color(0xFA, 0xBD, 0x2F),          // sevMedium — Gruvbox yellow
+                new Color(0x83, 0xA5, 0x98),
+                new Color(0x92, 0x83, 0x74),
+                false);
+    }
+
+    /**
+     * Solarized Dark — Ethan Schoonover's legendary precision-engineered scheme.
+     * Scientifically designed for optimal readability and reduced eye strain.
+     */
+    public static ThemePalette solarizedDark() {
+        return new ThemePalette("Solarized Dark",
+                new Color(0x00, 0x2B, 0x36),          // bgDark — Solarized base03
+                new Color(0x07, 0x36, 0x42),          // bgPanel — Solarized base02
+                new Color(0x0D, 0x3E, 0x4B),          // bgInput
+                new Color(0x13, 0x47, 0x55),          // bgSurface
+                new Color(0x1C, 0x55, 0x63),          // bgHover
+                new Color(0x2A, 0x66, 0x74),          // border
+                new Color(0x26, 0x8B, 0xD2),          // accentPrimary — Solarized blue
+                new Color(0x2A, 0xA1, 0x98),          // accentSecondary — Solarized cyan
+                new Color(0x85, 0x99, 0x00),          // successGreen — Solarized green
+                new Color(0xCB, 0x4B, 0x16),          // warningOrange — Solarized orange
+                new Color(0xDC, 0x32, 0x2F),          // errorRed — Solarized red
+                new Color(0x6C, 0x71, 0xC4),          // infoBlue — Solarized violet
+                new Color(0xFD, 0xF6, 0xE3),          // fgPrimary — Solarized base3
+                new Color(0x93, 0xA1, 0xA1),          // fgSecondary — Solarized base1
+                new Color(0x65, 0x7B, 0x83),          // fgDim — Solarized base00
+                new Color(0xDC, 0x32, 0x2F),
+                new Color(0xCB, 0x4B, 0x16),
+                new Color(0xB5, 0x89, 0x00),          // sevMedium — Solarized yellow
+                new Color(0x26, 0x8B, 0xD2),
+                new Color(0x65, 0x7B, 0x83),
+                false);
+    }
+
+    /**
+     * Mars Colony — Dusty Martian soil, orange horizon, EVA suit HUD.
+     * Red planet survival, dome habitats, iron oxide everything.
+     */
+    public static ThemePalette marsColony() {
+        Color base = new Color(0x1A, 0x0E, 0x08);  // dark Martian soil
+        return new ThemePalette("Mars Colony",
+                base,
+                lighten(base, 0.06f),
+                lighten(base, 0.10f),
+                lighten(base, 0.14f),
+                lighten(base, 0.20f),
+                lighten(base, 0.28f),
+                new Color(0xFF, 0x77, 0x33),          // accentPrimary — Martian sunset orange
+                new Color(0xCC, 0x44, 0x22),          // accentSecondary — iron oxide red
+                new Color(0x88, 0xCC, 0x55),          // successGreen — biodome green
+                new Color(0xFF, 0xAA, 0x22),          // warningOrange — dust storm
+                new Color(0xFF, 0x33, 0x33),          // errorRed — pressure alert
+                new Color(0xDD, 0x88, 0x44),          // infoBlue → warm amber
+                new Color(0xEE, 0xCC, 0xAA),          // fgPrimary — Martian dust-white
+                new Color(0xAA, 0x88, 0x66),          // fgSecondary
+                new Color(0x66, 0x44, 0x33),          // fgDim
+                new Color(0xFF, 0x22, 0x22),
+                new Color(0xFF, 0x77, 0x00),
+                new Color(0xFF, 0xBB, 0x33),
+                new Color(0xDD, 0x88, 0x44),
+                new Color(0xAA, 0x88, 0x66),
+                false);
+    }
+
+    /**
+     * Neon Tokyo — Rain-soaked Shibuya crossing at 2 AM.
+     * Electric blue + hot pink reflections on wet asphalt.
+     */
+    public static ThemePalette neonTokyo() {
+        Color base = new Color(0x0A, 0x0A, 0x14);  // wet asphalt
+        return new ThemePalette("Neon Tokyo",
+                base,
+                lighten(base, 0.05f),
+                lighten(base, 0.09f),
+                lighten(base, 0.13f),
+                lighten(base, 0.19f),
+                lighten(base, 0.26f),
+                new Color(0x00, 0xBB, 0xFF),          // accentPrimary — rain-reflected neon blue
+                new Color(0xFF, 0x33, 0x88),          // accentSecondary — hot pink signage
+                new Color(0x00, 0xFF, 0x99),          // successGreen — kanji neon green
+                new Color(0xFF, 0x99, 0x00),          // warningOrange — taxi light
+                new Color(0xFF, 0x11, 0x55),          // errorRed — danger kanji
+                new Color(0x55, 0x99, 0xFF),          // infoBlue
+                new Color(0xDD, 0xDD, 0xF0),          // fgPrimary — rain-washed white
+                new Color(0x88, 0x88, 0xAA),          // fgSecondary
+                new Color(0x44, 0x44, 0x66),          // fgDim
+                new Color(0xFF, 0x00, 0x44),
+                new Color(0xFF, 0x66, 0x00),
+                new Color(0xFF, 0xCC, 0x00),
+                new Color(0x00, 0xBB, 0xFF),
+                new Color(0x88, 0x88, 0xAA),
+                false);
+    }
+
+    /**
+     * Phantom — Gray-on-gray stealth. Muted teal accent, like smoke and mirrors.
+     * The theme for people who think other dark themes are too colorful.
+     */
+    public static ThemePalette phantom() {
+        Color base = new Color(0x16, 0x18, 0x1A);  // smoke black
+        return new ThemePalette("Phantom",
+                base,
+                new Color(0x1E, 0x20, 0x22),
+                new Color(0x26, 0x28, 0x2A),
+                new Color(0x2E, 0x30, 0x33),
+                new Color(0x3A, 0x3C, 0x40),
+                new Color(0x48, 0x4A, 0x50),
+                new Color(0x55, 0xBB, 0xAA),          // accentPrimary — muted teal (the only color)
+                new Color(0x44, 0x88, 0x77),          // accentSecondary — darker teal
+                new Color(0x55, 0xAA, 0x88),          // successGreen — subtle green-teal
+                new Color(0xBB, 0x99, 0x55),          // warningOrange — muted amber
+                new Color(0xBB, 0x55, 0x55),          // errorRed — muted red
+                new Color(0x55, 0x88, 0x99),          // infoBlue — steel blue
+                new Color(0xBB, 0xBB, 0xBB),          // fgPrimary — light grey
+                new Color(0x77, 0x77, 0x77),          // fgSecondary — mid grey
+                new Color(0x44, 0x44, 0x44),          // fgDim — dark grey
+                new Color(0xBB, 0x44, 0x44),
+                new Color(0xBB, 0x88, 0x44),
+                new Color(0xBB, 0xBB, 0x44),
+                new Color(0x44, 0x99, 0xAA),
+                new Color(0x77, 0x77, 0x77),
+                false);
+    }
+
+    /**
+     * Monokai — The iconic Sublime Text color scheme.
+     * Warm charcoal base, vibrant orange/pink/green/yellow accents.
+     */
+    public static ThemePalette monokai() {
+        return new ThemePalette("Monokai",
+                new Color(0x27, 0x28, 0x22),          // bgDark — Monokai background
+                new Color(0x30, 0x31, 0x2B),          // bgPanel
+                new Color(0x39, 0x3A, 0x33),          // bgInput
+                new Color(0x42, 0x43, 0x3C),          // bgSurface
+                new Color(0x52, 0x53, 0x4C),          // bgHover
+                new Color(0x62, 0x63, 0x5C),          // border
+                new Color(0xF9, 0x26, 0x72),          // accentPrimary — Monokai pink
+                new Color(0xFD, 0x97, 0x1F),          // accentSecondary — Monokai orange
+                new Color(0xA6, 0xE2, 0x2E),          // successGreen — Monokai green
+                new Color(0xFD, 0x97, 0x1F),          // warningOrange — Monokai orange
+                new Color(0xF9, 0x26, 0x72),          // errorRed — Monokai pink
+                new Color(0x66, 0xD9, 0xEF),          // infoBlue — Monokai cyan
+                new Color(0xF8, 0xF8, 0xF2),          // fgPrimary — Monokai foreground
+                new Color(0xBB, 0xBB, 0xAA),          // fgSecondary
+                new Color(0x75, 0x71, 0x5E),          // fgDim — Monokai comment
+                new Color(0xF9, 0x26, 0x72),
+                new Color(0xFD, 0x97, 0x1F),
+                new Color(0xE6, 0xDB, 0x74),          // sevMedium — Monokai yellow
+                new Color(0x66, 0xD9, 0xEF),
+                new Color(0x75, 0x71, 0x5E),
+                false);
+    }
+
+    /**
+     * Cyberdeck — Retro 90s hacker aesthetic. Mixed green/amber CRT,
+     * like a jury-rigged terminal from a William Gibson novel.
+     */
+    public static ThemePalette cyberdeck() {
+        Color base = new Color(0x0A, 0x0C, 0x08);  // dirty CRT black
+        return new ThemePalette("Cyberdeck",
+                base,
+                lighten(base, 0.05f),
+                lighten(base, 0.08f),
+                lighten(base, 0.12f),
+                lighten(base, 0.18f),
+                lighten(base, 0.25f),
+                new Color(0x33, 0xFF, 0x33),          // accentPrimary — classic terminal green
+                new Color(0xFF, 0xBB, 0x00),          // accentSecondary — amber CRT bleed
+                new Color(0x33, 0xFF, 0x33),          // successGreen — same terminal green
+                new Color(0xFF, 0xBB, 0x00),          // warningOrange — amber
+                new Color(0xFF, 0x33, 0x33),          // errorRed — CRT red
+                new Color(0x33, 0xCC, 0x99),          // infoBlue → mixed green-cyan
+                new Color(0xAA, 0xFF, 0xAA),          // fgPrimary — phosphor green glow
+                new Color(0x66, 0xAA, 0x66),          // fgSecondary — faded phosphor
+                new Color(0x33, 0x66, 0x33),          // fgDim — barely visible scan lines
+                new Color(0xFF, 0x22, 0x22),
+                new Color(0xFF, 0xAA, 0x00),
+                new Color(0xFF, 0xDD, 0x00),
+                new Color(0x33, 0xCC, 0x99),
+                new Color(0x66, 0xAA, 0x66),
+                false);
+    }
+
     @Override
     public String toString() {
         return name;

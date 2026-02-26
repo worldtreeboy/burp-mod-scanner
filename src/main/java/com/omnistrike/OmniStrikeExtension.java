@@ -194,7 +194,7 @@ public class OmniStrikeExtension implements BurpExtension {
         // ==================== THEME SYSTEM ====================
         // Snapshot Burp's original UIManager defaults before applying any theme
         GlobalThemeManager.saveOriginalDefaults();
-        api.logging().logToOutput("Theme system initialized (17 themes available).");
+        api.logging().logToOutput("Theme system initialized (29 themes available).");
 
         // ==================== UI ====================
         SwingUtilities.invokeLater(() -> {

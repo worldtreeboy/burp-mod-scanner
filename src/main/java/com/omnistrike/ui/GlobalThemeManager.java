@@ -46,6 +46,18 @@ public final class GlobalThemeManager {
             ThemePalette.amberTerminal(),      // 14 - Amber Terminal
             ThemePalette.frozen(),             // 15 - Frozen
             ThemePalette.dracula(),            // 16 - Dracula
+            ThemePalette.predator(),           // 17 - Predator
+            ThemePalette.voidTheme(),          // 18 - Void
+            ThemePalette.honeyBadger(),        // 19 - Honey Badger
+            ThemePalette.catppuccinMocha(),    // 20 - Catppuccin
+            ThemePalette.nord(),               // 21 - Nord
+            ThemePalette.gruvbox(),            // 22 - Gruvbox
+            ThemePalette.solarizedDark(),      // 23 - Solarized Dark
+            ThemePalette.marsColony(),         // 24 - Mars Colony
+            ThemePalette.neonTokyo(),          // 25 - Neon Tokyo
+            ThemePalette.phantom(),            // 26 - Phantom
+            ThemePalette.monokai(),            // 27 - Monokai
+            ThemePalette.cyberdeck(),          // 28 - Cyberdeck
     };
 
     /** Display names for the dropdown, matching ALL_THEMES order. */
@@ -67,6 +79,18 @@ public final class GlobalThemeManager {
             "Amber Terminal",
             "Frozen",
             "Dracula",
+            "Predator",
+            "Void",
+            "Honey Badger",
+            "Catppuccin",
+            "Nord",
+            "Gruvbox",
+            "Solarized Dark",
+            "Mars Colony",
+            "Neon Tokyo",
+            "Phantom",
+            "Monokai",
+            "Cyberdeck",
     };
 
     // ── UIManager keys to override ──────────────────────────────────────
