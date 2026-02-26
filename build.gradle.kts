@@ -15,6 +15,10 @@ dependencies {
     implementation("org.apache.commons:commons-collections4:4.0")
     implementation("commons-beanutils:commons-beanutils:1.9.2")
     implementation("org.javassist:javassist:3.29.2-GA")
+    implementation("rome:rome:1.0")
+    implementation("org.codehaus.groovy:groovy:2.3.9")
+    implementation("org.beanshell:bsh:2.0b5")
+    implementation("com.mchange:c3p0:0.9.5.2")
 }
 
 java {

