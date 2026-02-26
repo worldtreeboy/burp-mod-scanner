@@ -47,6 +47,12 @@ public final class DeserPayloadGenerator {
         return DotNetPayloads.getFormatters(gadget);
     }
 
+    // ── PHP function discovery ─────────────────────────────────────────────
+
+    public static List<String> getPhpFunctions() {
+        return PhpPayloads.getFunctions();
+    }
+
     // ── Payload generation ────────────────────────────────────────────────────
 
     public static byte[] generate(Language language, String chain, String command, Encoding encoding) {
@@ -54,11 +60,14 @@ public final class DeserPayloadGenerator {
         return applyEncoding(raw, encoding);
     }
 
-    /** Overload with formatter parameter — used for .NET gadget+formatter UI. */
-    public static byte[] generate(Language language, String chain, String formatter,
+    /** Overload with formatter/function parameter — used for .NET gadget+formatter and PHP function UI. */
+    public static byte[] generate(Language language, String chain, String formatterOrFunction,
                                    String command, Encoding encoding) {
-        if (language == Language.DOTNET && formatter != null && !formatter.isEmpty()) {
-            return applyEncoding(DotNetPayloads.generate(chain, formatter, command), encoding);
+        if (language == Language.DOTNET && formatterOrFunction != null && !formatterOrFunction.isEmpty()) {
+            return applyEncoding(DotNetPayloads.generate(chain, formatterOrFunction, command), encoding);
+        }
+        if (language == Language.PHP && formatterOrFunction != null && !formatterOrFunction.isEmpty()) {
+            return applyEncoding(PhpPayloads.generate(chain, formatterOrFunction, command), encoding);
         }
         return generate(language, chain, command, encoding);
     }

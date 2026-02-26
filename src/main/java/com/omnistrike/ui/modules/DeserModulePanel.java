@@ -35,6 +35,8 @@ public class DeserModulePanel extends JPanel {
     private final JLabel chainLabel;
     private final JComboBox<String> formatterCombo;
     private final JLabel formatterLabel;
+    private final JComboBox<String> phpFunctionCombo;
+    private final JLabel phpFunctionLabel;
     private final JComboBox<Encoding> encodingCombo;
     private final JTextField commandField;
     private final JTextArea previewArea;
@@ -70,6 +72,13 @@ public class DeserModulePanel extends JPanel {
         formatterLabel.setVisible(false);
         formatterCombo.setVisible(false);
 
+        phpFunctionCombo = new JComboBox<>();
+        phpFunctionCombo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        phpFunctionCombo.setPreferredSize(new Dimension(160, 28));
+        phpFunctionLabel = label("Function:");
+        phpFunctionLabel.setVisible(false);
+        phpFunctionCombo.setVisible(false);
+
         encodingCombo = new JComboBox<>(Encoding.values());
         encodingCombo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
 
@@ -80,6 +89,8 @@ public class DeserModulePanel extends JPanel {
         row1.add(chainCombo);
         row1.add(formatterLabel);
         row1.add(formatterCombo);
+        row1.add(phpFunctionLabel);
+        row1.add(phpFunctionCombo);
         row1.add(label("Encoding:"));
         row1.add(encodingCombo);
 
@@ -295,7 +306,20 @@ public class DeserModulePanel extends JPanel {
             }
             formatterLabel.setVisible(true);
             formatterCombo.setVisible(true);
+            phpFunctionLabel.setVisible(false);
+            phpFunctionCombo.setVisible(false);
             populateFormatters();
+        } else if (lang == Language.PHP) {
+            chainLabel.setText("Chain:");
+            Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(lang);
+            for (String name : chains.keySet()) {
+                chainCombo.addItem(name);
+            }
+            formatterLabel.setVisible(false);
+            formatterCombo.setVisible(false);
+            phpFunctionLabel.setVisible(true);
+            phpFunctionCombo.setVisible(true);
+            populatePhpFunctions();
         } else {
             chainLabel.setText("Chain:");
             Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(lang);
@@ -304,6 +328,15 @@ public class DeserModulePanel extends JPanel {
             }
             formatterLabel.setVisible(false);
             formatterCombo.setVisible(false);
+            phpFunctionLabel.setVisible(false);
+            phpFunctionCombo.setVisible(false);
+        }
+    }
+
+    private void populatePhpFunctions() {
+        phpFunctionCombo.removeAllItems();
+        for (String fn : DeserPayloadGenerator.getPhpFunctions()) {
+            phpFunctionCombo.addItem(fn);
         }
     }
 
@@ -359,9 +392,13 @@ public class DeserModulePanel extends JPanel {
         try {
             byte[] payload;
             String headerExtra;
+            String phpFunction = (String) phpFunctionCombo.getSelectedItem();
             if (lang == Language.DOTNET && formatter != null && !formatter.isEmpty()) {
                 payload = DeserPayloadGenerator.generate(lang, chain, formatter, command, enc);
                 headerExtra = " | Gadget: " + chain + " | Formatter: " + formatter;
+            } else if (lang == Language.PHP && phpFunction != null && !phpFunction.isEmpty()) {
+                payload = DeserPayloadGenerator.generate(lang, chain, phpFunction, command, enc);
+                headerExtra = " | Chain: " + chain + " | Function: " + phpFunction;
             } else {
                 payload = DeserPayloadGenerator.generate(lang, chain, command, enc);
                 headerExtra = " | Chain: " + chain;
@@ -369,19 +406,41 @@ public class DeserModulePanel extends JPanel {
             lastGeneratedPayload = payload;
 
             String hexDump = DeserPayloadGenerator.toHexDump(payload, 1024);
-            String b64 = java.util.Base64.getEncoder().encodeToString(payload);
-            String decoded = new String(payload, StandardCharsets.UTF_8);
+            String payloadText = new String(payload, StandardCharsets.UTF_8);
+            String truncatedText = payloadText.length() > 2000
+                    ? payloadText.substring(0, 2000) + "\n... (truncated)" : payloadText;
 
-            previewArea.setText(
-                    "Language: " + lang + headerExtra +
-                    " | Encoding: " + enc + " | Size: " + payload.length + " bytes\n" +
-                    "═══════════════════════════════════════════════════════════════\n\n" +
-                    "── Base64 (copy-paste ready) ─────────────────────────────────\n" +
-                    b64 + "\n\n" +
-                    "── Hex Dump ──────────────────────────────────────────────────\n" +
-                    hexDump + "\n" +
-                    "── Decoded ───────────────────────────────────────────────────\n" +
-                    (decoded.length() > 2000 ? decoded.substring(0, 2000) + "\n... (truncated)" : decoded));
+            StringBuilder preview = new StringBuilder();
+            preview.append("Language: ").append(lang).append(headerExtra)
+                   .append(" | Encoding: ").append(enc)
+                   .append(" | Size: ").append(payload.length).append(" bytes\n")
+                   .append("═══════════════════════════════════════════════════════════════\n\n");
+
+            switch (enc) {
+                case RAW -> {
+                    preview.append("── Payload (raw) ─────────────────────────────────────────────\n")
+                           .append(truncatedText).append("\n\n")
+                           .append("── Base64 (copy-paste ready) ─────────────────────────────────\n")
+                           .append(java.util.Base64.getEncoder().encodeToString(payload)).append("\n\n");
+                }
+                case BASE64 -> {
+                    preview.append("── Payload (base64-encoded) ──────────────────────────────────\n")
+                           .append(truncatedText).append("\n\n");
+                }
+                case URL_ENCODED -> {
+                    preview.append("── Payload (URL-encoded) ─────────────────────────────────────\n")
+                           .append(truncatedText).append("\n\n");
+                }
+                case BASE64_URL_ENCODED -> {
+                    preview.append("── Payload (base64 + URL-encoded) ────────────────────────────\n")
+                           .append(truncatedText).append("\n\n");
+                }
+            }
+
+            preview.append("── Hex Dump ──────────────────────────────────────────────────\n")
+                   .append(hexDump);
+
+            previewArea.setText(preview.toString());
             previewArea.setCaretPosition(0);
         } catch (Exception e) {
             previewArea.setText("[!] Generation failed: " + e.getMessage());

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.29-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.30-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -233,10 +233,10 @@ Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebbl
 
 - **Java** — 16 time-based gadget chains (CommonsCollections 1-7, Spring1-2, BeanUtils, Groovy1, Hibernate1, C3P0, JRMPClient, ROME, BeanShell1, Myfaces1, Jdk7u21, Vaadin1, Click1), 32 vulnerable library signatures, ~19 OOB payloads (JNDI LDAP/RMI/DNS, Fastjson JdbcRowSetImpl/JndiDataSourceFactory/UnixPrintService/1.2.68+/LdapAttribute, Jackson JdbcRowSetImpl/C3P0/Logback, XStream ProcessBuilder/EventHandler/SortedSet, SnakeYAML ScriptEngineManager/JdbcRowSet/C3P0)
 - **.NET** — 32 gadgets across 9 formatters (BinaryFormatter, SoapFormatter, Json.Net, JavaScriptSerializer, DataContractJsonSerializer, XmlSerializer, NetDataContractSerializer, DataContractSerializer, Raw), ~9 OOB payloads (ObjectDataProvider nslookup/certutil/PowerShell, XAML XamlReader/DataContractSerializer XXE/SoapFormatter SSRF, SoapFormatter ObjectDataProvider, XmlDocument XXE)
-- **PHP** — 14 framework chains (WordPress, Magento, Laravel, Monolog, Drupal, ThinkPHP, CakePHP), 3 OOB payloads (SoapClient SSRF + WSDL, Monolog SocketHandler — all with correct PHP null bytes and string lengths)
-- **Python** — 12 active payloads + 12 OOB payloads (Pickle os.system/os.popen/urllib/builtins.exec, PyYAML os.system/subprocess, jsonpickle, Pickle P2 binary variants)
-- **Ruby** — 8 active payloads + 5 OOB payloads (Gem::Source YAML, Marshal binary Gem::Source @uri, Marshal Gadget chain nslookup/curl/wget). Detects Marshal data in cookies and YAML object tags.
-- **Node.js** — 8 active payloads + 12 OOB payloads (node-serialize HTTP/nslookup/curl/wget/DNS, cryo HTTP/nslookup, funcster HTTP/nslookup, js-yaml HTTP/nslookup, prototype pollution)
+- **PHP** — 47 framework chains ported from phpggc (Laravel 9, Symfony 8, Monolog 8, Guzzle 2, WordPress 2, Doctrine 2, CodeIgniter4 3, ThinkPHP 2, Yii2, CakePHP, Drupal 2, ZendFramework, Slim, Magento, Phalcon, SwiftMailer, Generic 2) with configurable PHP function dropdown (system, exec, passthru, shell_exec, popen, etc.), 3 OOB payloads (SoapClient SSRF + WSDL, Monolog SocketHandler — all with correct PHP null bytes and string lengths)
+- **Python** — 26 chains: Pickle protocol 0 (text), protocol 2 (binary), protocol 4 (binary with frames) — os.system/os.popen/subprocess/eval/exec/builtins.exec, PyYAML (!!python/object/apply, !!python/object/new, !!python/name), jsonpickle (py/reduce, py/object), socket reverse shell. 12 OOB payloads.
+- **Ruby** — 13 chains: Universal Gem::Requirement/Gem::DependencyList/Gem::Source, Rails ActiveSupport::Deprecation proxy, YAML/Psych exploits (Gem::Installer, ERB template, ScriptEngine), Oj library (StringIO, system). 5 OOB payloads. Detects Marshal data in cookies and YAML object tags.
+- **Node.js** — 17 chains: node-serialize (exec/execSync/spawn/reverse shell), serialize-javascript (exec/eval), js-yaml (!!js/function/!!js/object/!!js/undefined), cryo (toString/valueOf/constructor), funcster (exec/require), generic prototype pollution (toString/valueOf/constructor). 12 OOB payloads.
 
 38 suspect cookie name patterns. **OOB-first architecture**: Collaborator payloads fire before time-based/error-based phases; if OOB confirms, remaining phases are skipped.
 </details>
@@ -452,19 +452,26 @@ For bugs and feature requests: [GitHub Issues](https://github.com/worldtreeboy/O
 
 ---
 
-## What's New in v1.29
+## What's New in v1.30
+
+**Deserialization Payload Generator — Massive Expansion** &mdash; 137+ gadget chains across all 6 languages, phpggc-ported PHP chains with configurable function dropdown, and encoding-aware payload preview.
+
+- **47 PHP Chains (phpggc port)** &mdash; All major phpggc gadget chains ported to pure Java string construction — no external tools needed. Covers Laravel (9 chains), Symfony (8), Monolog (8), Guzzle (2), WordPress (2), Doctrine (2), CodeIgniter4 (3), ThinkPHP (2), Yii2, CakePHP, Drupal (2), ZendFramework, Slim, Magento, Phalcon, SwiftMailer, and Generic (2). Correct PHP serialization with null bytes for protected/private properties and byte-accurate string length prefixes.
+- **PHP Function Dropdown** &mdash; phpggc-style configurable function parameter: system, exec, passthru, shell_exec, popen, proc_open, pcntl_exec, assert, eval, file_get_contents, file_put_contents, unlink, include, require, call_user_func. No longer hardcoded to `system`.
+- **26 Python Chains** &mdash; Pickle protocol 0 (text), protocol 2 (binary with proper opcodes), protocol 4 (binary with frames). PyYAML (!!python/object/apply, !!python/object/new, !!python/name). jsonpickle (py/reduce, py/object). Socket reverse shell. Covers os.system, os.popen, subprocess, eval, exec, builtins, urllib.
+- **17 Node.js Chains** &mdash; node-serialize (exec/execSync/spawn/reverse shell), serialize-javascript (exec/eval), js-yaml (!!js/function/!!js/object/!!js/undefined), cryo (toString/valueOf/constructor), funcster (exec/require), generic prototype pollution (toString/valueOf/constructor).
+- **13 Ruby Chains** &mdash; Universal Gem::Requirement/DependencyList/Source with proper Marshal binary encoding, Rails ActiveSupport::Deprecation proxy, YAML/Psych (Gem::Installer, ERB template, ScriptEngine), Oj library (StringIO, system). Proper UTF-8 IVar string encoding.
+- **Encoding-Aware Preview** &mdash; Payload preview now shows only the relevant encoding section. The "Base64 (copy-paste ready)" convenience section only appears for RAW encoding, not when Base64/URL-encoded is already selected.
+
+### Previous (v1.29)
 
 **Deserialization Payload Generator** &mdash; Standalone payload generation tool for insecure deserialization testing across 6 languages with ysoserial.net-style Gadget + Formatter UX.
 
 - **Universal Payload Generator** &mdash; Generate deserialization exploit payloads for Java, .NET/C#, PHP, Python, Ruby, and Node.js directly from the OmniStrike UI. No external tools (ysoserial, ysoserial.net) required.
-- **32 .NET Gadgets + 9 Formatters** &mdash; ysoserial.net-style two-dropdown UX: select a Gadget, then a compatible Formatter. ObjectDataProvider supports 8 formatters (SoapFormatter, Json.Net, JavaScriptSerializer, DataContractJsonSerializer, XmlSerializer, NetDataContractSerializer, DataContractSerializer, Raw XAML). Full gadget list: TypeConfuseDelegate, TypeConfuseDelegateMono, TextFormattingRunProperties, PSObject, ActivitySurrogate, ActivitySurrogateDisableTypeCheck, ActivitySurrogateSelectorFromFile, ClaimsIdentity, ClaimsPrincipal, WindowsIdentity, WindowsPrincipal, WindowsClaimsIdentity, SessionSecurityToken, SessionViewStateHistoryItem, RolePrincipal, GenericPrincipal, AxHostState, ToolboxItemContainer, ResourceSet, ObjRef, DataSet, DataSetOldBehaviour, DataSetOldBehaviourFromFile, DataSetTypeSpoofing, ObjectDataProvider, GetterSettingsPropertyValue, GetterSecurityException, GetterCompilerResults, XamlAssemblyLoadFromFile, XamlImageInfo, BaseActivationFactory, TransactionManagerReenlist.
-- **34 Java Gadget Chains** &mdash; Full ysoserial coverage with reflection-based generators: URLDNS, DNSCallback, CommonsCollections1-7, CommonsBeanutils1/1_183, Spring1/2, Hibernate1/2, Groovy1, Jdk7u21, JRMPClient/Listener, JNDIExploit, ROME, BeanShell1, C3P0, Click1, FileUpload1, JBossInterceptors1, JavassistWeld1, JSON1, Jython1, MozillaRhino1/2, Myfaces1/2, Vaadin1, Wicket1, Clojure.
-- **PHP Chains** &mdash; LaravelPOP, MonologRCE, GuzzleFnStream, WordPressPHPObject, GenericDestruct, GenericPHPGGC.
-- **Python Chains** &mdash; Pickle (os.system, subprocess, eval, exec), PyYAML exploits.
-- **Ruby Chains** &mdash; ERBTemplate, GemRequirement, GemInstaller, UniversalRCE.
-- **Node.js Chains** &mdash; node-serialize IIFE, js-yaml, cryo RCE.
+- **32 .NET Gadgets + 9 Formatters** &mdash; ysoserial.net-style two-dropdown UX: select a Gadget, then a compatible Formatter.
+- **34 Java Gadget Chains** &mdash; Full ysoserial coverage with reflection-based generators.
 - **Multiple Encodings** &mdash; Raw, Base64, URL-encoded, Base64+URL-encoded output.
-- **Customizable Preview** &mdash; Terminal-style dark payload preview with selectable text color (Green, Red, Blue, White) via radio buttons.
+- **Customizable Preview** &mdash; Terminal-style dark payload preview with selectable text color.
 - **One-Click Copy** &mdash; Copy payload as Base64 or raw bytes to clipboard.
 - **Context Menu Integration** &mdash; Right-click in Proxy/Repeater to open the Deserializer directly.
 
