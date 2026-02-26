@@ -384,8 +384,8 @@ public class MainPanel extends JPanel {
         JLabel creditLabel = new JLabel("github.com/worldtreeboy  ") {
             private boolean hovered = false;
             private float glowPhase = 0f;
-            private final Timer pulseTimer = new Timer(50, evt -> {
-                glowPhase += 0.08f;
+            private final Timer pulseTimer = new Timer(40, evt -> {
+                glowPhase += 0.02f;  // slow breathing cycle (~8 seconds full loop)
                 if (glowPhase > (float)(2 * Math.PI)) glowPhase -= (float)(2 * Math.PI);
                 repaint();
             });
@@ -405,15 +405,16 @@ public class MainPanel extends JPanel {
 
                 Color glowColor = NEON_CYAN;
 
-                // Always glowing; hover intensifies
+                // Slow breathing: fades from dim (0.08) to full bright (1.0) and back
+                float breathe = 0.5f + 0.5f * (float) Math.sin(glowPhase); // 0..1
                 float pulse = hovered
-                        ? 0.8f + 0.2f * (float) Math.sin(glowPhase)
-                        : 0.4f + 0.2f * (float) Math.sin(glowPhase);
+                        ? 0.85f + 0.15f * breathe   // hover: always bright
+                        : 0.08f + 0.92f * breathe;  // idle: faint → full bright
 
                 // Draw glow layers (outer to inner, decreasing radius, increasing alpha)
                 g2.setFont(getFont());
                 for (int i = 6; i >= 1; i--) {
-                    float alpha = pulse * (0.08f + 0.04f * (6 - i));
+                    float alpha = pulse * (0.10f + 0.06f * (6 - i));
                     g2.setColor(new Color(
                             glowColor.getRed(), glowColor.getGreen(), glowColor.getBlue(),
                             Math.min(255, (int)(alpha * 255))));
@@ -423,8 +424,10 @@ public class MainPanel extends JPanel {
                     g2.drawString(text, x, y + i);
                 }
 
-                // Draw the crisp foreground text
-                g2.setColor(NEON_CYAN);
+                // Draw the crisp foreground text — fades with the breathing
+                int textAlpha = Math.min(255, (int)(((0.3f + 0.7f * pulse)) * 255));
+                g2.setColor(new Color(
+                        glowColor.getRed(), glowColor.getGreen(), glowColor.getBlue(), textAlpha));
                 g2.drawString(text, x, y);
                 g2.dispose();
             }
