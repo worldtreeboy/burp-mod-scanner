@@ -47,13 +47,14 @@ public class WebSocketFuzzer {
     private volatile Future<?> currentScanFuture;
     private volatile String scanStatus = "Idle";
 
-    // SQL error patterns for in-band detection
+    // SQL error patterns for in-band detection (precise strings only — no bare tech names)
     private static final String[] SQL_ERROR_STRINGS = {
             "SQL syntax", "mysql_fetch", "ORA-0", "ORA-1",
-            "PostgreSQL", "pg_query", "sqlite3.", "SQLite3::",
+            "pg_query", "sqlite3.", "SQLite3::",
             "Microsoft OLE DB", "ODBC SQL Server", "Unclosed quotation mark",
-            "java.sql.SQL", "JDBC", "SqlException",
-            "near \"syntax\"", "syntax error at or near"
+            "java.sql.SQL", "SqlException",
+            "near \"syntax\"", "syntax error at or near",
+            "ERROR:  syntax error", "unterminated quoted string"
     };
 
     // SSTI math evaluation pattern
@@ -189,7 +190,7 @@ public class WebSocketFuzzer {
 
         try {
             String wsUrl = connection.getUpgradeUrl();
-            URI uri = URI.create(wsUrl.replace("wss://", "https://").replace("ws://", "http://"));
+            URI uri = URI.create(toWsUri(wsUrl));
 
             // Build a WebSocket connection with a spoofed Origin header
             HttpClient client = HttpClient.newBuilder()
@@ -475,9 +476,17 @@ public class WebSocketFuzzer {
             }
         }
 
-        // Phase 2: Math evaluation fallback
+        // Phase 2: Math evaluation fallback (with baseline comparison)
         for (String original : sampleMessages) {
             if (Thread.currentThread().isInterrupted()) return;
+
+            // Get baseline response to ensure "49" is not already present
+            String baselineResponse = sendAndReceive(connection, original);
+            if (baselineResponse != null && SSTI_MATH_PATTERN.matcher(baselineResponse).find()) {
+                continue; // "49" already in baseline — skip to avoid false positive
+            }
+
+            delay(PAYLOAD_DELAY_MS);
 
             String payload = "{{7*7}}";
             String response = sendAndReceive(connection, injectIntoMessage(original, payload));
@@ -486,9 +495,10 @@ public class WebSocketFuzzer {
                 addFinding(Finding.builder(MODULE_ID, "SSTI in WebSocket (Math Evaluation)",
                                 Severity.HIGH, Confidence.FIRM)
                         .url(wsUrl)
-                        .evidence("Template expression {{7*7}} evaluated to 49 in response")
+                        .evidence("Template expression {{7*7}} evaluated to 49 in response (not present in baseline)")
                         .description("Server-Side Template Injection detected. The server evaluated " +
-                                "{{7*7}} and returned 49 in the WebSocket response.")
+                                "{{7*7}} and returned 49 in the WebSocket response. " +
+                                "Baseline response was verified to NOT contain '49'.")
                         .remediation("Never pass user input directly into template engines.")
                         .payload(payload)
                         .responseEvidence("49")
@@ -615,57 +625,56 @@ public class WebSocketFuzzer {
         if (sampleMessages.isEmpty()) return;
 
         try {
-            // Open an unauthenticated connection (no cookies/auth headers)
-            URI uri = URI.create(wsUrl.replace("wss://", "https://").replace("ws://", "http://"));
-
-            HttpClient client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(10))
-                    .build();
-
-            // Build without auth headers
-            CompletableFuture<WebSocket> wsFuture = client.newWebSocketBuilder()
-                    .buildAsync(uri, new WebSocket.Listener() {});
-
-            WebSocket unauthWs;
-            try {
-                unauthWs = wsFuture.get(10, TimeUnit.SECONDS);
-            } catch (Exception e) {
-                log("AuthZ: Could not open unauthenticated connection (likely auth required)");
-                return;
-            }
+            URI uri = URI.create(toWsUri(wsUrl));
 
             // Replay authenticated messages on unauthenticated connection
             for (String message : sampleMessages) {
-                if (Thread.currentThread().isInterrupted()) {
-                    unauthWs.sendClose(WebSocket.NORMAL_CLOSURE, "cancelled");
-                    return;
-                }
+                if (Thread.currentThread().isInterrupted()) return;
 
                 String authResponse = sendAndReceive(connection, message);
                 delay(PAYLOAD_DELAY_MS);
 
-                // Send same message on unauth connection
-                CompletableFuture<String> responseFuture = new CompletableFuture<>();
-                WebSocket.Listener listener = new WebSocket.Listener() {
-                    private final StringBuilder sb = new StringBuilder();
-                    @Override
-                    public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
-                        sb.append(data);
-                        if (last) responseFuture.complete(sb.toString());
-                        webSocket.request(1);
-                        return null;
-                    }
-                };
-
-                // Re-register listener by sending and reading
-                unauthWs.sendText(message, true);
-                payloadsSent.incrementAndGet();
-
+                // Open a fresh unauthenticated connection per message (with proper listener)
                 String unauthResponse;
                 try {
+                    HttpClient client = HttpClient.newBuilder()
+                            .connectTimeout(Duration.ofSeconds(10))
+                            .build();
+
+                    CompletableFuture<String> responseFuture = new CompletableFuture<>();
+
+                    WebSocket unauthWs = client.newWebSocketBuilder()
+                            .buildAsync(uri, new WebSocket.Listener() {
+                                private final StringBuilder sb = new StringBuilder();
+                                @Override
+                                public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+                                    sb.append(data);
+                                    if (last) responseFuture.complete(sb.toString());
+                                    webSocket.request(1);
+                                    return null;
+                                }
+                                @Override
+                                public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+                                    if (!responseFuture.isDone()) responseFuture.complete(sb.toString());
+                                    return null;
+                                }
+                                @Override
+                                public void onError(WebSocket webSocket, Throwable error) {
+                                    if (!responseFuture.isDone()) responseFuture.complete(null);
+                                }
+                            }).get(10, TimeUnit.SECONDS);
+
+                    unauthWs.request(1);
+                    unauthWs.sendText(message, true);
+                    payloadsSent.incrementAndGet();
+
                     unauthResponse = responseFuture.get(RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                    unauthWs.sendClose(WebSocket.NORMAL_CLOSURE, "done");
                 } catch (TimeoutException e) {
                     continue;
+                } catch (Exception e) {
+                    log("AuthZ: Could not open unauthenticated connection (likely auth required)");
+                    return;
                 }
 
                 if (authResponse != null && unauthResponse != null
@@ -683,12 +692,9 @@ public class WebSocketFuzzer {
                                     "not just on the upgrade request.")
                             .payload(message)
                             .build());
-                    unauthWs.sendClose(WebSocket.NORMAL_CLOSURE, "test complete");
                     return;
                 }
             }
-
-            unauthWs.sendClose(WebSocket.NORMAL_CLOSURE, "test complete");
 
         } catch (Exception e) {
             logError("AuthZ bypass test error: " + e.getMessage());
@@ -744,7 +750,7 @@ public class WebSocketFuzzer {
     private String sendAndReceive(WebSocketConnection connection, String message) {
         try {
             String wsUrl = connection.getUpgradeUrl();
-            URI uri = URI.create(wsUrl.replace("wss://", "https://").replace("ws://", "http://"));
+            URI uri = URI.create(toWsUri(wsUrl));
 
             HttpClient client = HttpClient.newBuilder()
                     .connectTimeout(Duration.ofSeconds(10))
@@ -819,7 +825,7 @@ public class WebSocketFuzzer {
     private void sendFuzzPayload(WebSocketConnection connection, String message) {
         try {
             String wsUrl = connection.getUpgradeUrl();
-            URI uri = URI.create(wsUrl.replace("wss://", "https://").replace("ws://", "http://"));
+            URI uri = URI.create(toWsUri(wsUrl));
 
             HttpClient client = HttpClient.newBuilder()
                     .connectTimeout(Duration.ofSeconds(10))
@@ -906,6 +912,16 @@ public class WebSocketFuzzer {
     private String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() > max ? s.substring(0, max) + "..." : s;
+    }
+
+    /**
+     * Ensures a URL has ws:// or wss:// scheme (required by java.net.http.WebSocket).
+     * The interceptor stores URLs as ws/wss, but this guard handles edge cases.
+     */
+    private String toWsUri(String url) {
+        if (url.startsWith("https://")) return "wss://" + url.substring(8);
+        if (url.startsWith("http://")) return "ws://" + url.substring(7);
+        return url; // Already ws:// or wss://
     }
 
     private void log(String message) {

@@ -316,11 +316,27 @@ public class RequestResponsePanel extends JPanel {
         right.append(f.getDescription() != null ? f.getDescription() : "(none)");
         right.append("\n\n=== REMEDIATION ===\n\n");
         right.append(f.getRemediation() != null ? f.getRemediation() : "(none)");
+        // Show contextual note based on how the finding was detected
+        String moduleId = f.getModuleId() != null ? f.getModuleId() : "";
+        String evidence = f.getEvidence() != null ? f.getEvidence().toLowerCase() : "";
+        boolean isOob = evidence.contains("collaborator") || evidence.contains("interaction received");
+        boolean isWebSocket = "ws-scanner".equals(moduleId);
+
         right.append("\n\n=== NOTE ===\n\n");
-        right.append("This finding was detected via out-of-band (OOB) callback.\n");
-        right.append("The HTTP request/response is not available because the\n");
-        right.append("confirmation came asynchronously via Burp Collaborator.\n");
-        right.append("Check the evidence field for payload details.");
+        if (isOob) {
+            right.append("This finding was detected via out-of-band (OOB) callback.\n");
+            right.append("The HTTP request/response is not available because the\n");
+            right.append("confirmation came asynchronously via Burp Collaborator.\n");
+            right.append("Check the evidence field for payload details.");
+        } else if (isWebSocket) {
+            right.append("This finding was detected in WebSocket traffic.\n");
+            right.append("WebSocket frames are not HTTP request/response pairs,\n");
+            right.append("so no HTTP data is available. Check the evidence field\n");
+            right.append("and the WebSocket Scanner panel for message details.");
+        } else {
+            right.append("No HTTP request/response data is attached to this finding.\n");
+            right.append("Check the evidence field for detection details.");
+        }
         responseArea.setText(right.toString());
         responseArea.setCaretPosition(0);
     }

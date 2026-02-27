@@ -57,18 +57,21 @@ public class WebSocketAnalyzer {
             Pattern.CASE_INSENSITIVE
     );
 
-    // Phone numbers (US/international formats)
+    // Phone numbers (US/international formats) — require separators or parens to avoid matching bare 10-digit numbers
     private static final Pattern PHONE_PATTERN = Pattern.compile(
-            "\\b(?:\\+?1[\\s.-]?)?\\(?[0-9]{3}\\)?[\\s.-]?[0-9]{3}[\\s.-]?[0-9]{4}\\b"
+            "\\b(?:\\+?1[\\s.-])?" +                     // optional country code with separator
+            "(?:\\([0-9]{3}\\)[\\s.-]?[0-9]{3}[\\s.-]?[0-9]{4}" +  // (123) 456-7890 format
+            "|[0-9]{3}[\\s.-][0-9]{3}[\\s.-][0-9]{4})\\b"           // 123-456-7890 format (separators required)
     );
 
-    // SQL error strings (exact match list for zero false positives)
+    // SQL error strings (precise strings only — no bare technology names to avoid false positives)
     private static final String[] SQL_ERROR_STRINGS = {
             "SQL syntax", "mysql_fetch", "ORA-0", "ORA-1",
-            "PostgreSQL", "pg_query", "sqlite3.", "SQLite3::",
+            "pg_query", "sqlite3.", "SQLite3::",
             "Microsoft OLE DB", "ODBC SQL Server", "Unclosed quotation mark",
-            "java.sql.SQL", "JDBC", "SqlException",
-            "near \"syntax\"", "syntax error at or near"
+            "java.sql.SQL", "SqlException",
+            "near \"syntax\"", "syntax error at or near",
+            "ERROR:  syntax error", "unterminated quoted string"
     };
 
     // Stack trace patterns
@@ -269,7 +272,8 @@ public class WebSocketAnalyzer {
     private void checkPII(String payload, String url, List<Finding> findings) {
         // Email
         Matcher emailMatcher = EMAIL_PATTERN.matcher(payload);
-        if (emailMatcher.find()) {
+        boolean foundEmail = emailMatcher.find();
+        if (foundEmail) {
             findings.add(Finding.builder(MODULE_ID, "Email Address in WebSocket Message", Severity.MEDIUM, Confidence.FIRM)
                     .url(url)
                     .evidence("Email address found: " + emailMatcher.group())
@@ -279,7 +283,7 @@ public class WebSocketAnalyzer {
         }
 
         // Phone (only flag if not already flagging email from same message, to reduce noise)
-        if (!emailMatcher.find()) {
+        if (!foundEmail) {
             Matcher phoneMatcher = PHONE_PATTERN.matcher(payload);
             if (phoneMatcher.find()) {
                 findings.add(Finding.builder(MODULE_ID, "Phone Number in WebSocket Message", Severity.MEDIUM, Confidence.TENTATIVE)
