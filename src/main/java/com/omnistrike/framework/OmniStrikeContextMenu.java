@@ -9,6 +9,8 @@ import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import com.omnistrike.model.ScanModule;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
+import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
+import com.omnistrike.ui.OmniMapConfigDialog;
 import com.omnistrike.ui.ScanConfigDialog;
 
 import com.omnistrike.ui.MainPanel;
@@ -262,6 +264,36 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 });
                 items.add(wsItem);
             }
+        }
+
+        // ============ "Send to OmniMap" — SQL injection exploitation ============
+        {
+            Supplier<MainPanel> supplier = mainPanelSupplier;
+            JMenuItem omniMapItem = new JMenuItem("Send to OmniMap");
+            omniMapItem.setToolTipText("OmniMap — high-speed sqlmap variant: extract databases, tables, and data via SQL injection");
+            omniMapItem.addActionListener(e -> {
+                Frame parentFrame = null;
+                for (Frame f : Frame.getFrames()) {
+                    if (f.isVisible()) { parentFrame = f; break; }
+                }
+                OmniMapConfigDialog dialog = new OmniMapConfigDialog(parentFrame, reqResp, api);
+                dialog.setVisible(true);
+                if (dialog.isConfirmed()) {
+                    ScanModule mod = registry.getModule("omnimap-exploiter");
+                    if (mod instanceof OmniMapModule omniMapMod) {
+                        omniMapMod.exploit(reqResp, dialog.getConfig());
+                        if (supplier != null) {
+                            MainPanel mp = supplier.get();
+                            if (mp != null) mp.selectModule("omnimap-exploiter");
+                        }
+                        showToast("OmniMap",
+                                "Exploitation started on parameter '" + dialog.getConfig().getParameterName() + "'\n"
+                                + truncate(reqResp.request().url(), 60)
+                                + "\n\nOther scans paused for priority. Results in OmniMap panel.");
+                    }
+                }
+            });
+            items.add(omniMapItem);
         }
 
         // ============ "Scan This Parameter" — targeted parameter scanning ============

@@ -20,6 +20,10 @@ public class ActiveScanExecutor {
     private volatile java.util.function.Consumer<String> logger;
     private volatile boolean unloading = false;
 
+    /** When true, scan tasks are delayed until resumed (OmniMap priority mode) */
+    private volatile boolean paused = false;
+    private final Object pauseLock = new Object();
+
     private static final int MAX_QUEUE_SIZE = 5000;
 
     public ActiveScanExecutor(int threadPoolSize) {
@@ -93,6 +97,18 @@ public class ActiveScanExecutor {
      */
     private Runnable wrapWithRateLimit(Runnable task) {
         return () -> {
+            // OmniMap priority: block until unpaused
+            while (paused && !unloading) {
+                synchronized (pauseLock) {
+                    try {
+                        pauseLock.wait(500);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+
             int delay = rateLimitMs;
             if (delay > 0) {
                 try {
@@ -172,6 +188,29 @@ public class ActiveScanExecutor {
             this.executor = createPool(threadPoolSize);
             return notRun.size();
         }
+    }
+
+    /**
+     * Pause all scan task execution. New tasks still queue but block before running.
+     * Used by OmniMap to get exclusive priority during exploitation.
+     */
+    public void pause() {
+        paused = true;
+    }
+
+    /**
+     * Resume scan task execution after OmniMap finishes.
+     */
+    public void resume() {
+        paused = false;
+        synchronized (pauseLock) {
+            pauseLock.notifyAll();
+        }
+    }
+
+    /** Returns true if the executor is currently paused (OmniMap priority mode). */
+    public boolean isPaused() {
+        return paused;
     }
 
     /** Signal that the extension is unloading — NPEs from Burp's dead API proxy are expected. */

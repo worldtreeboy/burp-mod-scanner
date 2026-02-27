@@ -9,7 +9,9 @@ import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.ui.modules.AiModulePanel;
 import com.omnistrike.ui.modules.DeserModulePanel;
 import com.omnistrike.ui.modules.GenericModulePanel;
+import com.omnistrike.ui.modules.OmniMapPanel;
 import com.omnistrike.ui.modules.WebSocketScannerPanel;
+import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
 import com.omnistrike.modules.websocket.WebSocketScanner;
 
 import static com.omnistrike.ui.CyberTheme.*;
@@ -58,6 +60,9 @@ public class MainPanel extends JPanel {
 
     // Custom module panel for deserializer (exposed for context menu "Send to Deserializer")
     private DeserModulePanel deserModulePanel;
+
+    // Custom module panel for OmniMap (SQL injection exploitation)
+    private OmniMapPanel omniMapPanel;
 
     // Stats bar severity count labels
     private final JLabel critLabel;
@@ -494,6 +499,10 @@ public class MainPanel extends JPanel {
             JPanel panel;
             if ("ai-vuln-analyzer".equals(module.getId()) && module instanceof AiVulnAnalyzer aiModule) {
                 panel = new AiModulePanel(aiModule, findingsStore, registry, api, scopeManager);
+            } else if ("omnimap-exploiter".equals(module.getId()) && module instanceof OmniMapModule omniMapMod) {
+                omniMapPanel = new OmniMapPanel(omniMapMod, findingsStore, api);
+                omniMapMod.setPanel(omniMapPanel);
+                panel = omniMapPanel;
             } else if ("deser-scanner".equals(module.getId())) {
                 deserModulePanel = new DeserModulePanel(api, findingsStore);
                 panel = deserModulePanel;
@@ -752,6 +761,8 @@ public class MainPanel extends JPanel {
                 ((DeserModulePanel) panel).stopTimers();
             } else if (panel instanceof WebSocketScannerPanel) {
                 ((WebSocketScannerPanel) panel).stopTimers();
+            } else if (panel instanceof OmniMapPanel) {
+                ((OmniMapPanel) panel).stopTimers();
             }
         }
     }
@@ -852,6 +863,11 @@ public class MainPanel extends JPanel {
     /** Returns the custom DeserModulePanel, or null if not yet created. */
     public DeserModulePanel getDeserModulePanel() {
         return deserModulePanel;
+    }
+
+    /** Returns the custom OmniMapPanel, or null if not yet created. */
+    public OmniMapPanel getOmniMapPanel() {
+        return omniMapPanel;
     }
 
     /** Programmatically switches to the given module's detail panel. */

@@ -8,6 +8,7 @@ import burp.api.montoya.scanner.audit.Audit;
 import com.omnistrike.framework.*;
 import com.omnistrike.model.ModuleConfig;
 import com.omnistrike.modules.injection.*;
+import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
 import com.omnistrike.modules.websocket.WebSocketScanner;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.modules.recon.*;
@@ -17,12 +18,12 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.31 — Entry Point
+ * OmniStrike v1.34 — Entry Point
  *
- * A unified vulnerability scanning framework for Burp Suite with 19 modules:
+ * A unified vulnerability scanning framework for Burp Suite with 20 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
  *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer
- *   Injection (Active): SQLi Detector, SSTI Scanner, SSRF Scanner, XSS Scanner,
+ *   Injection (Active): SQLi Detector, OmniMap Exploiter, SSTI Scanner, SSRF Scanner, XSS Scanner,
  *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner,
  *       CORS Misconfiguration, Cache Poisoning, Host Header Injection, Prototype Pollution, Path Traversal,
  *       HTTP Parameter Pollution
@@ -43,7 +44,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.31 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.34 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -92,6 +93,13 @@ public class OmniStrikeExtension implements BurpExtension {
         sqli.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(sqli);
 
+        // OmniMap — high-speed sqlmap variant for SQL injection exploitation
+        // Registered right after SQLi Detector: detection → exploitation pipeline
+        OmniMapModule omniMap = new OmniMapModule();
+        omniMap.setDependencies(dedup, findingsStore);
+        omniMap.setScanExecutor(executor);
+        registry.registerModule(omniMap);
+
         SstiScanner ssti = new SstiScanner();
         ssti.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(ssti);
@@ -109,7 +117,7 @@ public class OmniStrikeExtension implements BurpExtension {
         registry.registerModule(cmdi);
 
         DeserializationScanner deser = new DeserializationScanner();
-        deser.setDependencies(dedup, findingsStore, collaboratorManager);
+        deser.setDependencies(dedup, findingsStore);
         registry.registerModule(deser);
 
         GraphqlTool graphql = new GraphqlTool();
@@ -251,7 +259,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.31 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.34 ready ===");
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");
