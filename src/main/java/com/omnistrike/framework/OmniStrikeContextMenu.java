@@ -273,7 +273,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                         showToast("OmniMap",
                                 "Exploitation started on parameter '" + dialog.getConfig().getParameterName() + "'\n"
                                 + truncate(reqResp.request().url(), 60)
-                                + "\n\nOther scans paused for priority. Results in OmniMap panel.");
+                                + "\n\nResults in OmniMap panel.");
                     }
                 }
             });
@@ -964,4 +964,5 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         if (s == null) return "";
         return s.length() > max ? s.substring(0, max) + "..." : s;
     }
+
 }

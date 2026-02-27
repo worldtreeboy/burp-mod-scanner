@@ -866,7 +866,7 @@ public class MainPanel extends JPanel {
     }
 
     /** Returns the custom OmniMapPanel, or null if not yet created. */
-    public OmniMapPanel getOmniMapPanel() {
+    public JPanel getOmniMapPanel() {
         return omniMapPanel;
     }
 

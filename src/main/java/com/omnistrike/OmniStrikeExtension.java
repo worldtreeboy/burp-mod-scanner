@@ -94,7 +94,6 @@ public class OmniStrikeExtension implements BurpExtension {
         registry.registerModule(sqli);
 
         // OmniMap — high-speed sqlmap variant for SQL injection exploitation
-        // Registered right after SQLi Detector: detection → exploitation pipeline
         OmniMapModule omniMap = new OmniMapModule();
         omniMap.setDependencies(dedup, findingsStore);
         omniMap.setScanExecutor(executor);
@@ -117,7 +116,7 @@ public class OmniStrikeExtension implements BurpExtension {
         registry.registerModule(cmdi);
 
         DeserializationScanner deser = new DeserializationScanner();
-        deser.setDependencies(dedup, findingsStore);
+        deser.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(deser);
 
         GraphqlTool graphql = new GraphqlTool();
