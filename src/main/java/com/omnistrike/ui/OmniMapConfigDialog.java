@@ -33,9 +33,7 @@ public class OmniMapConfigDialog extends JDialog {
     private JComboBox<String> paramCombo;
     private final Map<String, String> paramTypeMap = new LinkedHashMap<>(); // display → type
     private JCheckBox unionCheck;
-    private JCheckBox errorCheck;
     private JCheckBox booleanCheck;
-    private JCheckBox timeCheck;
     private JComboBox<String> dbmsCombo;
     private JComboBox<String> actionCombo;
     private JTextField targetDbField;
@@ -44,7 +42,6 @@ public class OmniMapConfigDialog extends JDialog {
     private JSpinner levelSpinner;
     private JSpinner riskSpinner;
     private JSpinner threadsSpinner;
-    private JSpinner timeDelaySpinner;
     private JTextField prefixField;
     private JTextField suffixField;
     private JTextField trueStringField;
@@ -93,20 +90,12 @@ public class OmniMapConfigDialog extends JDialog {
         unionCheck = new JCheckBox("U", true);
         styleCheckBox(unionCheck);
         unionCheck.setToolTipText("UNION query — fastest extraction (full result per request)");
-        errorCheck = new JCheckBox("E", true);
-        styleCheckBox(errorCheck);
-        errorCheck.setToolTipText("Error-based — fast extraction (1 request per value)");
         booleanCheck = new JCheckBox("B", true);
         styleCheckBox(booleanCheck);
         booleanCheck.setToolTipText("Boolean Blind — reliable fallback (bisection)");
-        timeCheck = new JCheckBox("T", true);
-        styleCheckBox(timeCheck);
-        timeCheck.setToolTipText("Time-based Blind — last resort (sleep delays)");
         techInner.add(unionCheck);
-        techInner.add(errorCheck);
         techInner.add(booleanCheck);
-        techInner.add(timeCheck);
-        JLabel techHint = new JLabel("(BEUST — like sqlmap --technique)");
+        JLabel techHint = new JLabel("(UB — like sqlmap --technique)");
         techHint.setForeground(FG_DIM);
         techHint.setFont(MONO_SMALL);
         techInner.add(techHint);
@@ -202,8 +191,6 @@ public class OmniMapConfigDialog extends JDialog {
         ag.gridx = 3; riskSpinner = makeSpinner(1, 1, 3); advInner.add(riskSpinner, ag);
         ag.gridx = 4; advInner.add(styledLabel("Threads:"), ag);
         ag.gridx = 5; threadsSpinner = makeSpinner(5, 1, 10); advInner.add(threadsSpinner, ag);
-        ag.gridx = 6; advInner.add(styledLabel("Delay:"), ag);
-        ag.gridx = 7; timeDelaySpinner = makeSpinner(5, 1, 30); advInner.add(timeDelaySpinner, ag);
 
         // Row 1: Prefix, Suffix
         ag.gridy = 1;
@@ -346,12 +333,10 @@ public class OmniMapConfigDialog extends JDialog {
             c.setParameterType(paramTypeMap.getOrDefault(selected, "url"));
         }
 
-        // Set techniques from checkboxes (BEUST — like sqlmap --technique)
+        // Set techniques from checkboxes (UB — like sqlmap --technique)
         java.util.EnumSet<Technique> techniques = java.util.EnumSet.noneOf(Technique.class);
         if (unionCheck.isSelected()) techniques.add(Technique.UNION);
-        if (errorCheck.isSelected()) techniques.add(Technique.ERROR);
         if (booleanCheck.isSelected()) techniques.add(Technique.BOOLEAN);
-        if (timeCheck.isSelected()) techniques.add(Technique.TIME);
         if (techniques.isEmpty()) techniques.add(Technique.BOOLEAN); // fallback
         c.setTechniques(techniques);
 
@@ -378,7 +363,6 @@ public class OmniMapConfigDialog extends JDialog {
         c.setLevel((int) levelSpinner.getValue());
         c.setRisk((int) riskSpinner.getValue());
         c.setThreads((int) threadsSpinner.getValue());
-        c.setTimeDelay((int) timeDelaySpinner.getValue());
         c.setPrefix(getFieldText(prefixField, "e.g. ')"));
         c.setSuffix(getFieldText(suffixField, "e.g. -- -"));
         c.setTrueString(getFieldText(trueStringField, "e.g. Welcome"));
