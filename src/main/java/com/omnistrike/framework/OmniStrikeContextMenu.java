@@ -115,6 +115,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 for (ScanModule m : nonAi) {
                     if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
                     if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
+                    if ("csrf-manipulator".equals(m.getId())) continue; // CSRF Manipulator is right-click only
                     if (m.isPassive()) {
                         moduleIds.add(m.getId());
                         passive++;
@@ -124,6 +125,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 for (ScanModule m : nonAi) {
                     if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
                     if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
+                    if ("csrf-manipulator".equals(m.getId())) continue; // CSRF Manipulator is right-click only
                     moduleIds.add(m.getId());
                     if (m.isPassive()) passive++;
                     else active++;
@@ -281,16 +283,21 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         }
 
         // ============ "Scan This Parameter" — targeted parameter scanning ============
-        // Build module lists early (needed for both parameter menu and per-module submenu)
-        // Exclude ws-scanner — it doesn't process HTTP flows (uses its own WS interceptor)
+        // Build module lists: one set for parameter scanning (excludes right-click-only modules),
+        // another set for the per-module submenu (includes all except ws-scanner and omnimap).
         List<ScanModule> activeModules = new ArrayList<>();
         List<ScanModule> passiveModules = new ArrayList<>();
+        List<ScanModule> activeModulesAll = new ArrayList<>();  // includes right-click-only modules
+        List<ScanModule> passiveModulesAll = new ArrayList<>();
         for (ScanModule m : registry.getEnabledNonAiModules()) {
             if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
             if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
             if (m.isPassive()) {
+                passiveModulesAll.add(m);
                 passiveModules.add(m);
             } else {
+                activeModulesAll.add(m);
+                if ("csrf-manipulator".equals(m.getId())) continue; // Excluded from "Scan Parameter" + "All Modules"
                 activeModules.add(m);
             }
         }
@@ -420,21 +427,22 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         }
 
         // ============ "Send to OmniStrike >" submenu — per-module with Normal/AI options ============
+        // Uses *All lists so right-click-only modules (CSRF Manipulator) appear here
         JMenu subMenu = new JMenu("Send to OmniStrike");
 
         // Group: Active Scanners
-        if (!activeModules.isEmpty()) {
+        if (!activeModulesAll.isEmpty()) {
             subMenu.add(createSectionLabel("Active Scanners"));
-            for (ScanModule module : activeModules) {
+            for (ScanModule module : activeModulesAll) {
                 subMenu.add(buildModuleMenu(module, reqResp, url, aiAnalyzer, aiAvailable));
             }
         }
 
         // Group: Passive Analyzers
-        if (!passiveModules.isEmpty()) {
-            if (!activeModules.isEmpty()) subMenu.addSeparator();
+        if (!passiveModulesAll.isEmpty()) {
+            if (!activeModulesAll.isEmpty()) subMenu.addSeparator();
             subMenu.add(createSectionLabel("Passive Analyzers"));
-            for (ScanModule module : passiveModules) {
+            for (ScanModule module : passiveModulesAll) {
                 subMenu.add(buildModuleMenu(module, reqResp, url, aiAnalyzer, aiAvailable));
             }
         }

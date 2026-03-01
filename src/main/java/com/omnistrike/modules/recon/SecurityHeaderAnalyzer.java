@@ -147,39 +147,60 @@ public class SecurityHeaderAnalyzer implements ScanModule {
 
     private void checkMissingHeaders(Map<String, String> headers, String url, String host,
                                       List<Finding> findings, List<HeaderFinding> hostFindings) {
+        List<String> missingHeaders = new ArrayList<>();
+        StringBuilder evidence = new StringBuilder();
+        StringBuilder description = new StringBuilder();
+
         for (Map.Entry<String, String> required : REQUIRED_HEADERS.entrySet()) {
             String headerName = required.getKey();
             if (!headers.containsKey(headerName.toLowerCase())) {
                 HeaderFinding hf = new HeaderFinding(headerName, "Missing", Severity.LOW, required.getValue());
                 hostFindings.add(hf);
-                findings.add(Finding.builder("header-analyzer",
-                                "Missing security header: " + headerName,
-                                Severity.LOW, Confidence.CERTAIN)
-                        .url(url)
-                        .evidence("Header '" + headerName + "' not present in response")
-                        .description(required.getValue())
-                        .build());
+                missingHeaders.add(headerName);
+                evidence.append("- ").append(headerName).append("\n");
+                description.append("<b>").append(headerName).append("</b>: ")
+                        .append(required.getValue()).append("<br>");
             }
+        }
+
+        if (!missingHeaders.isEmpty()) {
+            findings.add(Finding.builder("header-analyzer",
+                            "Missing " + missingHeaders.size() + " security header(s) on " + host,
+                            Severity.LOW, Confidence.CERTAIN)
+                    .url(url)
+                    .evidence("Missing headers:\n" + evidence.toString().trim())
+                    .description("The following security headers are missing from responses on "
+                            + host + ":<br><br>" + description)
+                    .build());
         }
     }
 
     private void checkInfoDisclosure(Map<String, String> headers, String url, String host,
                                       List<Finding> findings, List<HeaderFinding> hostFindings) {
+        List<String> disclosedHeaders = new ArrayList<>();
+        StringBuilder evidence = new StringBuilder();
+
         for (String infoHeader : INFO_DISCLOSURE_HEADERS) {
             String value = headers.get(infoHeader);
             if (value != null && !value.isBlank()) {
                 HeaderFinding hf = new HeaderFinding(infoHeader, "Info disclosure", Severity.INFO, value);
                 hostFindings.add(hf);
-                findings.add(Finding.builder("header-analyzer",
-                                "Server info disclosure: " + infoHeader + ": " + value,
-                                Severity.INFO, Confidence.CERTAIN)
-                        .url(url)
-                        .evidence(infoHeader + ": " + value)
-                        .responseEvidence(infoHeader + ": " + value)
-                        .description("Server/technology version disclosed via response header. "
-                                + "Attackers can use this to identify known vulnerabilities.")
-                        .build());
+                disclosedHeaders.add(infoHeader);
+                evidence.append(infoHeader).append(": ").append(value).append("\n");
             }
+        }
+
+        if (!disclosedHeaders.isEmpty()) {
+            findings.add(Finding.builder("header-analyzer",
+                            "Server info disclosure via " + disclosedHeaders.size() + " header(s) on " + host,
+                            Severity.INFO, Confidence.CERTAIN)
+                    .url(url)
+                    .evidence(evidence.toString().trim())
+                    .responseEvidence(disclosedHeaders.get(0) + ": " + headers.get(disclosedHeaders.get(0)))
+                    .description("Server/technology information disclosed via response headers. "
+                            + "Attackers can use this to identify known vulnerabilities.<br><br>"
+                            + "Disclosed headers:<br><pre>" + evidence.toString().trim() + "</pre>")
+                    .build());
         }
     }
 
@@ -370,8 +391,44 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             .build());
                 }
             }
+
+            // Check if the cookie value contains a JWT — JWTs should be sent via the
+            // Authorization header, not stored in cookies. A JWT in a cookie is:
+            //  - Vulnerable to CSRF (browser auto-attaches cookies to cross-origin requests)
+            //  - Subject to cookie size limits (~4KB) which can silently truncate the token
+            //  - Exposed to XSS if HttpOnly is missing
+            String cookieValue = extractCookieValue(value);
+            if (cookieValue != null && JWT_PATTERN.matcher(cookieValue).find()) {
+                findings.add(Finding.builder("header-analyzer",
+                                "JWT stored in cookie instead of Authorization header: " + cookieName,
+                                Severity.MEDIUM, Confidence.FIRM)
+                        .url(url)
+                        .evidence("Set-Cookie: " + cookieName + "=eyJ...")
+                        .responseEvidence(cookieName + "=eyJ")
+                        .description("A JSON Web Token (JWT) was detected in the <code>Set-Cookie</code> "
+                                + "header for cookie '<b>" + cookieName + "</b>'. "
+                                + "JWTs should be transmitted via the <code>Authorization: Bearer</code> "
+                                + "header instead of cookies.<br><br>"
+                                + "<b>Why this matters:</b><br>"
+                                + "- <b>CSRF vulnerability</b>: Cookies are automatically attached by the browser "
+                                + "on every request to the domain, including cross-origin requests. An attacker's "
+                                + "page can forge authenticated requests without needing the JWT value. "
+                                + "The Authorization header is NOT auto-attached, making it inherently CSRF-safe.<br>"
+                                + "- <b>Cookie size limits</b>: Cookies are limited to ~4KB. JWTs can exceed this, "
+                                + "causing silent truncation and authentication failures.<br>"
+                                + "- <b>XSS exposure</b>: If the cookie lacks the HttpOnly flag, the JWT is "
+                                + "accessible to JavaScript, enabling token theft via XSS.")
+                        .remediation("Store JWTs in the Authorization header (Bearer scheme) instead of cookies. "
+                                + "Use localStorage or sessionStorage on the client side, and attach the token "
+                                + "via JavaScript on each API request. If cookies must be used (e.g., for SSR), "
+                                + "ensure HttpOnly, Secure, SameSite=Strict flags are set.")
+                        .build());
+            }
         }
     }
+
+    private static final Pattern JWT_PATTERN = Pattern.compile(
+            "eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+");
 
     private void checkHsts(Map<String, String> headers, String url, String host,
                             List<Finding> findings, List<HeaderFinding> hostFindings) {
@@ -431,6 +488,20 @@ public class SecurityHeaderAnalyzer implements ScanModule {
         int eqIdx = setCookieValue.indexOf('=');
         if (eqIdx > 0) return setCookieValue.substring(0, eqIdx).trim();
         return null;
+    }
+
+    /**
+     * Extracts the cookie value from a Set-Cookie header string.
+     * E.g., "token=eyJhbGciOi...; Path=/; HttpOnly" → "eyJhbGciOi..."
+     */
+    private String extractCookieValue(String setCookieValue) {
+        if (setCookieValue == null) return null;
+        int eqIdx = setCookieValue.indexOf('=');
+        if (eqIdx < 0) return null;
+        String rest = setCookieValue.substring(eqIdx + 1);
+        // Value ends at the first ';' (cookie attributes) or end of string
+        int semiIdx = rest.indexOf(';');
+        return semiIdx > 0 ? rest.substring(0, semiIdx).trim() : rest.trim();
     }
 
     @Override

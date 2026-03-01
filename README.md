@@ -2,11 +2,11 @@
 
 <p align="center">
   <strong>One extension to replace them all.</strong><br>
-  15 active scanners, 4 passive analyzers, SQL exploitation engine, AI-powered analysis — single JAR.
+  16 active scanners, 4 passive analyzers, SQL exploitation engine, AI-powered analysis — single JAR.
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.35-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.36-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -39,7 +39,7 @@
 
 ## Modules
 
-### Active Scanners (15)
+### Active Scanners (16)
 
 | Module | What it does |
 |---|---|
@@ -59,6 +59,7 @@
 | **HTTP Parameter Pollution** | Duplicate param precedence, privilege escalation patterns, WAF bypass via splitting. |
 | **Prototype Pollution** | Server-side `__proto__`/`constructor.prototype` with canary persistence verification, behavioral gadgets. |
 | **Path Traversal / LFI** | Absolute path + traversal, 24 Unix / 9 Windows targets with structural content validation, 26 encoding bypasses, PHP wrappers (filter/data/iconv). |
+| **CSRF Manipulator** | Right-click only. 11-test CSRF bypass suite: remove token, empty value, random token, truncated, char flip, case swap, static fake, nonce reuse, Referer/Origin removal, token relocation, method change (POST↔GET). Baseline comparison (status code + body length). Auto-skips Bearer-only endpoints. |
 
 ### Passive Analyzers (4)
 
@@ -67,7 +68,7 @@
 | **Client-Side Analyzer** | DOM XSS source-to-sink, prototype pollution, hardcoded secrets with entropy validation, postMessage, open redirects, endpoint extraction. Auto-skips minified libraries. |
 | **Hidden Endpoint Finder** | Extracts API endpoints and paths from JS/HTML/JSON via 13+ regex patterns. |
 | **Subdomain Collector** | Discovers subdomains from CSP, CORS, redirects, and response bodies. |
-| **Security Header Analyzer** | HSTS, CSP, CORS, cookie flags, X-Frame-Options, Referrer-Policy, server version disclosure. |
+| **Security Header Analyzer** | HSTS, CSP, CORS, cookie flags, X-Frame-Options, Referrer-Policy, server version disclosure. Consolidated findings per host. JWT-in-Cookie detection. |
 
 ---
 
@@ -227,6 +228,10 @@ Requires JDK 17+. Dependencies: montoya-api 2026.2, gson 2.11.0.
 ---
 
 ## Changelog
+
+### v1.36 (2026-03-02)
+- **CSRF Manipulator**: New active module (right-click only) — 11 token manipulation tests with baseline comparison. Auto-detects CSRF tokens via wildcard patterns (`*csrf*`, `*xsrf*`, `*_token*`, `*nonce*`). Skips Bearer-only endpoints with INFO finding.
+- **Security Header Analyzer**: Consolidated missing headers into one finding per host (was one per header). Same for info disclosure headers. Added JWT-in-Cookie detection — flags JWTs in `Set-Cookie` that should use `Authorization: Bearer` instead.
 
 ### v1.35 (2026-02-28)
 - **OmniMap: 4 techniques** — UNION, Error-based, Boolean blind, Time-based blind (was boolean-only)
