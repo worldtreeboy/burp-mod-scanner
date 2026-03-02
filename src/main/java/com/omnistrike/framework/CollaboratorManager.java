@@ -45,6 +45,9 @@ public class CollaboratorManager {
     // Stale payload cleanup — shared by both modes
     private ScheduledExecutorService cleanupExecutor;
 
+    // UI Activity Log callback: (module, message)
+    private volatile java.util.function.BiConsumer<String, String> uiLogger;
+
     // Map payload ID -> callback to invoke when interaction is received
     private final ConcurrentHashMap<String, PendingPayload> pendingPayloads = new ConcurrentHashMap<>();
 
@@ -69,6 +72,21 @@ public class CollaboratorManager {
 
     public CollaboratorManager(MontoyaApi api) {
         this.api = api;
+    }
+
+    /** Set a callback to log events to the UI Activity Log. Args: (module, message) */
+    public void setUiLogger(java.util.function.BiConsumer<String, String> logger) {
+        this.uiLogger = logger;
+    }
+
+    private void uiLog(String message) {
+        try {
+            api.logging().logToOutput("[OOB] " + message);
+        } catch (NullPointerException ignored) {}
+        java.util.function.BiConsumer<String, String> logger = uiLogger;
+        if (logger != null) {
+            try { logger.accept("OOB", message); } catch (NullPointerException ignored) {}
+        }
     }
 
     // ==================== MODE MANAGEMENT ====================
@@ -153,23 +171,21 @@ public class CollaboratorManager {
             oobListener = new OobListener(address, httpPort, dnsPort);
             oobListener.setInteractionHandler(this::handleCustomOobInteraction);
             oobListener.startHttp();
-            api.logging().logToOutput("[OOB Listener] HTTP started on " + address + ":" + httpPort);
+            uiLog("HTTP listener started on " + address + ":" + httpPort);
 
             try {
                 oobListener.startDns();
-                api.logging().logToOutput("[OOB Listener] DNS started on " + address + ":" + dnsPort + " (UDP)");
+                uiLog("DNS listener started on " + address + ":" + dnsPort + " (UDP)");
             } catch (IOException dnsEx) {
                 // DNS failure is non-fatal — HTTP still works
-                api.logging().logToError("[OOB Listener] DNS failed to start on port " + dnsPort
-                        + ": " + dnsEx.getMessage() + " (HTTP still active)");
+                uiLog("DNS failed to start on port " + dnsPort + ": " + dnsEx.getMessage() + " (HTTP still active)");
             }
 
             available = true;
             startCleanupTask();
             return true;
         } catch (IOException e) {
-            api.logging().logToError("[OOB Listener] Failed to start HTTP on " + address + ":" + httpPort
-                    + ": " + e.getMessage());
+            uiLog("Failed to start HTTP on " + address + ":" + httpPort + ": " + e.getMessage());
             available = false;
             return false;
         }
@@ -190,12 +206,12 @@ public class CollaboratorManager {
             if (mode == OobMode.CUSTOM_OOB) {
                 available = false;
             }
-            api.logging().logToOutput("[OOB Listener] Stopped.");
+            uiLog("Listener stopped.");
         }
     }
 
     /**
-     * Called by OobListener when an HTTP request arrives. Matches the payload ID
+     * Called by OobListener when an HTTP/DNS request arrives. Matches the payload ID
      * against pending payloads and fires the module callback synchronously.
      */
     private void handleCustomOobInteraction(String payloadId, CustomOobInteraction interaction) {
@@ -204,14 +220,13 @@ public class CollaboratorManager {
             try {
                 matched.callback.accept(interaction);
             } catch (Exception e) {
-                api.logging().logToError("[OOB Listener] Callback error for payload " + payloadId
-                        + ": " + e.getMessage());
+                uiLog("Callback error for payload " + payloadId + ": " + e.getMessage());
             }
-            api.logging().logToOutput("[OOB Listener] Received " + interaction.type().name()
+            uiLog("Received " + interaction.type().name()
                     + " from " + interaction.clientIp().getHostAddress()
                     + " — matched payload " + payloadId + " (" + matched.moduleId + ")");
         } else {
-            api.logging().logToOutput("[OOB Listener] Received GET from "
+            uiLog("Received " + interaction.type().name() + " from "
                     + interaction.clientIp().getHostAddress()
                     + " payloadId=" + payloadId + " (no matching payload)");
         }

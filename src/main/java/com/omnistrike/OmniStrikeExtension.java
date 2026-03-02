@@ -239,6 +239,10 @@ public class OmniStrikeExtension implements BurpExtension {
                         javax.swing.SwingUtilities.invokeLater(() ->
                                 mainPanel.getLogPanel().log("INFO", module, message)));
             }
+            // Wire CollaboratorManager (Custom OOB) log messages to the Activity Log
+            collaboratorManager.setUiLogger((module, message) ->
+                    javax.swing.SwingUtilities.invokeLater(() ->
+                            mainPanel.getLogPanel().log("INFO", module, message)));
             // Wire SessionKeepAlive log messages to the Activity Log
             sessionKeepAlive.setUiLogger((module, message) ->
                     javax.swing.SwingUtilities.invokeLater(() ->
