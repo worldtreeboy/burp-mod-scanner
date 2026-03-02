@@ -822,7 +822,17 @@ public class MainPanel extends JPanel {
                     return;
                 }
 
-                boolean started = collaboratorManager.initializeCustomOob(ip, httpPort, dnsPort);
+                boolean started;
+                try {
+                    started = collaboratorManager.initializeCustomOob(ip, httpPort, dnsPort);
+                } catch (Throwable ex) {
+                    listenerToggle.setSelected(false);
+                    String errMsg = "CRASH: " + ex.getClass().getSimpleName() + ": " + ex.getMessage();
+                    listenerStatusLabel.setText(errMsg);
+                    listenerStatusLabel.setForeground(NEON_RED);
+                    logPanel.log("ERROR", "OOB", errMsg);
+                    return;
+                }
                 if (started) {
                     listenerToggle.setText("Stop Listener");
                     listenerToggle.setForeground(NEON_RED);
@@ -848,7 +858,7 @@ public class MainPanel extends JPanel {
                             + " DNS:" + (dnsOk ? String.valueOf(dnsPort) : "FAILED"));
                 } else {
                     listenerToggle.setSelected(false);
-                    listenerStatusLabel.setText("Failed to start (HTTP port in use?)");
+                    listenerStatusLabel.setText("Failed to start — check Activity Log for details");
                     listenerStatusLabel.setForeground(NEON_RED);
                 }
             } else {

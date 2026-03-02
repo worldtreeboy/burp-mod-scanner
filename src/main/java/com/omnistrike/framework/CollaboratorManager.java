@@ -82,10 +82,10 @@ public class CollaboratorManager {
     private void uiLog(String message) {
         try {
             api.logging().logToOutput("[OOB] " + message);
-        } catch (NullPointerException ignored) {}
+        } catch (Exception ignored) {}
         java.util.function.BiConsumer<String, String> logger = uiLogger;
         if (logger != null) {
-            try { logger.accept("OOB", message); } catch (NullPointerException ignored) {}
+            try { logger.accept("OOB", message); } catch (Exception ignored) {}
         }
     }
 
@@ -172,14 +172,24 @@ public class CollaboratorManager {
             oobListener.setInteractionHandler(this::handleCustomOobInteraction);
             uiLog("Starting HTTP listener on " + address + ":" + httpPort + "...");
             oobListener.startHttp();
-            uiLog("HTTP listener started successfully on " + address + ":" + httpPort);
+            uiLog("HTTP listener started on " + address + ":" + httpPort);
+
+            // Self-test: verify the listener is actually accepting connections
+            try {
+                java.net.Socket testSocket = new java.net.Socket();
+                testSocket.connect(new java.net.InetSocketAddress(
+                        "127.0.0.1".equals(address) ? "127.0.0.1" : address, httpPort), 2000);
+                testSocket.close();
+                uiLog("HTTP listener VERIFIED — accepting connections on " + address + ":" + httpPort);
+            } catch (Exception testEx) {
+                uiLog("WARNING: HTTP listener started but self-test FAILED: " + testEx.getMessage()
+                        + " — the listener may not be reachable from outside");
+            }
 
             try {
-                uiLog("Starting DNS listener on " + address + ":" + dnsPort + " (UDP)...");
                 oobListener.startDns();
-                uiLog("DNS listener started successfully on " + address + ":" + dnsPort + " (UDP)");
-            } catch (Exception dnsEx) {
-                // DNS failure is non-fatal — HTTP still works
+                uiLog("DNS listener started on " + address + ":" + dnsPort + " (UDP)");
+            } catch (Throwable dnsEx) {
                 uiLog("DNS FAILED on port " + dnsPort + ": " + dnsEx.getClass().getSimpleName()
                         + ": " + dnsEx.getMessage() + " (HTTP still active)");
             }
@@ -187,9 +197,10 @@ public class CollaboratorManager {
             available = true;
             startCleanupTask();
             return true;
-        } catch (Exception e) {
+        } catch (Throwable e) {
             uiLog("FAILED to start HTTP on " + address + ":" + httpPort
                     + ": " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            api.logging().logToError("[OOB] Stack trace: " + java.util.Arrays.toString(e.getStackTrace()));
             available = false;
             return false;
         }
