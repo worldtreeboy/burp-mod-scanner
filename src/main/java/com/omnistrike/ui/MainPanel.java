@@ -825,7 +825,7 @@ public class MainPanel extends JPanel {
                             BorderFactory.createEmptyBorder(4, 12, 4, 12)));
                     // Show status for both HTTP and DNS
                     boolean dnsOk = collaboratorManager.isCustomDnsRunning();
-                    String statusText = "HTTP on " + ip + ":" + httpPort;
+                    String statusText = "Started — HTTP on " + ip + ":" + httpPort;
                     if (dnsOk) {
                         statusText += " | DNS on " + ip + ":" + dnsPort;
                     } else {
