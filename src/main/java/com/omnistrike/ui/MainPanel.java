@@ -6,13 +6,18 @@ import com.omnistrike.model.Finding;
 import com.omnistrike.model.ScanModule;
 import com.omnistrike.model.Severity;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
+import com.omnistrike.framework.stepper.StepperEngine;
 import com.omnistrike.ui.modules.AiModulePanel;
 import com.omnistrike.ui.modules.DeserModulePanel;
 import com.omnistrike.ui.modules.GenericModulePanel;
 import com.omnistrike.ui.modules.OmniMapPanel;
+import com.omnistrike.ui.modules.StepperPanel;
 import com.omnistrike.ui.modules.WebSocketScannerPanel;
 import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
 import com.omnistrike.modules.websocket.WebSocketScanner;
+
+import com.omnistrike.framework.OobListener;
+import com.omnistrike.framework.CollaboratorManager.OobMode;
 
 import static com.omnistrike.ui.CyberTheme.*;
 
@@ -20,6 +25,7 @@ import javax.swing.*;
 import javax.swing.border.Border;
 import java.awt.*;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -36,6 +42,7 @@ public class MainPanel extends JPanel {
     private final TrafficInterceptor interceptor;
     private final CollaboratorManager collaboratorManager;
     private final SessionKeepAlive sessionKeepAlive;
+    private final StepperEngine stepperEngine;
     private final MontoyaApi api;
     private final LogPanel logPanel;
 
@@ -64,6 +71,9 @@ public class MainPanel extends JPanel {
     // Custom module panel for OmniMap (SQL injection exploitation)
     private OmniMapPanel omniMapPanel;
 
+    // Stepper panel (prerequisite request chain)
+    private StepperPanel stepperPanel;
+
     // Stats bar severity count labels
     private final JLabel critLabel;
     private final JLabel highLabel;
@@ -84,7 +94,7 @@ public class MainPanel extends JPanel {
     public MainPanel(ModuleRegistry registry, FindingsStore findingsStore, ScopeManager scopeManager,
                      ActiveScanExecutor executor, TrafficInterceptor interceptor,
                      CollaboratorManager collaboratorManager, SessionKeepAlive sessionKeepAlive,
-                     MontoyaApi api) {
+                     StepperEngine stepperEngine, MontoyaApi api) {
         this.registry = registry;
         this.findingsStore = findingsStore;
         this.scopeManager = scopeManager;
@@ -92,6 +102,7 @@ public class MainPanel extends JPanel {
         this.interceptor = interceptor;
         this.collaboratorManager = collaboratorManager;
         this.sessionKeepAlive = sessionKeepAlive;
+        this.stepperEngine = stepperEngine;
         this.api = api;
         this.logPanel = new LogPanel();
 
@@ -277,14 +288,11 @@ public class MainPanel extends JPanel {
         threadStatusLabel.setFont(MONO_SMALL);
         row2.add(threadStatusLabel);
 
-        // Collaborator status
-        String collabStatus = collaboratorManager != null && collaboratorManager.isAvailable()
-                ? "Collaborator: Active" : "Collaborator: N/A (Pro only)";
-        JLabel collabLabel = new JLabel(collabStatus);
-        collabLabel.setForeground(collaboratorManager != null && collaboratorManager.isAvailable()
-                ? NEON_GREEN : FG_DIM);
-        collabLabel.setFont(MONO_SMALL);
-        row2.add(collabLabel);
+        // OOB mode status (compact indicator in row2)
+        JLabel oobStatusLabel = new JLabel("OOB: Initializing...");
+        oobStatusLabel.setForeground(FG_DIM);
+        oobStatusLabel.setFont(MONO_SMALL);
+        row2.add(oobStatusLabel);
 
         // Progress bar (visible only while scanning)
         progressBar = new JProgressBar();
@@ -295,6 +303,10 @@ public class MainPanel extends JPanel {
         row2.add(progressBar);
 
         topContainer.add(row2);
+
+        // --- OOB Configuration Row ---
+        JPanel oobRow = buildOobConfigRow(oobStatusLabel);
+        topContainer.add(oobRow);
 
         // --- Row 3: Session Keep-Alive controls ---
         JPanel sessionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
@@ -515,6 +527,15 @@ public class MainPanel extends JPanel {
             moduleDetailContainer.add(panel, module.getId());
         }
 
+        // Register Stepper panel as a framework tool
+        if (stepperEngine != null) {
+            stepperPanel = new StepperPanel(stepperEngine);
+            modulePanels.put("stepper", stepperPanel);
+            moduleDetailContainer.add(stepperPanel, "stepper");
+            moduleListPanel.addFrameworkEntry("stepper", "Stepper",
+                    "Prerequisite Request Chain");
+        }
+
         // Placeholder when no module selected
         JPanel placeholder = new JPanel(new GridBagLayout());
         placeholder.setBackground(BG_DARK);
@@ -605,6 +626,275 @@ public class MainPanel extends JPanel {
             updateSessionStatus();
         });
         updateTimer.start();
+    }
+
+    /**
+     * Builds the OOB Configuration row with radio buttons, network interface selector,
+     * port field, and start/stop listener button.
+     */
+    private JPanel buildOobConfigRow(JLabel oobStatusLabel) {
+        JPanel oobPanel = new JPanel();
+        oobPanel.setLayout(new BoxLayout(oobPanel, BoxLayout.Y_AXIS));
+        oobPanel.setBackground(BG_DARK);
+        CyberTheme.styleTitledBorder(oobPanel, "OOB Configuration", NEON_CYAN);
+
+        // --- Radio buttons row ---
+        JPanel radioRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        radioRow.setBackground(BG_DARK);
+
+        JRadioButton burpCollabRadio = new JRadioButton("Burp Collaborator (requires Pro)");
+        styleRadioButton(burpCollabRadio);
+        JRadioButton customOobRadio = new JRadioButton("Custom OOB Listener (intranet / self-hosted)");
+        styleRadioButton(customOobRadio);
+
+        ButtonGroup oobGroup = new ButtonGroup();
+        oobGroup.add(burpCollabRadio);
+        oobGroup.add(customOobRadio);
+
+        // Default selection based on current mode
+        if (collaboratorManager.getMode() == OobMode.CUSTOM_OOB) {
+            customOobRadio.setSelected(true);
+        } else {
+            burpCollabRadio.setSelected(true);
+        }
+
+        radioRow.add(burpCollabRadio);
+        radioRow.add(customOobRadio);
+        oobPanel.add(radioRow);
+
+        // --- Custom OOB controls (hidden when Burp Collaborator is selected) ---
+        JPanel customControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        customControls.setBackground(BG_DARK);
+
+        // Network interface dropdown
+        JLabel ifaceLabel = new JLabel("Interface:");
+        ifaceLabel.setForeground(NEON_CYAN);
+        ifaceLabel.setFont(MONO_LABEL);
+        customControls.add(ifaceLabel);
+
+        JComboBox<String> ifaceCombo = new JComboBox<>();
+        List<String[]> interfaces = OobListener.getNetworkInterfaces();
+        for (String[] iface : interfaces) {
+            ifaceCombo.addItem(iface[0] + " - " + iface[1]);
+        }
+        styleComboBox(ifaceCombo);
+        ifaceCombo.setToolTipText("IP address the target server will call back to. Must be reachable from the target.");
+        customControls.add(ifaceCombo);
+
+        // HTTP Port field
+        JLabel portLabel = new JLabel("HTTP Port:");
+        portLabel.setForeground(NEON_CYAN);
+        portLabel.setFont(MONO_LABEL);
+        customControls.add(portLabel);
+
+        int initialPort = OobListener.randomAvailablePort();
+        JTextField portField = new JTextField(String.valueOf(initialPort), 6);
+        styleTextField(portField);
+        portField.setToolTipText("Port for the OOB HTTP listener (TCP)");
+        customControls.add(portField);
+
+        // DNS Port field
+        JLabel dnsPortLabel = new JLabel("DNS Port:");
+        dnsPortLabel.setForeground(NEON_CYAN);
+        dnsPortLabel.setFont(MONO_LABEL);
+        customControls.add(dnsPortLabel);
+
+        int initialDnsPort = OobListener.randomAvailableUdpPort();
+        JTextField dnsPortField = new JTextField(String.valueOf(initialDnsPort), 6);
+        styleTextField(dnsPortField);
+        dnsPortField.setToolTipText("Port for the OOB DNS listener (UDP). Default 53 requires root/admin.");
+        customControls.add(dnsPortField);
+
+        JButton randomizeBtn = new JButton("Randomize");
+        styleButton(randomizeBtn, null);
+        randomizeBtn.addActionListener(e -> {
+            portField.setText(String.valueOf(OobListener.randomAvailablePort()));
+            dnsPortField.setText(String.valueOf(OobListener.randomAvailableUdpPort()));
+        });
+        customControls.add(randomizeBtn);
+
+        // Start/Stop listener button
+        JToggleButton listenerToggle = new JToggleButton("Start Listener");
+        listenerToggle.setBackground(BG_PANEL);
+        listenerToggle.setForeground(NEON_GREEN);
+        listenerToggle.setFocusPainted(false);
+        listenerToggle.setFont(MONO_BOLD);
+        listenerToggle.setBorder(BorderFactory.createCompoundBorder(
+                new CyberTheme.GlowLineBorder(NEON_GREEN, 1),
+                BorderFactory.createEmptyBorder(4, 12, 4, 12)));
+        customControls.add(listenerToggle);
+
+        // Listener status label
+        JLabel listenerStatusLabel = new JLabel("Status: Not started");
+        listenerStatusLabel.setForeground(FG_SECONDARY);
+        listenerStatusLabel.setFont(MONO_SMALL);
+        customControls.add(listenerStatusLabel);
+
+        oobPanel.add(customControls);
+
+        // --- Payload preview label ---
+        JPanel previewRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        previewRow.setBackground(BG_DARK);
+        JLabel previewLabel = new JLabel("");
+        previewLabel.setForeground(FG_DIM);
+        previewLabel.setFont(MONO_SMALL);
+        previewRow.add(previewLabel);
+        oobPanel.add(previewRow);
+
+        // --- Update preview when interface or port changes ---
+        Runnable updatePreview = () -> {
+            int selectedIdx = ifaceCombo.getSelectedIndex();
+            if (selectedIdx >= 0 && selectedIdx < interfaces.size()) {
+                String ip = interfaces.get(selectedIdx)[1];
+                String httpPortText = portField.getText().trim();
+                String dnsPortText = dnsPortField.getText().trim();
+                previewLabel.setText("HTTP: http://" + ip + ":" + httpPortText + "/<id>   |   DNS: nslookup <id>." + ip + " " + ip + " (port " + dnsPortText + ")");
+            }
+        };
+        ifaceCombo.addActionListener(e -> updatePreview.run());
+        javax.swing.event.DocumentListener previewDocListener = new javax.swing.event.DocumentListener() {
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { updatePreview.run(); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { updatePreview.run(); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { updatePreview.run(); }
+        };
+        portField.getDocument().addDocumentListener(previewDocListener);
+        dnsPortField.getDocument().addDocumentListener(previewDocListener);
+        updatePreview.run();
+
+        // --- Visibility toggle ---
+        customControls.setVisible(customOobRadio.isSelected());
+        previewRow.setVisible(customOobRadio.isSelected());
+
+        // --- Radio button actions ---
+        burpCollabRadio.addActionListener(e -> {
+            customControls.setVisible(false);
+            previewRow.setVisible(false);
+            // Stop listener if running
+            if (listenerToggle.isSelected()) {
+                listenerToggle.doClick(); // triggers stop
+            }
+            collaboratorManager.switchToBurpCollaborator();
+            updateOobStatus(oobStatusLabel);
+            logPanel.log("INFO", "OOB", "Switched to Burp Collaborator mode");
+        });
+
+        customOobRadio.addActionListener(e -> {
+            customControls.setVisible(true);
+            previewRow.setVisible(true);
+            collaboratorManager.switchToCustomOob();
+            updateOobStatus(oobStatusLabel);
+            logPanel.log("INFO", "OOB", "Switched to Custom OOB Listener mode");
+        });
+
+        // --- Start/Stop listener toggle ---
+        listenerToggle.addActionListener(e -> {
+            if (listenerToggle.isSelected()) {
+                // Start listener
+                int selectedIdx = ifaceCombo.getSelectedIndex();
+                if (selectedIdx < 0 || selectedIdx >= interfaces.size()) {
+                    JOptionPane.showMessageDialog(this, "Please select a network interface.");
+                    listenerToggle.setSelected(false);
+                    return;
+                }
+                String ip = interfaces.get(selectedIdx)[1];
+                int httpPort;
+                try {
+                    httpPort = Integer.parseInt(portField.getText().trim());
+                    if (httpPort < 1 || httpPort > 65535) throw new NumberFormatException();
+                } catch (NumberFormatException ex) {
+                    JOptionPane.showMessageDialog(this, "Invalid HTTP port number (1-65535).");
+                    listenerToggle.setSelected(false);
+                    return;
+                }
+                int dnsPort;
+                try {
+                    dnsPort = Integer.parseInt(dnsPortField.getText().trim());
+                    if (dnsPort < 1 || dnsPort > 65535) throw new NumberFormatException();
+                } catch (NumberFormatException ex) {
+                    JOptionPane.showMessageDialog(this, "Invalid DNS port number (1-65535).");
+                    listenerToggle.setSelected(false);
+                    return;
+                }
+
+                boolean started = collaboratorManager.initializeCustomOob(ip, httpPort, dnsPort);
+                if (started) {
+                    listenerToggle.setText("Stop Listener");
+                    listenerToggle.setForeground(NEON_RED);
+                    listenerToggle.setBorder(BorderFactory.createCompoundBorder(
+                            new CyberTheme.GlowLineBorder(NEON_RED, 1),
+                            BorderFactory.createEmptyBorder(4, 12, 4, 12)));
+                    // Show status for both HTTP and DNS
+                    boolean dnsOk = collaboratorManager.isCustomDnsRunning();
+                    String statusText = "HTTP on " + ip + ":" + httpPort;
+                    if (dnsOk) {
+                        statusText += " | DNS on " + ip + ":" + dnsPort;
+                    } else {
+                        statusText += " | DNS failed (port " + dnsPort + " in use?)";
+                    }
+                    listenerStatusLabel.setText(statusText);
+                    listenerStatusLabel.setForeground(NEON_GREEN);
+                    // Disable controls while running
+                    ifaceCombo.setEnabled(false);
+                    portField.setEnabled(false);
+                    dnsPortField.setEnabled(false);
+                    randomizeBtn.setEnabled(false);
+                    logPanel.log("INFO", "OOB", "Custom OOB Listener started — HTTP:" + httpPort
+                            + " DNS:" + (dnsOk ? String.valueOf(dnsPort) : "FAILED"));
+                } else {
+                    listenerToggle.setSelected(false);
+                    listenerStatusLabel.setText("Failed to start (HTTP port in use?)");
+                    listenerStatusLabel.setForeground(NEON_RED);
+                }
+            } else {
+                // Stop listener
+                collaboratorManager.stopCustomOob();
+                listenerToggle.setText("Start Listener");
+                listenerToggle.setForeground(NEON_GREEN);
+                listenerToggle.setBorder(BorderFactory.createCompoundBorder(
+                        new CyberTheme.GlowLineBorder(NEON_GREEN, 1),
+                        BorderFactory.createEmptyBorder(4, 12, 4, 12)));
+                listenerStatusLabel.setText("Stopped");
+                listenerStatusLabel.setForeground(FG_SECONDARY);
+                // Re-enable controls
+                ifaceCombo.setEnabled(true);
+                portField.setEnabled(true);
+                dnsPortField.setEnabled(true);
+                randomizeBtn.setEnabled(true);
+                logPanel.log("INFO", "OOB", "Custom OOB Listener stopped");
+            }
+            updateOobStatus(oobStatusLabel);
+        });
+
+        // Set initial OOB status
+        updateOobStatus(oobStatusLabel);
+
+        return oobPanel;
+    }
+
+    /**
+     * Updates the compact OOB status label in row2 based on current mode and availability.
+     */
+    private void updateOobStatus(JLabel oobStatusLabel) {
+        SwingUtilities.invokeLater(() -> {
+            if (collaboratorManager.getMode() == OobMode.CUSTOM_OOB) {
+                if (collaboratorManager.isCustomOobRunning()) {
+                    oobStatusLabel.setText("OOB: Custom (" + collaboratorManager.getCustomAddress()
+                            + ":" + collaboratorManager.getCustomPort() + ")");
+                    oobStatusLabel.setForeground(NEON_GREEN);
+                } else {
+                    oobStatusLabel.setText("OOB: Custom (not started)");
+                    oobStatusLabel.setForeground(NEON_ORANGE);
+                }
+            } else {
+                if (collaboratorManager.isAvailable()) {
+                    oobStatusLabel.setText("OOB: Collaborator Active");
+                    oobStatusLabel.setForeground(NEON_GREEN);
+                } else {
+                    oobStatusLabel.setText("OOB: Collaborator N/A");
+                    oobStatusLabel.setForeground(FG_DIM);
+                }
+            }
+        });
     }
 
     /**
@@ -761,6 +1051,8 @@ public class MainPanel extends JPanel {
                 ((DeserModulePanel) panel).stopTimers();
             } else if (panel instanceof WebSocketScannerPanel) {
                 ((WebSocketScannerPanel) panel).stopTimers();
+            } else if (panel instanceof StepperPanel) {
+                ((StepperPanel) panel).stopTimers();
             } else if (panel == omniMapPanel && omniMapPanel != null) {
                 try { panel.getClass().getMethod("stopTimers").invoke(panel); } catch (Exception ignored) {}
             }

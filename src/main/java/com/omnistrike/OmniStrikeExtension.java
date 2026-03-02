@@ -6,6 +6,7 @@ import burp.api.montoya.scanner.AuditConfiguration;
 import burp.api.montoya.scanner.BuiltInAuditConfiguration;
 import burp.api.montoya.scanner.audit.Audit;
 import com.omnistrike.framework.*;
+import com.omnistrike.framework.stepper.StepperEngine;
 import com.omnistrike.model.ModuleConfig;
 import com.omnistrike.modules.injection.*;
 import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
@@ -18,7 +19,7 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.36 — Entry Point
+ * OmniStrike v1.37 — Entry Point
  *
  * A unified vulnerability scanning framework for Burp Suite with 20 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
@@ -38,13 +39,14 @@ public class OmniStrikeExtension implements BurpExtension {
     private TrafficInterceptor interceptor;
     private CollaboratorManager collaboratorManager;
     private SessionKeepAlive sessionKeepAlive;
+    private StepperEngine stepperEngine;
     private volatile MainPanel mainPanel;
     private volatile Audit persistentAudit;
 
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.36 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.37 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -62,8 +64,12 @@ public class OmniStrikeExtension implements BurpExtension {
         boolean collabAvailable = collaboratorManager.initialize();
         if (collabAvailable) {
             api.logging().logToOutput("Burp Collaborator: Available (Professional edition)");
+            api.logging().logToOutput("OOB Mode: Burp Collaborator (default)");
         } else {
             api.logging().logToOutput("Burp Collaborator: Not available (Community edition or disabled)");
+            collaboratorManager.switchToCustomOob();
+            api.logging().logToOutput("OOB Mode: Custom OOB Listener (Collaborator unavailable)");
+            api.logging().logToOutput("  → Configure a Custom OOB Listener in the OmniStrike tab to enable OOB testing.");
         }
 
         // ==================== REGISTER MODULES ====================
@@ -174,6 +180,11 @@ public class OmniStrikeExtension implements BurpExtension {
         api.proxy().registerResponseHandler(interceptor);
         api.logging().logToOutput("Traffic interceptor registered.");
 
+        // ==================== STEPPER ENGINE ====================
+        stepperEngine = new StepperEngine(api, scopeManager);
+        interceptor.setStepperEngine(stepperEngine);
+        api.logging().logToOutput("Stepper engine initialized (disabled by default).");
+
         // ==================== SESSION KEEP-ALIVE ====================
         sessionKeepAlive = new SessionKeepAlive(api);
         // uiLogger is wired below after MainPanel is created (it needs logPanel)
@@ -205,7 +216,7 @@ public class OmniStrikeExtension implements BurpExtension {
 
         // ==================== CONTEXT MENU ====================
         OmniStrikeContextMenu contextMenu = new OmniStrikeContextMenu(
-                api, registry, interceptor, scanCheck, sessionKeepAlive);
+                api, registry, interceptor, scanCheck, sessionKeepAlive, stepperEngine);
         contextMenu.setMainPanelSupplier(() -> mainPanel);
         api.userInterface().registerContextMenuItemsProvider(contextMenu);
         api.logging().logToOutput("Context menu registered (right-click > Send to OmniStrike).");
@@ -219,8 +230,15 @@ public class OmniStrikeExtension implements BurpExtension {
         SwingUtilities.invokeLater(() -> {
             mainPanel = new MainPanel(
                     registry, findingsStore, scopeManager,
-                    executor, interceptor, collaboratorManager, sessionKeepAlive, api);
+                    executor, interceptor, collaboratorManager, sessionKeepAlive,
+                    stepperEngine, api);
             api.userInterface().registerSuiteTab("OmniStrike", mainPanel);
+            // Wire Stepper log messages to the Activity Log
+            if (stepperEngine != null) {
+                stepperEngine.setUiLogger((module, message) ->
+                        javax.swing.SwingUtilities.invokeLater(() ->
+                                mainPanel.getLogPanel().log("INFO", module, message)));
+            }
             // Wire SessionKeepAlive log messages to the Activity Log
             sessionKeepAlive.setUiLogger((module, message) ->
                     javax.swing.SwingUtilities.invokeLater(() ->
@@ -263,9 +281,11 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.36 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.37 ready ===");
+        String oobMode = collaboratorManager.getMode() == CollaboratorManager.OobMode.BURP_COLLABORATOR
+                ? "Burp Collaborator" : "Custom OOB (configure listener in UI)";
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
-                + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
+                + " | OOB: " + oobMode);
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");
     }
 }

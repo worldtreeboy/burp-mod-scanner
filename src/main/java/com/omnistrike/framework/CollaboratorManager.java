@@ -3,23 +3,47 @@ package com.omnistrike.framework;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.collaborator.*;
 
+import java.io.IOException;
+import java.security.SecureRandom;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
 
 /**
- * Manages Burp Collaborator client lifecycle, payload generation, and interaction polling.
- * Shared by all modules that need OOB testing (SQLi OOB, SSRF, SSTI).
- * Requires Burp Suite Professional.
+ * Manages OOB (Out-of-Band) interaction detection for all scanner modules.
+ * Supports two mutually exclusive modes:
+ * <ul>
+ *   <li><b>BURP_COLLABORATOR</b> — Uses Burp's built-in Collaborator (requires Professional + internet)</li>
+ *   <li><b>CUSTOM_OOB</b> — Self-hosted HTTP listener inside the extension (works on intranets)</li>
+ * </ul>
+ * All modules use the same API: {@code generatePayload()} + {@code Consumer<Interaction>} callbacks.
  */
 public class CollaboratorManager {
 
+    public enum OobMode {
+        BURP_COLLABORATOR,
+        CUSTOM_OOB
+    }
+
     private final MontoyaApi api;
+    private volatile OobMode mode = OobMode.BURP_COLLABORATOR;
+
+    // --- Burp Collaborator mode ---
     private CollaboratorClient client;
     private ScheduledExecutorService poller;
     private volatile boolean available = false;
     private volatile int payloadTtlMinutes = 60;
+
+    // --- Custom OOB mode ---
+    private OobListener oobListener;
+    private volatile String customAddress; // The IP address the target should call back to
+    private volatile int customPort;       // HTTP port
+    private volatile int customDnsPort;    // DNS port (UDP)
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+
+    // Stale payload cleanup — shared by both modes
+    private ScheduledExecutorService cleanupExecutor;
 
     // Map payload ID -> callback to invoke when interaction is received
     private final ConcurrentHashMap<String, PendingPayload> pendingPayloads = new ConcurrentHashMap<>();
@@ -47,6 +71,40 @@ public class CollaboratorManager {
         this.api = api;
     }
 
+    // ==================== MODE MANAGEMENT ====================
+
+    public OobMode getMode() {
+        return mode;
+    }
+
+    /**
+     * Switch to Burp Collaborator mode. Stops custom OOB listener if running.
+     */
+    public void switchToBurpCollaborator() {
+        stopCustomOob();
+        mode = OobMode.BURP_COLLABORATOR;
+        // Re-initialize Collaborator client if not already done
+        if (client == null) {
+            initialize();
+        } else {
+            available = (client != null);
+        }
+    }
+
+    /**
+     * Switch to Custom OOB mode. Stops Burp Collaborator polling.
+     * The listener is NOT started automatically — call {@link #initializeCustomOob} to start it.
+     */
+    public void switchToCustomOob() {
+        // Stop Collaborator polling (but keep pendingPayloads — they're shared)
+        stopCollaboratorPolling();
+        mode = OobMode.CUSTOM_OOB;
+        // Available is false until initializeCustomOob() starts the listener
+        available = (oobListener != null && oobListener.isRunning());
+    }
+
+    // ==================== BURP COLLABORATOR MODE ====================
+
     /**
      * Initialize the Collaborator client. Must be called during extension init.
      * Returns false if Collaborator is not available (Community edition).
@@ -59,15 +117,13 @@ public class CollaboratorManager {
                 poller = null;
             }
             // Always create a fresh Collaborator client each session.
-            // Persisting the secret key is a security risk (plaintext in project file),
-            // and pending callback handlers are in-memory only — a restored client can't
-            // match interactions to findings anyway.
             client = api.collaborator().createClient();
             api.logging().logToOutput("Created new Collaborator client.");
             available = true;
 
             // Start polling for interactions every 5 seconds
             startPolling(5);
+            startCleanupTask();
 
             return true;
         } catch (Exception e) {
@@ -77,19 +133,130 @@ public class CollaboratorManager {
         }
     }
 
+    // ==================== CUSTOM OOB MODE ====================
+
     /**
-     * Generate a Collaborator payload and register a callback for when it receives an interaction.
+     * Initialize and start the custom OOB HTTP + DNS listeners.
      *
-     * @param moduleId          Which module generated this payload
-     * @param url               The target URL being tested
-     * @param parameter         The parameter being injected into
-     * @param payloadDescription Description of the payload type (e.g., "OOB SQLi DNS exfil")
-     * @param callback          Called when an interaction is received for this payload
-     * @return The full Collaborator payload string (e.g., "abc123.oastify.com"), or null if unavailable
+     * @param address The IP address to bind to and that the target can reach
+     * @param httpPort The port for the HTTP listener
+     * @param dnsPort  The port for the DNS listener (UDP)
+     * @return true if both listeners started successfully
+     */
+    public boolean initializeCustomOob(String address, int httpPort, int dnsPort) {
+        stopCustomOob();
+        this.customAddress = address;
+        this.customPort = httpPort;
+        this.customDnsPort = dnsPort;
+
+        try {
+            oobListener = new OobListener(address, httpPort, dnsPort);
+            oobListener.setInteractionHandler(this::handleCustomOobInteraction);
+            oobListener.startHttp();
+            api.logging().logToOutput("[OOB Listener] HTTP started on " + address + ":" + httpPort);
+
+            try {
+                oobListener.startDns();
+                api.logging().logToOutput("[OOB Listener] DNS started on " + address + ":" + dnsPort + " (UDP)");
+            } catch (IOException dnsEx) {
+                // DNS failure is non-fatal — HTTP still works
+                api.logging().logToError("[OOB Listener] DNS failed to start on port " + dnsPort
+                        + ": " + dnsEx.getMessage() + " (HTTP still active)");
+            }
+
+            available = true;
+            startCleanupTask();
+            return true;
+        } catch (IOException e) {
+            api.logging().logToError("[OOB Listener] Failed to start HTTP on " + address + ":" + httpPort
+                    + ": " + e.getMessage());
+            available = false;
+            return false;
+        }
+    }
+
+    /** Legacy overload — starts HTTP only with default DNS port 53. */
+    public boolean initializeCustomOob(String address, int port) {
+        return initializeCustomOob(address, port, 53);
+    }
+
+    /**
+     * Stop the custom OOB listener.
+     */
+    public void stopCustomOob() {
+        if (oobListener != null) {
+            oobListener.stop();
+            oobListener = null;
+            if (mode == OobMode.CUSTOM_OOB) {
+                available = false;
+            }
+            api.logging().logToOutput("[OOB Listener] Stopped.");
+        }
+    }
+
+    /**
+     * Called by OobListener when an HTTP request arrives. Matches the payload ID
+     * against pending payloads and fires the module callback synchronously.
+     */
+    private void handleCustomOobInteraction(String payloadId, CustomOobInteraction interaction) {
+        PendingPayload matched = pendingPayloads.remove(payloadId);
+        if (matched != null) {
+            try {
+                matched.callback.accept(interaction);
+            } catch (Exception e) {
+                api.logging().logToError("[OOB Listener] Callback error for payload " + payloadId
+                        + ": " + e.getMessage());
+            }
+            api.logging().logToOutput("[OOB Listener] Received " + interaction.type().name()
+                    + " from " + interaction.clientIp().getHostAddress()
+                    + " — matched payload " + payloadId + " (" + matched.moduleId + ")");
+        } else {
+            api.logging().logToOutput("[OOB Listener] Received GET from "
+                    + interaction.clientIp().getHostAddress()
+                    + " payloadId=" + payloadId + " (no matching payload)");
+        }
+    }
+
+    public boolean isCustomOobRunning() {
+        return oobListener != null && oobListener.isRunning();
+    }
+
+    public String getCustomAddress() {
+        return customAddress;
+    }
+
+    public int getCustomPort() {
+        return customPort;
+    }
+
+    public int getCustomDnsPort() {
+        return customDnsPort;
+    }
+
+    public boolean isCustomDnsRunning() {
+        return oobListener != null && oobListener.isDnsRunning();
+    }
+
+    // ==================== PAYLOAD GENERATION (both modes) ====================
+
+    /**
+     * Generate an OOB payload and register a callback for when it receives an interaction.
+     *
+     * In BURP_COLLABORATOR mode: returns {@code "abc123.oastify.com"}
+     * In CUSTOM_OOB mode: returns {@code "192.168.1.10:47832/abc123"} (used as: {@code http://<payload>/path})
+     *
+     * @return The payload string, or null if unavailable
      */
     public String generatePayload(String moduleId, String url, String parameter,
                                    String payloadDescription, Consumer<Interaction> callback) {
-        if (!available || client == null) return null;
+        if (!available) return null;
+
+        if (mode == OobMode.CUSTOM_OOB) {
+            return generateCustomPayload(moduleId, url, parameter, payloadDescription, callback);
+        }
+
+        // Burp Collaborator mode
+        if (client == null) return null;
         try {
             CollaboratorPayload payload = client.generatePayload();
             String payloadStr = payload.toString();
@@ -106,11 +273,24 @@ public class CollaboratorManager {
     }
 
     /**
-     * Generate a payload without server location (just the subdomain part).
+     * Generate a payload without server location (just the subdomain/ID part).
+     *
+     * In CUSTOM_OOB mode: returns just the hex ID (DNS won't work, but HTTP payloads using
+     * this ID with a manually constructed URL will still match).
      */
     public String generatePayloadShort(String moduleId, String url, String parameter,
                                         String payloadDescription, Consumer<Interaction> callback) {
-        if (!available || client == null) return null;
+        if (!available) return null;
+
+        if (mode == OobMode.CUSTOM_OOB) {
+            String payloadId = generateHexId();
+            pendingPayloads.put(payloadId, new PendingPayload(
+                    moduleId, url, parameter, payloadDescription, callback));
+            return payloadId;
+        }
+
+        // Burp Collaborator mode
+        if (client == null) return null;
         try {
             CollaboratorPayload payload = client.generatePayload(PayloadOption.WITHOUT_SERVER_LOCATION);
             String payloadStr = payload.toString();
@@ -127,9 +307,18 @@ public class CollaboratorManager {
     }
 
     /**
-     * Get the Collaborator server address (e.g., "oastify.com").
+     * Get the OOB server address.
+     * BURP_COLLABORATOR: {@code "oastify.com"}
+     * CUSTOM_OOB: {@code "192.168.1.10:47832"}
      */
     public String getServerAddress() {
+        if (mode == OobMode.CUSTOM_OOB) {
+            if (customAddress != null && customPort > 0) {
+                return customAddress + ":" + customPort;
+            }
+            return null;
+        }
+        // Burp Collaborator mode
         if (!available || client == null) return null;
         try {
             return client.server().address();
@@ -140,6 +329,43 @@ public class CollaboratorManager {
 
     public boolean isAvailable() {
         return available;
+    }
+
+    // ==================== INTERNAL HELPERS ====================
+
+    private String generateCustomPayload(String moduleId, String url, String parameter,
+                                          String payloadDescription, Consumer<Interaction> callback) {
+        String payloadId = generateHexId();
+        pendingPayloads.put(payloadId, new PendingPayload(
+                moduleId, url, parameter, payloadDescription, callback));
+        // Return address:port/id — modules prepend "http://" and append "/path"
+        return customAddress + ":" + customPort + "/" + payloadId;
+    }
+
+    /**
+     * Generates a 24-character hex string using SecureRandom.
+     */
+    private String generateHexId() {
+        byte[] bytes = new byte[12]; // 12 bytes = 24 hex chars
+        SECURE_RANDOM.nextBytes(bytes);
+        StringBuilder sb = new StringBuilder(24);
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+
+    private void stopCollaboratorPolling() {
+        if (poller != null) {
+            poller.shutdown();
+            try {
+                poller.awaitTermination(3, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                poller.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            poller = null;
+        }
     }
 
     private void startPolling(int intervalSeconds) {
@@ -155,11 +381,6 @@ public class CollaboratorManager {
 
                 List<Interaction> interactions = client.getAllInteractions();
                 for (Interaction interaction : interactions) {
-                    // Match interaction to a pending payload using exact payload ID match.
-                    // Burp's interaction.id() returns the PayloadId we stored at generation time.
-                    // The old bidirectional contains() fallback was removed because short payload
-                    // IDs (e.g., "abc") could substring-match longer unrelated IDs ("xyzabcdef"),
-                    // consuming the wrong payload and orphaning the real match until TTL expiry.
                     String interactionId = interaction.id().toString();
                     PendingPayload matched = pendingPayloads.get(interactionId);
                     String matchedKey = matched != null ? interactionId : null;
@@ -180,33 +401,48 @@ public class CollaboratorManager {
                 api.logging().logToError("Collaborator polling error: " + e.getMessage());
             }
         }, 0, intervalSeconds, TimeUnit.SECONDS);
+    }
 
-        // Separate scheduled task for cleaning up stale payloads (runs every 60 seconds)
-        poller.scheduleAtFixedRate(() -> {
+    /**
+     * Starts the cleanup task for stale pending payloads. Shared by both modes.
+     */
+    private void startCleanupTask() {
+        if (cleanupExecutor != null) return; // Already running
+        cleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "OmniStrike-PayloadCleanup");
+            t.setDaemon(true);
+            return t;
+        });
+        cleanupExecutor.scheduleAtFixedRate(() -> {
             try {
                 long cutoff = System.currentTimeMillis() - (payloadTtlMinutes * 60L * 1000L);
                 int before = pendingPayloads.size();
                 pendingPayloads.entrySet().removeIf(e -> e.getValue().createdAt < cutoff);
                 int removed = before - pendingPayloads.size();
                 if (removed > 0) {
-                    api.logging().logToOutput("Collaborator cleanup: removed " + removed
+                    api.logging().logToOutput("OOB cleanup: removed " + removed
                             + " stale payload(s), " + pendingPayloads.size() + " remaining");
                 }
             } catch (Exception e) {
-                api.logging().logToError("Collaborator cleanup error: " + e.getMessage());
+                api.logging().logToError("OOB cleanup error: " + e.getMessage());
             }
         }, 60, 60, TimeUnit.SECONDS);
     }
 
+    // ==================== LIFECYCLE ====================
+
     public void shutdown() {
-        if (poller != null) {
-            poller.shutdown();
+        stopCollaboratorPolling();
+        stopCustomOob();
+        if (cleanupExecutor != null) {
+            cleanupExecutor.shutdown();
             try {
-                poller.awaitTermination(3, TimeUnit.SECONDS);
+                cleanupExecutor.awaitTermination(3, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
-                poller.shutdownNow();
+                cleanupExecutor.shutdownNow();
                 Thread.currentThread().interrupt();
             }
+            cleanupExecutor = null;
         }
         pendingPayloads.clear();
     }

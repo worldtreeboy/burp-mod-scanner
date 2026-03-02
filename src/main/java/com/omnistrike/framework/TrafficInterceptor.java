@@ -3,9 +3,12 @@ package com.omnistrike.framework;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.handler.*;
 import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.proxy.http.*;
 import com.omnistrike.model.Finding;
 import com.omnistrike.model.ScanModule;
+
+import com.omnistrike.framework.stepper.StepperEngine;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +29,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     private final ScopeManager scopeManager;
     private volatile boolean running = false;
     private volatile BiConsumer<String, String> uiLogger;
+    private volatile StepperEngine stepperEngine;
 
     // Static file extensions — active injection scanners are skipped for these.
     // Passive analyzers still run (Client-Side Analyzer, Hidden Endpoint Finder, etc.)
@@ -78,6 +82,10 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         }
     }
 
+    public void setStepperEngine(StepperEngine engine) {
+        this.stepperEngine = engine;
+    }
+
     public void setRunning(boolean running) {
         this.running = running;
     }
@@ -88,6 +96,20 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
     @Override
     public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent request) {
+        // Stepper: run prerequisite chain and patch variables into outgoing requests.
+        // Skipped when the current thread is already executing a Stepper chain (recursion prevention).
+        try {
+            StepperEngine stepper = stepperEngine;
+            if (stepper != null && stepper.isEnabled() && !StepperEngine.isExecutingChain()) {
+                HttpRequest modified = stepper.processOutgoingRequest(request);
+                if (modified != request) {
+                    return RequestToBeSentAction.continueWith(modified);
+                }
+            }
+        } catch (Exception e) {
+            // Never break the proxy pipeline — log and pass through unmodified
+            uiLog("Stepper", "ERROR in request hook: " + e.getMessage());
+        }
         return RequestToBeSentAction.continueWith(request);
     }
 

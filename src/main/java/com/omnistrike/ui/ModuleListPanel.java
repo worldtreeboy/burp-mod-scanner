@@ -24,6 +24,16 @@ public class ModuleListPanel extends JPanel {
     private final Map<String, JPanel> moduleEntries = new HashMap<>();
     private String selectedModuleId;
 
+    /** Registered framework tools (non-module sidebar entries like Stepper). */
+    private final java.util.List<FrameworkTool> frameworkToolIds = new java.util.ArrayList<>();
+
+    private static class FrameworkTool {
+        final String id, name, description;
+        FrameworkTool(String id, String name, String description) {
+            this.id = id; this.name = name; this.description = description;
+        }
+    }
+
     // Container panel that holds module entries (inside a scroll pane)
     private final JPanel listContainer;
 
@@ -129,6 +139,15 @@ public class ModuleListPanel extends JPanel {
             listContainer.add(createSectionHeader("Passive Analyzers"));
             for (ScanModule module : passiveModules) {
                 listContainer.add(createModuleEntry(module));
+            }
+        }
+
+        // --- Framework Tools section ---
+        if (!frameworkToolIds.isEmpty()) {
+            listContainer.add(createSectionSeparator());
+            listContainer.add(createSectionHeader("Framework Tools"));
+            for (FrameworkTool tool : frameworkToolIds) {
+                listContainer.add(createFrameworkEntry(tool.id, tool.name, tool.description));
             }
         }
 
@@ -241,6 +260,66 @@ public class ModuleListPanel extends JPanel {
         }
 
         moduleEntries.put(module.getId(), entry);
+        return entry;
+    }
+
+    /**
+     * Registers a framework tool entry (non-module) to appear in the sidebar
+     * under the "Framework Tools" section.
+     */
+    public void addFrameworkEntry(String id, String name, String description) {
+        frameworkToolIds.add(new FrameworkTool(id, name, description));
+        rebuildModuleList();
+    }
+
+    /**
+     * Creates a sidebar entry for a framework tool (no checkbox — always available).
+     */
+    private JPanel createFrameworkEntry(String id, String name, String description) {
+        JPanel entry = new JPanel(new BorderLayout(5, 0));
+        FontMetrics fm = entry.getFontMetrics(entry.getFont().deriveFont(Font.BOLD, 12f));
+        int lineHeight = fm.getHeight();
+        int entryHeight = (lineHeight * 2) + 16;
+        entry.setMaximumSize(new Dimension(Integer.MAX_VALUE, entryHeight));
+        entry.setPreferredSize(new Dimension(250, entryHeight));
+        entry.setBackground(BG_PANEL);
+        entry.setOpaque(true);
+        entry.setBorder(BorderFactory.createCompoundBorder(
+                new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER),
+                BorderFactory.createEmptyBorder(4, 8, 4, 4)));
+        entry.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+
+        JPanel textPanel = new JPanel(new GridLayout(2, 1));
+        textPanel.setOpaque(false);
+
+        JLabel nameLabel = new JLabel(name);
+        nameLabel.setForeground(FG_PRIMARY);
+        nameLabel.setFont(MONO_BOLD);
+
+        JLabel descLabel = new JLabel(description);
+        descLabel.setFont(MONO_SMALL);
+        descLabel.setForeground(FG_SECONDARY);
+
+        textPanel.add(nameLabel);
+        textPanel.add(descLabel);
+        entry.add(textPanel, BorderLayout.CENTER);
+        entry.setToolTipText(description);
+
+        entry.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseClicked(java.awt.event.MouseEvent e) {
+                selectModule(id);
+            }
+        });
+
+        if (id.equals(selectedModuleId)) {
+            entry.setBackground(BG_HOVER);
+            entry.setBorder(BorderFactory.createCompoundBorder(
+                    new CyberTheme.GlowMatteBorder(0, 3, 0, 0, NEON_CYAN),
+                    BorderFactory.createEmptyBorder(4, 5, 4, 4)));
+        }
+
+        moduleEntries.put(id, entry);
         return entry;
     }
 

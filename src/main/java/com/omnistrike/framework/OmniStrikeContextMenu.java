@@ -13,6 +13,8 @@ import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
 import com.omnistrike.ui.OmniMapConfigDialog;
 import com.omnistrike.ui.ScanConfigDialog;
 
+import com.omnistrike.framework.stepper.StepperEngine;
+import com.omnistrike.framework.stepper.StepperStep;
 import com.omnistrike.ui.MainPanel;
 
 import javax.swing.*;
@@ -60,6 +62,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
     private final TrafficInterceptor interceptor;
     private final OmniStrikeScanCheck scanCheck;
     private final SessionKeepAlive sessionKeepAlive;
+    private final StepperEngine stepperEngine;
     private volatile Supplier<MainPanel> mainPanelSupplier;
 
     // Static file extensions where active injection testing is pointless
@@ -73,12 +76,14 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
     public OmniStrikeContextMenu(MontoyaApi api, ModuleRegistry registry,
                                   TrafficInterceptor interceptor,
                                   OmniStrikeScanCheck scanCheck,
-                                  SessionKeepAlive sessionKeepAlive) {
+                                  SessionKeepAlive sessionKeepAlive,
+                                  StepperEngine stepperEngine) {
         this.api = api;
         this.registry = registry;
         this.interceptor = interceptor;
         this.scanCheck = scanCheck;
         this.sessionKeepAlive = sessionKeepAlive;
+        this.stepperEngine = stepperEngine;
     }
 
     public void setMainPanelSupplier(Supplier<MainPanel> supplier) {
@@ -449,6 +454,35 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
 
         if (subMenu.getItemCount() > 0) {
             items.add(subMenu);
+        }
+
+        // ============ Send to Stepper (only when Stepper is enabled) ============
+        if (stepperEngine != null && stepperEngine.isEnabled()) {
+            items.add(new JSeparator());
+            int stepCount = stepperEngine.getStepCount();
+            String stepLabel = stepCount > 0
+                    ? "Send to Stepper (" + stepCount + " steps)"
+                    : "Send to Stepper";
+            JMenuItem stepperItem = new JMenuItem(stepLabel);
+            stepperItem.setToolTipText("Add this request as a prerequisite step in the Stepper chain");
+            stepperItem.addActionListener(e -> {
+                String defaultName = "Step " + (stepperEngine.getStepCount() + 1);
+                String name = JOptionPane.showInputDialog(null,
+                        "Step name:", defaultName);
+                if (name == null || name.isBlank()) return;
+                StepperStep step = new StepperStep(name.trim(), reqResp.request());
+                stepperEngine.addStep(step);
+
+                // Switch to Stepper panel in the UI
+                MainPanel mp = mainPanelSupplier != null ? mainPanelSupplier.get() : null;
+                if (mp != null) {
+                    mp.selectModule("stepper");
+                }
+                showToast("Stepper", "Added step: " + name.trim()
+                        + "\n" + truncate(reqResp.request().url(), 60)
+                        + "\n\nConfigure extraction rules in the Stepper panel.");
+            });
+            items.add(stepperItem);
         }
 
         // ============ Session Keep-Alive ============
