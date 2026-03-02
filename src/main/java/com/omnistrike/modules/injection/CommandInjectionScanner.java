@@ -592,7 +592,7 @@ public class CommandInjectionScanner implements ScanModule {
 
         if (collabPayload == null) return;
 
-        String payload = payloadTemplate.replace("COLLAB_PLACEHOLDER", collabPayload);
+        String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
 
         sentPayload.set(payload);
         sentRequest.set(sendPayload(original, target, target.originalValue + payload));

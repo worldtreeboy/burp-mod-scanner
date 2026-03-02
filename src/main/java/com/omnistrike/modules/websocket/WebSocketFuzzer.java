@@ -296,7 +296,8 @@ public class WebSocketFuzzer {
 
                 if (collabPayload == null) break;
 
-                String payload = String.format(template, collabPayload);
+                String payload = collaboratorManager.resolveTemplate(
+                        template.replace("%s", "COLLAB_PLACEHOLDER"), collabPayload);
                 for (String original : sampleMessages) {
                     sendFuzzPayload(connection, injectIntoMessage(original, payload));
                 }
@@ -368,7 +369,8 @@ public class WebSocketFuzzer {
 
                 if (collabPayload == null) break;
 
-                String payload = String.format(template, collabPayload);
+                String payload = collaboratorManager.resolveTemplate(
+                        template.replace("%s", "COLLAB_PLACEHOLDER"), collabPayload);
                 for (String original : sampleMessages) {
                     sendFuzzPayload(connection, injectIntoMessage(original, payload));
                 }
@@ -513,7 +515,8 @@ public class WebSocketFuzzer {
 
                 if (collabPayload == null) break;
 
-                String payload = String.format(template, collabPayload);
+                String payload = collaboratorManager.resolveTemplate(
+                        template.replace("%s", "COLLAB_PLACEHOLDER"), collabPayload);
                 for (String original : sampleMessages) {
                     sendFuzzPayload(connection, injectIntoMessage(original, payload));
                 }

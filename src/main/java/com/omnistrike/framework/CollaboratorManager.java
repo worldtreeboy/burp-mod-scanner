@@ -357,6 +357,147 @@ public class CollaboratorManager {
         }
     }
 
+    /**
+     * Resolve a payload template by replacing {@code COLLAB_PLACEHOLDER} with the appropriate
+     * OOB payload. In Custom OOB mode, DNS-based commands (nslookup, dig, host, ping,
+     * Resolve-DnsName) are rewritten to target the Custom DNS listener directly, since
+     * {@code generatePayload()} returns {@code ip:port/hexid} which is not a valid domain name.
+     *
+     * <p>For HTTP commands (curl, wget), the placeholder is replaced with the raw HTTP payload
+     * as-is (e.g. {@code 192.168.1.8:56742/hexid}), which already works.</p>
+     *
+     * <p>In Burp Collaborator mode, this is a simple {@code template.replace()}.</p>
+     *
+     * @param template     The payload template containing {@code COLLAB_PLACEHOLDER}
+     * @param httpPayload  The payload from {@code generatePayload()} (e.g. {@code "192.168.1.8:56742/abc123"} or {@code "xyz.oastify.com"})
+     * @return The resolved template with DNS commands rewritten for Custom OOB
+     */
+    public String resolveTemplate(String template, String httpPayload) {
+        if (template == null || httpPayload == null) {
+            return template;
+        }
+
+        // Burp Collaborator mode: simple replacement — payload is already a valid domain
+        if (mode != OobMode.CUSTOM_OOB) {
+            return template.replace("COLLAB_PLACEHOLDER", httpPayload);
+        }
+
+        // Custom OOB mode: rewrite DNS commands to target our listener
+        // httpPayload format: "address:port/hexid"
+        // Extract hex ID (everything after the last '/')
+        String hexId = httpPayload;
+        int lastSlash = httpPayload.lastIndexOf('/');
+        if (lastSlash >= 0 && lastSlash < httpPayload.length() - 1) {
+            hexId = httpPayload.substring(lastSlash + 1);
+        }
+
+        String addr = customAddress;
+        int dnsPort = customDnsPort;
+        // DNS target domain: hexid.address (the DNS listener extracts first label as payload ID)
+        String dnsDomain = hexId + "." + addr;
+
+        // Check if this template contains a DNS command
+        String resolved = template;
+        boolean hasDns = containsDnsCommand(template);
+
+        if (hasDns) {
+            // Rewrite DNS commands to target our listener
+            resolved = rewriteDnsCommand(resolved, dnsDomain, addr, dnsPort);
+        }
+
+        // Replace any remaining COLLAB_PLACEHOLDER with the HTTP payload (for non-DNS parts)
+        resolved = resolved.replace("COLLAB_PLACEHOLDER", httpPayload);
+
+        return resolved;
+    }
+
+    /**
+     * Check if a template contains a DNS-based command.
+     */
+    private boolean containsDnsCommand(String template) {
+        String lower = template.toLowerCase();
+        return lower.contains("nslookup") || lower.contains("dig ")
+                || lower.contains("dig\t") || lower.contains("host ")
+                || lower.contains("ping ") || lower.contains("ping\t")
+                || lower.contains("resolve-dnsname");
+    }
+
+    /**
+     * Rewrite DNS commands in a template to target the Custom OOB DNS listener.
+     *
+     * Transforms patterns like:
+     * <ul>
+     *   <li>{@code nslookup COLLAB_PLACEHOLDER} → {@code nslookup hexid.addr addr} (port 53)</li>
+     *   <li>{@code nslookup COLLAB_PLACEHOLDER} → {@code dig @addr -p port hexid.addr} (non-53)</li>
+     *   <li>{@code dig COLLAB_PLACEHOLDER} → {@code dig @addr -p port hexid.addr}</li>
+     *   <li>{@code host COLLAB_PLACEHOLDER} → {@code dig @addr -p port hexid.addr}</li>
+     *   <li>{@code ping -c1 COLLAB_PLACEHOLDER} → {@code ping -c1 hexid.addr}</li>
+     *   <li>{@code Resolve-DnsName COLLAB_PLACEHOLDER} → {@code Resolve-DnsName hexid.addr -Server addr}</li>
+     * </ul>
+     */
+    private String rewriteDnsCommand(String template, String dnsDomain, String addr, int dnsPort) {
+        // We need to find and rewrite DNS command patterns containing COLLAB_PLACEHOLDER
+        // Strategy: use regex to find DNS commands and rewrite them
+
+        String result = template;
+
+        // nslookup COLLAB_PLACEHOLDER → nslookup domain server (port 53) or dig @server -p port domain (non-53)
+        if (containsIgnoreCase(result, "nslookup")) {
+            if (dnsPort == 53) {
+                // nslookup domain server — sends query to our listener on port 53
+                result = result.replaceAll(
+                        "(?i)nslookup\\s+COLLAB_PLACEHOLDER",
+                        "nslookup " + dnsDomain + " " + addr);
+            } else {
+                // nslookup can't specify non-53 ports; use dig instead
+                result = result.replaceAll(
+                        "(?i)nslookup\\s+COLLAB_PLACEHOLDER",
+                        "dig @" + addr + " -p " + dnsPort + " " + dnsDomain);
+            }
+        }
+
+        // dig ... COLLAB_PLACEHOLDER → dig @addr -p port domain
+        if (containsIgnoreCase(result, "dig")) {
+            // Replace "dig COLLAB_PLACEHOLDER" or "dig +short COLLAB_PLACEHOLDER" etc.
+            result = result.replaceAll(
+                    "(?i)dig\\s+(?:\\+\\S+\\s+)?COLLAB_PLACEHOLDER",
+                    "dig @" + addr + " -p " + dnsPort + " " + dnsDomain);
+        }
+
+        // host COLLAB_PLACEHOLDER → dig @addr -p port domain (host can't set port)
+        if (containsIgnoreCase(result, "host")) {
+            if (dnsPort == 53) {
+                result = result.replaceAll(
+                        "(?i)host\\s+COLLAB_PLACEHOLDER",
+                        "host " + dnsDomain + " " + addr);
+            } else {
+                result = result.replaceAll(
+                        "(?i)host\\s+COLLAB_PLACEHOLDER",
+                        "dig @" + addr + " -p " + dnsPort + " " + dnsDomain);
+            }
+        }
+
+        // ping -c1 COLLAB_PLACEHOLDER → ping -c1 domain (best-effort; uses system DNS)
+        if (containsIgnoreCase(result, "ping")) {
+            result = result.replaceAll(
+                    "(?i)(ping\\s+(?:-[cnw]\\s*\\d+\\s+)*)COLLAB_PLACEHOLDER",
+                    "$1" + dnsDomain);
+        }
+
+        // Resolve-DnsName COLLAB_PLACEHOLDER → Resolve-DnsName domain -Server addr
+        if (containsIgnoreCase(result, "resolve-dnsname")) {
+            result = result.replaceAll(
+                    "(?i)Resolve-DnsName\\s+COLLAB_PLACEHOLDER",
+                    "Resolve-DnsName " + dnsDomain + " -Server " + addr);
+        }
+
+        return result;
+    }
+
+    private boolean containsIgnoreCase(String haystack, String needle) {
+        return haystack.toLowerCase().contains(needle.toLowerCase());
+    }
+
     public boolean isAvailable() {
         return available;
     }

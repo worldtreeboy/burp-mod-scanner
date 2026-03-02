@@ -1721,8 +1721,8 @@ public class SmartSqliDetector implements ScanModule {
 
                     if (collabPayload == null) continue;
 
-                    // Replace placeholder with actual Collaborator domain
-                    String payload = payloadTemplate.replace("COLLAB_PLACEHOLDER", collabPayload);
+                    // Replace placeholder with actual Collaborator domain (DNS-aware for Custom OOB)
+                    String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
 
 
                     sentRequest.set(sendWithPayload(original, ip, payload));

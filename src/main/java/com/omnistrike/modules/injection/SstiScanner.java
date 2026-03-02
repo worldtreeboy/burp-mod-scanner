@@ -668,7 +668,7 @@ public class SstiScanner implements ScanModule {
             );
 
             if (collabPayload == null) continue;
-            String payload = payloadTemplate.replace("COLLAB_PLACEHOLDER", collabPayload);
+            String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
 
             try {
                 sentRequest.set(sendPayload(original, target, payload));
