@@ -592,6 +592,14 @@ public class MainPanel extends JPanel {
         moduleListPanel.addFrameworkEntry("omnimap-exploiter", "OmniMap Exploiter",
                 "SQL Injection Exploitation Engine");
 
+        // Register GraphQL Tool as a framework tool
+        moduleListPanel.addFrameworkEntry("graphql-tool", "GraphQL Tool",
+                "GraphQL Introspection & Security Scanner");
+
+        // Register CSRF Manipulator as a framework tool (right-click only)
+        moduleListPanel.addFrameworkEntry("csrf-manipulator", "CSRF Manipulator",
+                "CSRF Token Manipulation & Testing");
+
         // Register Bypass URL Parser as a framework tool (manual-trigger only)
         moduleListPanel.addFrameworkEntry("bypass-url-parser", "Bypass URL Parser",
                 "403/401 Bypass via URL Manipulation");
