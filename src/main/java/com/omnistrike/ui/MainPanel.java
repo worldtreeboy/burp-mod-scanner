@@ -14,7 +14,7 @@ import com.omnistrike.ui.modules.OmniMapPanel;
 import com.omnistrike.ui.modules.StepperPanel;
 import com.omnistrike.ui.modules.WebSocketScannerPanel;
 import com.omnistrike.ui.modules.BypassUrlParserPanel;
-import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
+import com.omnistrike.framework.omnimap.OmniMapModule;
 import com.omnistrike.modules.injection.BypassUrlParser;
 import com.omnistrike.modules.websocket.WebSocketScanner;
 

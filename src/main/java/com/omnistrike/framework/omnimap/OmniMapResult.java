@@ -1,4 +1,4 @@
-package com.omnistrike.modules.exploit.omnimap;
+package com.omnistrike.framework.omnimap;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

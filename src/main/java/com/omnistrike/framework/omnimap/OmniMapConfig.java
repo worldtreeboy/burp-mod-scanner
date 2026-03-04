@@ -1,6 +1,6 @@
-package com.omnistrike.modules.exploit.omnimap;
+package com.omnistrike.framework.omnimap;
 
-import com.omnistrike.modules.exploit.omnimap.technique.Technique;
+import com.omnistrike.framework.omnimap.technique.Technique;
 
 import java.util.ArrayList;
 import java.util.EnumSet;

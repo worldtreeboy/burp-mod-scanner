@@ -1,4 +1,4 @@
-package com.omnistrike.modules.exploit.omnimap;
+package com.omnistrike.framework.omnimap;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;

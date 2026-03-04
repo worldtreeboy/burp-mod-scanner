@@ -1,4 +1,4 @@
-package com.omnistrike.modules.exploit.omnimap.dbms;
+package com.omnistrike.framework.omnimap.dbms;
 
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;

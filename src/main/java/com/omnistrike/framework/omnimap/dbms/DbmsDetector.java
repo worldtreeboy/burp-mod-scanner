@@ -1,4 +1,4 @@
-package com.omnistrike.modules.exploit.omnimap.dbms;
+package com.omnistrike.framework.omnimap.dbms;
 
 import java.util.LinkedHashMap;
 import java.util.Map;

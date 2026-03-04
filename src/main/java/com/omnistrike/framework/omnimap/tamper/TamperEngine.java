@@ -1,4 +1,4 @@
-package com.omnistrike.modules.exploit.omnimap.tamper;
+package com.omnistrike.framework.omnimap.tamper;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;

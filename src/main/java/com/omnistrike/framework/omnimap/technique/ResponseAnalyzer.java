@@ -1,4 +1,4 @@
-package com.omnistrike.modules.exploit.omnimap.technique;
+package com.omnistrike.framework.omnimap.technique;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;

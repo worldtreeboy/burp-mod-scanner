@@ -3,10 +3,10 @@ package com.omnistrike.ui;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.ParsedHttpParameter;
-import com.omnistrike.modules.exploit.omnimap.OmniMapConfig;
-import com.omnistrike.modules.exploit.omnimap.dbms.DbmsDetector;
-import com.omnistrike.modules.exploit.omnimap.tamper.TamperEngine;
-import com.omnistrike.modules.exploit.omnimap.technique.Technique;
+import com.omnistrike.framework.omnimap.OmniMapConfig;
+import com.omnistrike.framework.omnimap.dbms.DbmsDetector;
+import com.omnistrike.framework.omnimap.tamper.TamperEngine;
+import com.omnistrike.framework.omnimap.technique.Technique;
 
 import javax.swing.*;
 import javax.swing.border.TitledBorder;

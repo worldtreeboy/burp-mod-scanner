@@ -1,12 +1,12 @@
-package com.omnistrike.modules.exploit.omnimap;
+package com.omnistrike.framework.omnimap;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
-import com.omnistrike.modules.exploit.omnimap.dbms.DbmsDetector;
-import com.omnistrike.modules.exploit.omnimap.dbms.DbmsDialect;
-import com.omnistrike.modules.exploit.omnimap.tamper.TamperEngine;
-import com.omnistrike.modules.exploit.omnimap.technique.*;
+import com.omnistrike.framework.omnimap.dbms.DbmsDetector;
+import com.omnistrike.framework.omnimap.dbms.DbmsDialect;
+import com.omnistrike.framework.omnimap.tamper.TamperEngine;
+import com.omnistrike.framework.omnimap.technique.*;
 
 import java.util.*;
 import java.util.concurrent.*;

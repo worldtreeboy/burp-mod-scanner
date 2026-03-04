@@ -5,8 +5,8 @@ import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.model.Finding;
-import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
-import com.omnistrike.modules.exploit.omnimap.OmniMapResult;
+import com.omnistrike.framework.omnimap.OmniMapModule;
+import com.omnistrike.framework.omnimap.OmniMapResult;
 import com.omnistrike.ui.CyberTheme;
 
 import javax.swing.*;

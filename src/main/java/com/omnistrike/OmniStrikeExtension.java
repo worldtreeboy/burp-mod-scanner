@@ -10,7 +10,7 @@ import com.omnistrike.framework.stepper.StepperEngine;
 import com.omnistrike.model.ModuleConfig;
 import com.omnistrike.modules.injection.*;
 import com.omnistrike.modules.injection.BypassUrlParser;
-import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
+import com.omnistrike.framework.omnimap.OmniMapModule;
 import com.omnistrike.modules.websocket.WebSocketScanner;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.modules.recon.*;

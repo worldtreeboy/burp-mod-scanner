@@ -9,7 +9,7 @@ import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import com.omnistrike.model.ScanModule;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
-import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
+import com.omnistrike.framework.omnimap.OmniMapModule;
 import com.omnistrike.modules.injection.BypassUrlParser;
 import com.omnistrike.ui.OmniMapConfigDialog;
 import com.omnistrike.ui.ScanConfigDialog;
