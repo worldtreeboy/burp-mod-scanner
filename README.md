@@ -4,9 +4,9 @@
 
 ### The All-in-One Burp Suite Attack Framework
 
-**21 scanner modules. SQL exploitation engine. AI-powered fuzzing. Prerequisite chain automation. Custom OOB server. One JAR.**
+**26 modules. SQL exploitation engine. AI-powered fuzzing. Prerequisite chain automation. Custom OOB server. One JAR.**
 
-[![Version](https://img.shields.io/badge/v1.39-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
+[![Version](https://img.shields.io/badge/v1.41-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
 [![Java](https://img.shields.io/badge/Java_17+-orange?style=for-the-badge&logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Montoya_API-E8350E?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge)](LICENSE)
@@ -29,7 +29,7 @@
 
 Most Burp extensions do one thing. You end up with 15 extensions loaded, fighting for threads, duplicating requests, and missing the gaps between them.
 
-OmniStrike replaces that entire stack with a **single extension** — 17 active scanners, 4 passive analyzers, an AI fuzzer, a SQL exploitation engine, a prerequisite request chain (Stepper), and a built-in OOB callback server. Everything shares one thread pool, one deduplication store, one findings database, and one Collaborator pipeline.
+OmniStrike replaces that entire stack with a **single extension** — 18 active scanners, 6 passive analyzers, an AI fuzzer, a SQL exploitation engine, a prerequisite request chain (Stepper), a wordlist generator, and a built-in OOB callback server. Everything shares one thread pool, one deduplication store, one findings database, and one Collaborator pipeline.
 
 **Drop one JAR. Get everything.**
 
@@ -48,7 +48,7 @@ OmniStrike replaces that entire stack with a **single extension** — 17 active 
 
 ## Modules
 
-### Active Scanners (17)
+### Active Scanners (18)
 
 | Module | Highlights |
 |:---|:---|
@@ -69,10 +69,9 @@ OmniStrike replaces that entire stack with a **single extension** — 17 active 
 | **Prototype Pollution** | Server-side `__proto__`/`constructor.prototype` with canary persistence verification, behavioral gadgets. |
 | **Path Traversal / LFI** | 24 Unix / 9 Windows targets with structural content validation, 26 encoding bypasses, PHP wrappers (filter/data/iconv). |
 | **Bypass URL Parser** | Comprehensive 403/401 bypass scanner. 13 modes: mid-paths, end-paths, case substitution, char encoding (single/double/triple/unicode), HTTP methods, HTTP versions, method override headers, scheme spoofing, IP spoofing, port spoofing, URL rewrite headers, user-agent rotation, combined multi-header combos. Baseline comparison with classification (BYPASS/POTENTIAL/DIFFERENT/SAME). |
+| **CSRF Manipulator** | 11 token manipulation tests (remove, empty, random, truncated, char flip, case swap, static fake, nonce reuse, Referer/Origin removal, token relocation, method change). Right-click only. |
 
-> **CSRF Manipulator** — right-click only module with 11 token manipulation tests (remove, empty, random, truncated, char flip, case swap, static fake, nonce reuse, Referer/Origin removal, token relocation, method change).
-
-### Passive Analyzers (4)
+### Passive Analyzers (6)
 
 | Module | Highlights |
 |:---|:---|
@@ -80,6 +79,15 @@ OmniStrike replaces that entire stack with a **single extension** — 17 active 
 | **Hidden Endpoint Finder** | Extracts API endpoints and paths from JS/HTML/JSON via 13+ regex patterns. |
 | **Subdomain Collector** | Discovers subdomains from CSP, CORS, redirects, and response bodies. |
 | **Security Header Analyzer** | HSTS, CSP, CORS, cookie flags, X-Frame-Options, Referrer-Policy, server version disclosure. Consolidated findings per host. JWT-in-Cookie detection. |
+| **Technology Fingerprinter** | Detects web servers, languages, frameworks, CMS, JS libraries, WAF/CDN, caches, and cloud platforms from headers, cookies, body patterns, and error pages. Version disclosure flagged. |
+| **Sensitive Data Exposure** | Scans responses for credit cards (Luhn-validated), SSNs (range-validated), bulk emails/phones, internal IPs, JWTs, database connection strings, AWS ARNs, crypto addresses, IBANs. All values redacted in findings. |
+
+### Framework Tools (2)
+
+| Module | Highlights |
+|:---|:---|
+| **AI Vulnerability Analyzer** | AI-powered security analysis with smart fuzzing, WAF bypass, and adaptive multi-round scanning. CLI-based — supports Claude Code, Gemini CLI, Codex CLI, OpenCode CLI. Disabled by default. |
+| **Wordlist Generator** | Passive word harvester — collects words from proxied traffic for building domain-specific wordlists. History scraping support. |
 
 ---
 
@@ -136,15 +144,14 @@ Right-click any request to trigger AI analysis. **Never auto-fires** — zero wa
 
 **Capabilities**: Smart fuzzing · WAF fingerprinting + bypass · Adaptive multi-round scanning (up to 5 rounds with full response feedback) · Cross-file batch analysis · Payload learning from confirmed findings · Collaborator data exfiltration · Fuzz history (remembers every payload per URL/param/vuln type) · Multi-step exploitation
 
-| Provider | Models |
-|:---|:---|
-| **Anthropic** | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5-20251001 |
-| **OpenAI** | gpt-5.2, gpt-4o, o3-mini |
-| **Google** | gemini-3.1-pro, gemini-3-flash-preview, gemini-2.5-flash |
+| CLI Tool | Binary | Description |
+|:---|:---|:---|
+| **Claude Code** | `claude` | Anthropic's CLI agent |
+| **Gemini CLI** | `gemini` | Google's CLI agent |
+| **Codex CLI** | `codex` | OpenAI's CLI agent |
+| **OpenCode CLI** | `opencode` | Open-source CLI agent |
 
-Also supports CLI tools: Claude Code, Gemini CLI, Codex CLI, OpenCode CLI.
-
-> API keys stored in memory only — never persisted to disk.
+All CLI tools read prompts from stdin to prevent command injection. No API keys needed — uses your existing CLI authentication.
 
 ---
 
@@ -169,7 +176,7 @@ Built-in Out-of-Band callback server — no Burp Professional required, no inter
 
 - **HTTP listener** — catches `http://<your-ip>:<port>/<payload-id>` callbacks
 - **DNS listener** — catches DNS queries where the first subdomain label is the payload ID
-- **Transparent** — all 20 modules automatically use Custom OOB when enabled (same `CollaboratorManager` API as Burp Collaborator)
+- **Transparent** — all modules automatically use Custom OOB when enabled (same `CollaboratorManager` API as Burp Collaborator)
 - **AI Analyzer included** — AI-generated OOB payloads route through the custom listener too
 
 Configure via the OmniStrike tab: select network interface, set HTTP port + DNS port, click Start.
@@ -183,7 +190,9 @@ Configure via the OmniStrike tab: select network interface, set HTTP port + DNS 
 | **Scope filtering** | Only scans in-scope hosts — never touches third-party traffic |
 | **Static resource skip** | Active scanners skip `.js`, `.css`, `.png`, etc. — passive analyzers still run |
 | **Cross-module dedup** | Normalized URL deduplication prevents redundant findings |
+| **Inter-module data sharing** | SharedDataBus lets modules share discovered endpoints, subdomains, and parameters |
 | **Session Keep-Alive** | Right-click login request → Set as Session Login Request. Auto-replays periodically. |
+| **Wordlist Generator** | Passive word harvester with history scraping — builds domain-specific wordlists from proxied traffic |
 | **29 UI themes** | CyberPunk, Dracula, Monokai, Nord, Solarized, and more. Scoped theming: OmniStrike-only (default) or Apply Globally. Ambient Glow breathing effect. |
 | **Request/Response highlighting** | All modules annotate findings with byte-range markers in Burp Dashboard |
 | **OOB-first strategy** | Collaborator/Custom OOB payloads fire before time-based; if OOB confirms, remaining phases skipped |
@@ -229,6 +238,19 @@ Requires **JDK 17+**. Dependencies: `montoya-api 2026.2`, `gson 2.11.0`.
 ---
 
 ## Changelog
+
+<details>
+<summary><b>v1.41 (2026-03-06)</b> — Technology Fingerprinter, Sensitive Data Exposure</summary>
+
+- **Technology Fingerprinter**: New passive module — detects web servers, languages, frameworks, CMS, JS libraries, WAF/CDN, caches, and cloud platforms from headers, cookies, body patterns, and error pages. Version disclosure flagged as LOW severity. Dedup per host+tech.
+- **Sensitive Data Exposure**: New passive module — scans response bodies for credit cards (Luhn-validated), SSNs (range-validated), bulk emails/phones (5+ threshold), internal IPs, JWTs, database connection strings, AWS ARNs, crypto addresses, and IBANs (check digit validated). 512KB body cap, content-type filtered, all values redacted in findings.
+</details>
+
+<details>
+<summary><b>v1.40 (2026-03-05)</b> — Wordlist Generator</summary>
+
+- **Wordlist Generator**: Passive word harvester — collects words from proxied traffic for building domain-specific wordlists. History scraping support. Consolidated endpoint findings.
+</details>
 
 <details>
 <summary><b>v1.39 (2026-03-04)</b> — Theme Scoping, Bypass URL Parser</summary>
