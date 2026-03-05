@@ -13,6 +13,7 @@ import com.omnistrike.modules.injection.BypassUrlParser;
 import com.omnistrike.framework.omnimap.OmniMapModule;
 import com.omnistrike.modules.websocket.WebSocketScanner;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
+import com.omnistrike.framework.wordlist.WordlistGenerator;
 import com.omnistrike.modules.recon.*;
 import com.omnistrike.ui.GlobalThemeManager;
 import com.omnistrike.ui.MainPanel;
@@ -20,7 +21,7 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.39 — Entry Point
+ * OmniStrike v1.40 — Entry Point
  *
  * A unified vulnerability scanning framework for Burp Suite with 21 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
@@ -47,7 +48,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.39 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.40 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -78,6 +79,7 @@ public class OmniStrikeExtension implements BurpExtension {
         // Recon modules (passive) — wire SharedDataBus for inter-module sharing
         HiddenEndpointFinder endpointFinder = new HiddenEndpointFinder();
         endpointFinder.setSharedDataBus(dataBus);
+        endpointFinder.setFindingsStore(findingsStore);
         registry.registerModule(endpointFinder);
 
         SubdomainCollector subdomainCollector = new SubdomainCollector();
@@ -86,6 +88,10 @@ public class OmniStrikeExtension implements BurpExtension {
 
         registry.registerModule(new SecurityHeaderAnalyzer());
         registry.registerModule(new ClientSideAnalyzer());
+
+        // Wordlist Generator (passive word harvester — framework tool, domain-scoped)
+        WordlistGenerator wordlistGen = new WordlistGenerator();
+        registry.registerModule(wordlistGen);
 
         // AI Vulnerability Analyzer (optional, disabled by default)
         AiVulnAnalyzer aiAnalyzer = new AiVulnAnalyzer();
@@ -294,7 +300,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.39 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.40 ready ===");
         String oobMode = collaboratorManager.getMode() == CollaboratorManager.OobMode.BURP_COLLABORATOR
                 ? "Burp Collaborator" : "Custom OOB (configure listener in UI)";
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()

@@ -3,6 +3,7 @@ package com.omnistrike.modules.recon;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.SharedDataBus;
 import com.omnistrike.model.*;
 
@@ -17,9 +18,13 @@ import java.util.regex.Pattern;
  */
 public class HiddenEndpointFinder implements ScanModule {
 
+    /** Constant title used for the single consolidated finding. */
+    public static final String CONSOLIDATED_TITLE = "Discovered Endpoints";
+
     private MontoyaApi api;
     private ModuleConfig config;
     private SharedDataBus dataBus;
+    private FindingsStore findingsStore;
 
     // Discovered endpoints: path -> EndpointInfo
     private final ConcurrentHashMap<String, EndpointInfo> endpoints = new ConcurrentHashMap<>();
@@ -100,6 +105,10 @@ public class HiddenEndpointFinder implements ScanModule {
         this.dataBus = dataBus;
     }
 
+    public void setFindingsStore(FindingsStore findingsStore) {
+        this.findingsStore = findingsStore;
+    }
+
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         List<Finding> findings = new ArrayList<>();
@@ -173,26 +182,48 @@ public class HiddenEndpointFinder implements ScanModule {
         }
 
         // Filter and normalize
+        boolean foundNew = false;
         for (String raw : discovered) {
             String normalized = normalize(raw, url);
             if (normalized != null && !endpoints.containsKey(normalized)) {
                 String method = guessMethod(raw, body);
                 EndpointInfo info = new EndpointInfo(normalized, url, method);
                 if (endpoints.putIfAbsent(normalized, info) == null) {
+                    foundNew = true;
                     // Publish discovered endpoint to SharedDataBus for other modules
                     if (dataBus != null) {
                         dataBus.addToSet("discovered-endpoints", normalized);
                     }
-                    findings.add(Finding.builder("endpoint-finder",
-                                    "Discovered endpoint: " + normalized,
-                                    Severity.INFO, Confidence.FIRM)
-                            .url(url)
-                            .evidence(normalized)
-                            .responseEvidence(normalized)
-                            .description("Found endpoint path in " + contentType + " response")
-                            .build());
                 }
             }
+        }
+
+        // Emit a single consolidated finding with ALL endpoints discovered so far.
+        // Clear previous findings for this module so we replace rather than duplicate.
+        if (foundNew) {
+            if (findingsStore != null) {
+                findingsStore.clearModule(getId());
+            }
+            StringBuilder evidence = new StringBuilder();
+            List<String> sortedPaths = new ArrayList<>(endpoints.keySet());
+            Collections.sort(sortedPaths);
+            for (String path : sortedPaths) {
+                EndpointInfo info = endpoints.get(path);
+                if (info != null) {
+                    evidence.append(info.method).append(" ").append(path).append("\n");
+                }
+            }
+
+            findings.add(Finding.builder("endpoint-finder",
+                            CONSOLIDATED_TITLE,
+                            Severity.INFO, Confidence.FIRM)
+                    .url(url)
+                    .requestResponse(requestResponse)
+                    .evidence(evidence.toString().trim())
+                    .responseEvidence(evidence.toString().trim())
+                    .description("Discovered " + endpoints.size()
+                            + " endpoint(s) from JavaScript, HTML, and JSON responses.")
+                    .build());
         }
 
         return findings;

@@ -14,7 +14,9 @@ import com.omnistrike.ui.modules.OmniMapPanel;
 import com.omnistrike.ui.modules.StepperPanel;
 import com.omnistrike.ui.modules.WebSocketScannerPanel;
 import com.omnistrike.ui.modules.BypassUrlParserPanel;
+import com.omnistrike.ui.modules.WordlistGeneratorPanel;
 import com.omnistrike.framework.omnimap.OmniMapModule;
+import com.omnistrike.framework.wordlist.WordlistGenerator;
 import com.omnistrike.modules.injection.BypassUrlParser;
 import com.omnistrike.modules.websocket.WebSocketScanner;
 
@@ -75,6 +77,9 @@ public class MainPanel extends JPanel {
 
     // Stepper panel (prerequisite request chain)
     private StepperPanel stepperPanel;
+
+    // Wordlist Generator panel
+    private WordlistGeneratorPanel wordlistPanel;
 
     // Stats bar severity count labels
     private final JLabel critLabel;
@@ -572,6 +577,9 @@ public class MainPanel extends JPanel {
                 BypassUrlParserPanel bupPanel = new BypassUrlParserPanel(bupModule, findingsStore, api);
                 bupModule.setPanel(bupPanel);
                 panel = bupPanel;
+            } else if ("wordlist-generator".equals(module.getId()) && module instanceof WordlistGenerator wlModule) {
+                wordlistPanel = new WordlistGeneratorPanel(wlModule);
+                panel = wordlistPanel;
             } else {
                 panel = new GenericModulePanel(module.getId(), module.getName(), findingsStore, api);
             }
@@ -603,6 +611,10 @@ public class MainPanel extends JPanel {
         // Register Bypass URL Parser as a framework tool (manual-trigger only)
         moduleListPanel.addFrameworkEntry("bypass-url-parser", "Bypass URL Parser",
                 "403/401 Bypass via URL Manipulation");
+
+        // Register Wordlist Generator as a framework tool (passive word harvester)
+        moduleListPanel.addFrameworkEntry("wordlist-generator", "Wordlist Generator",
+                "Passive Word Harvester & Exporter");
 
         // Placeholder when no module selected
         JPanel placeholder = new JPanel(new GridBagLayout());
@@ -1140,6 +1152,8 @@ public class MainPanel extends JPanel {
                 ((WebSocketScannerPanel) panel).stopTimers();
             } else if (panel instanceof StepperPanel) {
                 ((StepperPanel) panel).stopTimers();
+            } else if (panel instanceof WordlistGeneratorPanel) {
+                ((WordlistGeneratorPanel) panel).stopTimers();
             } else if (panel == omniMapPanel && omniMapPanel != null) {
                 try { panel.getClass().getMethod("stopTimers").invoke(panel); } catch (Exception ignored) {}
             }

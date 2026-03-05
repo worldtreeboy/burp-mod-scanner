@@ -212,6 +212,10 @@ public class OmniStrikeScanCheck implements ScanCheck {
     public ConsolidationAction consolidateIssues(AuditIssue newIssue, AuditIssue existingIssue) {
         if (newIssue.name().equals(existingIssue.name())
                 && newIssue.baseUrl().equals(existingIssue.baseUrl())) {
+            // For consolidated endpoint findings, keep the newer one — it has more endpoints
+            if (newIssue.name().contains(com.omnistrike.modules.recon.HiddenEndpointFinder.CONSOLIDATED_TITLE)) {
+                return ConsolidationAction.KEEP_NEW;
+            }
             return ConsolidationAction.KEEP_EXISTING;
         }
         return ConsolidationAction.KEEP_BOTH;
