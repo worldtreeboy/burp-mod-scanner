@@ -23,9 +23,10 @@ import javax.swing.*;
 /**
  * OmniStrike v1.40 — Entry Point
  *
- * A unified vulnerability scanning framework for Burp Suite with 21 modules:
+ * A unified vulnerability scanning framework for Burp Suite with 23 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
- *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer
+ *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer,
+ *       Technology Fingerprinter, Sensitive Data Exposure
  *   Injection (Active): SQLi Detector, OmniMap Exploiter, SSTI Scanner, SSRF Scanner, XSS Scanner,
  *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner,
  *       CORS Misconfiguration, Cache Poisoning, Host Header Injection, Prototype Pollution, Path Traversal,
@@ -88,6 +89,8 @@ public class OmniStrikeExtension implements BurpExtension {
 
         registry.registerModule(new SecurityHeaderAnalyzer());
         registry.registerModule(new ClientSideAnalyzer());
+        registry.registerModule(new TechFingerprinter());
+        registry.registerModule(new SensitiveDataExposure());
 
         // Wordlist Generator (passive word harvester — framework tool, domain-scoped)
         WordlistGenerator wordlistGen = new WordlistGenerator();
