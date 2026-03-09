@@ -275,6 +275,36 @@ public class MainPanel extends JPanel {
 
         topContainer.add(row1);
 
+        // --- Row 1b: URL Exclusion ---
+        JPanel exclusionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
+        exclusionRow.setBackground(BG_DARK);
+
+        JLabel excludeLabel = new JLabel("Exclude Paths:");
+        excludeLabel.setForeground(NEON_CYAN);
+        excludeLabel.setFont(MONO_LABEL);
+        exclusionRow.add(excludeLabel);
+        JTextField excludeField = new JTextField(50);
+        styleTextField(excludeField);
+        excludeField.setToolTipText("Space-separated URL paths to exclude from ALL scanning (active + passive). E.g.: /logout /admin/delete /api/health");
+        excludeField.putClientProperty("JTextField.placeholderText",
+                "e.g. /logout /admin/delete /api/health");
+        exclusionRow.add(excludeField);
+
+        // Live-sync exclusion field to ScopeManager
+        excludeField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override
+            public void insertUpdate(javax.swing.event.DocumentEvent e) { syncExclude(); }
+            @Override
+            public void removeUpdate(javax.swing.event.DocumentEvent e) { syncExclude(); }
+            @Override
+            public void changedUpdate(javax.swing.event.DocumentEvent e) { syncExclude(); }
+            private void syncExclude() {
+                scopeManager.setExcludedPaths(excludeField.getText().trim());
+            }
+        });
+
+        topContainer.add(exclusionRow);
+
         // --- Row 2: Buttons, Status, Thread Status, Collaborator, Progress Bar ---
         JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
         row2.setBackground(BG_DARK);

@@ -53,7 +53,9 @@ public class ModuleListPanel extends JPanel {
         selectAllBtn.setMargin(new Insets(2, 6, 2, 6));
         selectAllBtn.addActionListener(e -> {
             for (ScanModule module : registry.getAllModules()) {
-                registry.setEnabled(module.getId(), true);
+                if (!registry.isManualOnly(module.getId())) {
+                    registry.setEnabled(module.getId(), true);
+                }
             }
             rebuildModuleList();
         });
@@ -65,7 +67,9 @@ public class ModuleListPanel extends JPanel {
         deselectAllBtn.setMargin(new Insets(2, 6, 2, 6));
         deselectAllBtn.addActionListener(e -> {
             for (ScanModule module : registry.getAllModules()) {
-                registry.setEnabled(module.getId(), false);
+                if (!registry.isManualOnly(module.getId())) {
+                    registry.setEnabled(module.getId(), false);
+                }
             }
             rebuildModuleList();
         });
@@ -214,9 +218,16 @@ public class ModuleListPanel extends JPanel {
         entry.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
         JCheckBox enableBox = new JCheckBox();
+        boolean manualOnly = registry.isManualOnly(module.getId());
         enableBox.setSelected(registry.isEnabled(module.getId()));
-        enableBox.setToolTipText("Enable/disable " + module.getName());
-        enableBox.addActionListener(e -> registry.setEnabled(module.getId(), enableBox.isSelected()));
+        if (manualOnly) {
+            // Right-click only modules — checkbox is disabled (not part of auto-scan scope)
+            enableBox.setEnabled(false);
+            enableBox.setToolTipText(module.getName() + " — right-click only (not part of auto-scan)");
+        } else {
+            enableBox.setToolTipText("Enable/disable " + module.getName());
+            enableBox.addActionListener(e -> registry.setEnabled(module.getId(), enableBox.isSelected()));
+        }
         CyberTheme.styleCheckBox(enableBox);
 
         JPanel textPanel = new JPanel(new GridLayout(2, 1));
@@ -229,7 +240,8 @@ public class ModuleListPanel extends JPanel {
 
         String tag = module.getCategory().name();
         String type = module.isPassive() ? "Passive" : "Active";
-        String suffix = ModuleRegistry.AI_MODULE_ID.equals(module.getId()) ? " | Optional" : "";
+        String suffix = ModuleRegistry.AI_MODULE_ID.equals(module.getId()) ? " | Optional"
+                : manualOnly ? " | Right-click only" : "";
         JLabel descLabel = new JLabel(tag + " | " + type + suffix);
         descLabel.setFont(MONO_SMALL);
         descLabel.setForeground(FG_SECONDARY);

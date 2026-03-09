@@ -189,6 +189,7 @@ Configure via the OmniStrike tab: select network interface, set HTTP port + DNS 
 | Feature | Description |
 |:---|:---|
 | **Scope filtering** | Only scans in-scope hosts — never touches third-party traffic |
+| **URL path exclusion** | Exclude specific URL paths (e.g., `/logout`, `/admin/delete`) from ALL scanning — active and passive. Space-separated in the UI. |
 | **Static resource skip** | Active scanners skip `.js`, `.css`, `.png`, etc. — passive analyzers still run |
 | **Cross-module dedup** | Normalized URL deduplication prevents redundant findings |
 | **Inter-module data sharing** | SharedDataBus lets modules share discovered endpoints, subdomains, and parameters |
@@ -239,6 +240,15 @@ Requires **JDK 17+**. Dependencies: `montoya-api 2026.2`, `gson 2.11.0`.
 ---
 
 ## Changelog
+
+<details>
+<summary><b>v1.42 (2026-03-10)</b> — LDAP Injection, URL Exclusion, Right-click-only UX</summary>
+
+- **LDAP Injection Scanner**: New right-click-only module — 4-phase detection: error-based (2+ signature requirement), boolean differential (2-round verification with dynamic content stripping), auth bypass (multi-signal confirmation on auth-like parameters only), wildcard amplification. Covers OpenLDAP, Active Directory, Java JNDI, PHP, Python, .NET, Ruby. Zero false positive design.
+- **XSS Scanner FP Fixes**: 6 false positive sources fixed — DOM source pruning (`XMLHttpRequest`, `.readyState`), removed HTML body fallback in script extraction, tightened callback taint propagation to statement-level, scoped variable flow fallback to current sink only, removed `$sce.trustAs` from sanitizer list, removed bare `location=` from URL sinks.
+- **URL Path Exclusion**: New "Exclude Paths" field in UI — space-separated URL paths (e.g., `/logout /admin/delete`) completely skip ALL scanning (active + passive) on auto-scan, manual right-click, and "All Modules" scan.
+- **Right-click-only Module UX**: Modules that are manual-trigger only (Bypass URL Parser, CSRF Manipulator, WebSocket Scanner, LDAP Injection) now show disabled checkboxes with "Right-click only" label in the sidebar. Select All / Deselect All buttons skip these modules. Finding counts still display.
+</details>
 
 <details>
 <summary><b>v1.41 (2026-03-06)</b> — Technology Fingerprinter, Sensitive Data Exposure</summary>

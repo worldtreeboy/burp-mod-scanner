@@ -135,9 +135,15 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                 return ProxyResponseReceivedAction.continueWith(interceptedResponse);
             }
 
+            String url = interceptedResponse.initiatingRequest().url();
+
+            // URL exclusion — completely skip excluded paths (active + passive)
+            if (scopeManager.isExcludedPath(url)) {
+                return ProxyResponseReceivedAction.continueWith(interceptedResponse);
+            }
+
             // Compute module lists once per request
             List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
-            String url = interceptedResponse.initiatingRequest().url();
             boolean isStatic = isStaticResource(url);
             // Skip active injection scanners for static files (.js, .css, .png, etc.)
             // Passive analyzers still run — they find results in JS/HTML response bodies.
@@ -182,6 +188,12 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     public void scanRequest(HttpRequestResponse reqResp, List<String> moduleIds, String targetParameter) {
         if (reqResp == null) return;
 
+        // URL exclusion — skip excluded paths even on manual right-click
+        if (scopeManager.isExcludedPath(reqResp.request().url())) {
+            uiLog("ManualScan", "SKIPPED (excluded path): " + reqResp.request().url());
+            return;
+        }
+
         // Clean up completed futures before adding new ones
         manualScanFutures.removeIf(Future::isDone);
 
@@ -211,6 +223,13 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
      */
     public void scanRequestAllModules(HttpRequestResponse reqResp) {
         if (reqResp == null) return;
+
+        // URL exclusion — skip excluded paths even on manual right-click
+        if (scopeManager.isExcludedPath(reqResp.request().url())) {
+            uiLog("ManualScan", "SKIPPED (excluded path): " + reqResp.request().url());
+            return;
+        }
+
         List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
         List<ScanModule> activeModules = registry.getEnabledActiveModules();
         String url = reqResp.request().url();

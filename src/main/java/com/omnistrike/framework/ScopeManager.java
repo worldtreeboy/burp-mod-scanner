@@ -1,9 +1,6 @@
 package com.omnistrike.framework;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -14,6 +11,10 @@ public class ScopeManager {
 
     // Volatile reference swap for atomic updates — no TOCTOU gap
     private volatile Set<String> targetDomains = Collections.emptySet();
+
+    // URL path exclusion list — URLs containing any of these substrings are completely skipped
+    // (both active AND passive scanning). Volatile reference swap like targetDomains.
+    private volatile List<String> excludedPaths = Collections.emptyList();
 
     public void setTargetDomains(String commaSeparated) {
         if (commaSeparated == null || commaSeparated.isBlank()) {
@@ -58,6 +59,55 @@ public class ScopeManager {
             if (lowerHost.equals(domain) || lowerHost.endsWith("." + domain)) {
                 return true;
             }
+        }
+        return false;
+    }
+
+    /**
+     * Sets the list of excluded URL path patterns.
+     * Each entry is a path substring (e.g., "/logout", "/admin/delete").
+     * Whitespace-separated or newline-separated in the input string.
+     */
+    public void setExcludedPaths(String text) {
+        if (text == null || text.isBlank()) {
+            excludedPaths = Collections.emptyList();
+            return;
+        }
+        List<String> paths = Arrays.stream(text.split("[\\s,]+"))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .map(String::toLowerCase)
+                .collect(Collectors.toUnmodifiableList());
+        excludedPaths = paths;
+    }
+
+    public List<String> getExcludedPaths() {
+        return excludedPaths;
+    }
+
+    /**
+     * Returns true if the given URL should be excluded from ALL scanning (active + passive).
+     * Matches if any excluded path is a substring of the URL's path component.
+     */
+    public boolean isExcludedPath(String url) {
+        List<String> paths = excludedPaths;
+        if (paths.isEmpty() || url == null) return false;
+        // Extract path from URL (strip scheme+host, keep path before query)
+        String lower = url.toLowerCase();
+        String path;
+        int schemeEnd = lower.indexOf("://");
+        if (schemeEnd >= 0) {
+            int pathStart = lower.indexOf('/', schemeEnd + 3);
+            path = pathStart >= 0 ? lower.substring(pathStart) : "/";
+        } else {
+            path = lower;
+        }
+        // Strip query string for matching
+        int qIdx = path.indexOf('?');
+        if (qIdx >= 0) path = path.substring(0, qIdx);
+
+        for (String excluded : paths) {
+            if (path.contains(excluded)) return true;
         }
         return false;
     }
