@@ -2,6 +2,7 @@ package com.omnistrike.modules.injection;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.collaborator.Interaction;
+import burp.api.montoya.collaborator.InteractionType;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -567,11 +568,14 @@ public class CommandInjectionScanner implements ScanModule {
                     for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
                         try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
                     }
-                    // Mark parameter as confirmed — skip all remaining phases
-                    oobConfirmedParams.add(target.name);
+                    // Mark parameter as confirmed — skip all remaining phases (HTTP only, DNS continues scanning)
+                    if (interaction.type() == InteractionType.HTTP) {
+                        oobConfirmedParams.add(target.name);
+                    }
                     findingsStore.addFinding(Finding.builder("cmdi-scanner",
                                     "OS Command Injection (Out-of-Band) - " + osType,
-                                    Severity.CRITICAL, Confidence.CERTAIN)
+                                    Severity.CRITICAL,
+                                    interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
                             .url(url).parameter(target.name)
                             .evidence("Technique: " + technique + " (" + osType + ")"
                                     + " | Collaborator " + interaction.type().name()

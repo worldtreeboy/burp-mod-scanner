@@ -4,6 +4,7 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.collaborator.InteractionType;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
@@ -647,11 +648,14 @@ public class SstiScanner implements ScanModule {
                         for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
                             try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
                         }
-                        // Mark parameter as confirmed — skip all remaining phases
-                        oobConfirmedParams.add(target.name);
+                        // Mark parameter as confirmed — skip all remaining phases (HTTP only, DNS continues scanning)
+                        if (interaction.type() == InteractionType.HTTP) {
+                            oobConfirmedParams.add(target.name);
+                        }
                         findingsStore.addFinding(Finding.builder("ssti-scanner",
                                         "SSTI Confirmed (Out-of-Band) - " + technique,
-                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                        Severity.CRITICAL,
+                                        interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
                                 .url(url).parameter(target.name)
                                 .evidence("Technique: " + technique
                                         + " | Collaborator " + interaction.type().name()

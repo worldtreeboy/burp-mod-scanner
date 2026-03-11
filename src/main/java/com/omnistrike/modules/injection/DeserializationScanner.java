@@ -2,6 +2,7 @@ package com.omnistrike.modules.injection;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.collaborator.Interaction;
+import burp.api.montoya.collaborator.InteractionType;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -813,6 +814,21 @@ public class DeserializationScanner implements ScanModule {
                             .evidence("Cookie: " + param.name() + " (length=" + value.length() + ")")
                             .description(".NET session/auth cookie found. If this cookie contains serialized data "
                                     + "(e.g., claims, tokens), it may be a deserialization target.")
+                            .responseEvidence(param.name())
+                            .build());
+                }
+
+                // ViewState in cookie — indicates ASP.NET serialization surface
+                if (name.equals("__viewstate") || name.equals("viewstate")) {
+                    deserPoints.add(new DeserPoint("cookie", param.name(), value, ".NET", "ViewState cookie"));
+                    findings.add(Finding.builder("deser-scanner",
+                                    ".NET ViewState cookie detected: " + param.name(),
+                                    Severity.LOW, Confidence.CERTAIN)
+                            .url(url).parameter(param.name())
+                            .evidence("Cookie: " + param.name() + "=" + value.substring(0, Math.min(80, value.length())) + "...")
+                            .description("ASP.NET ViewState found in a cookie. This is a deserialization target. "
+                                    + "If MAC validation is disabled or the machine key is known/leaked, "
+                                    + "this can be exploited for remote code execution via crafted ViewState payloads.")
                             .responseEvidence(param.name())
                             .build());
                 }
@@ -2156,10 +2172,14 @@ public class DeserializationScanner implements ScanModule {
                         for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
                             try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
                         }
-                        oobConfirmedParams.add(dp.name);
+                        // Only stop scanning on HTTP OOB, DNS continues scanning
+                        if (interaction.type() == InteractionType.HTTP) {
+                            oobConfirmedParams.add(dp.name);
+                        }
                         findingsStore.addFinding(Finding.builder("deser-scanner",
                                         dp.language + " Deserialization RCE (Out-of-Band)",
-                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                        Severity.CRITICAL,
+                                        interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
                                 .url(url).parameter(dp.name)
                                 .evidence("Language: " + dp.language + " | Technique: " + technique
                                         + " | Collaborator " + interaction.type().name()
@@ -2225,10 +2245,14 @@ public class DeserializationScanner implements ScanModule {
                         "deser-scanner", url, dp.name,
                         "Deser OOB " + technique,
                         interaction -> {
-                            oobConfirmedParams.add(dp.name);
+                            // Only stop scanning on HTTP OOB, DNS continues scanning
+                            if (interaction.type() == InteractionType.HTTP) {
+                                oobConfirmedParams.add(dp.name);
+                            }
                             findingsStore.addFinding(Finding.builder("deser-scanner",
                                             "Ruby Deserialization RCE (Out-of-Band, Marshal binary)",
-                                            Severity.CRITICAL, Confidence.CERTAIN)
+                                            Severity.CRITICAL,
+                                            interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
                                     .url(url).parameter(dp.name)
                                     .evidence("Technique: " + technique
                                             + " | Collaborator " + interaction.type().name()
@@ -2299,10 +2323,14 @@ public class DeserializationScanner implements ScanModule {
                         "deser-scanner", url, dp.name,
                         "Deser OOB " + technique,
                         interaction -> {
-                            oobConfirmedParams.add(dp.name);
+                            // Only stop scanning on HTTP OOB, DNS continues scanning
+                            if (interaction.type() == InteractionType.HTTP) {
+                                oobConfirmedParams.add(dp.name);
+                            }
                             findingsStore.addFinding(Finding.builder("deser-scanner",
                                             "Python Deserialization RCE (Out-of-Band, Pickle binary)",
-                                            Severity.CRITICAL, Confidence.CERTAIN)
+                                            Severity.CRITICAL,
+                                            interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
                                     .url(url).parameter(dp.name)
                                     .evidence("Technique: " + technique
                                             + " | Collaborator " + interaction.type().name()

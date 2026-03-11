@@ -6,7 +6,7 @@
 
 **27 modules. SQL exploitation engine. AI-powered fuzzing. Prerequisite chain automation. Custom OOB server. One JAR.**
 
-[![Version](https://img.shields.io/badge/v1.43-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
+[![Version](https://img.shields.io/badge/v1.45-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
 [![Java](https://img.shields.io/badge/Java_17+-orange?style=for-the-badge&logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Montoya_API-E8350E?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge)](LICENSE)
@@ -59,7 +59,7 @@ OmniStrike replaces that entire stack with a **single extension** — 19 active 
 | **SSTI Scanner** | 20 template engines, large-number canaries, template syntax consumption verification, 32 OOB payloads. |
 | **Command Injection** | 3-step time-based, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/`%0a`/backtick/double-encoding bypasses. **REST API path segment injection**. |
 | **XXE Scanner** | 4-phase: XML body, XInclude, JSON→XML, Content-Type forcing. UTF-16 bypass, SAML detection, 14 OOB payloads. |
-| **Deserialization** | 6 languages, 137+ gadget chains, passive fingerprinting, OOB-first detection, blind spray mode. [Details below](#-deserialization-scanner). |
+| **Deserialization** | 6 languages, 137+ gadget chains, passive fingerprinting (ViewState cookie/body, Shiro, .NET session), OOB-first detection, blind spray mode. [Details below](#-deserialization-scanner). |
 | **WebSocket Scanner** | Passive frame analysis + OOB-first active fuzzing across 8 injection categories. [Details below](#-websocket-scanner). |
 | **GraphQL Tool** | 7-phase: introspection (4 bypasses), schema analysis, injection (SQLi/NoSQLi/CMDi/SSTI/traversal), IDOR, DoS config, HTTP-level, error disclosure. |
 | **CORS Misconfiguration** | Reflected origin, null trust, subdomain trust, scheme downgrade, wildcard+credentials, preflight bypass. |
@@ -197,7 +197,7 @@ Configure via the OmniStrike tab: select network interface, set HTTP port + DNS 
 | **Wordlist Generator** | Passive word harvester with history scraping — builds domain-specific wordlists from proxied traffic |
 | **29 UI themes** | CyberPunk, Dracula, Monokai, Nord, Solarized, and more. Scoped theming: OmniStrike-only (default) or Apply Globally. Ambient Glow breathing effect. |
 | **Request/Response highlighting** | All modules annotate findings with byte-range markers in Burp Dashboard |
-| **OOB-first strategy** | Collaborator/Custom OOB payloads fire before time-based; if OOB confirms, remaining phases skipped |
+| **OOB-first strategy** | Collaborator/Custom OOB payloads fire before time-based; HTTP OOB confirms → remaining phases skipped. DNS OOB reports finding but continues scanning for deeper coverage. |
 | **3-step timing verification** | Baseline → true delay → false must NOT delay |
 | **Smart filter probing** | Probes which characters survive filtering, then sends only viable payloads |
 | **Burp Dashboard integration** | Findings appear as native scan issues in the Dashboard task box |
@@ -208,7 +208,7 @@ Configure via the OmniStrike tab: select network interface, set HTTP port + DNS 
 
 OmniStrike is built around **zero false positives**. Every finding requires structural proof — not just response differences.
 
-1. **OOB-first** — Collaborator/Custom OOB payloads fire before anything else. If OOB confirms, skip everything else.
+1. **OOB-first** — Collaborator/Custom OOB payloads fire before anything else. HTTP OOB interaction confirms and skips remaining phases. DNS-only OOB reports the finding but continues scanning for additional coverage.
 2. **Multi-step verification** — Time-based uses 3-step validation. Boolean-blind uses 2-round confirmation. Error-based requires regex-validated error strings.
 3. **Smart payload selection** — Probes which characters survive WAF/filtering, then generates only viable payloads. No shotgun approach.
 4. **Structural evidence** — Every finding includes the request, response, matched pattern, and byte-range highlighting. No guesswork.
@@ -240,6 +240,19 @@ Requires **JDK 17+**. Dependencies: `montoya-api 2026.2`, `gson 2.11.0`.
 ---
 
 ## Changelog
+
+<details>
+<summary><b>v1.45 (2026-03-12)</b> — DNS OOB confidence tuning, ViewState cookie detection</summary>
+
+- **DNS OOB: Continue scanning, lower confidence**: OOB callbacks now distinguish HTTP vs DNS interactions across all 6 injection scanners (SQLi, CmdI, SSRF, SSTI, XXE, Deserialization). HTTP OOB = CERTAIN confidence + stops scanning remaining phases. DNS OOB = FIRM confidence + continues scanning. Rationale: DNS resolution can be triggered by WAFs, proxies, or load balancers inspecting the URL — not necessarily the application itself.
+- **ViewState cookie detection**: Deserialization scanner now detects `__VIEWSTATE` / `VIEWSTATE` cookies as a LOW/CERTAIN finding with deserialization attack surface context. Previously only detected ViewState in HTML body hidden fields.
+</details>
+
+<details>
+<summary><b>v1.44 (2026-03-12)</b> — Scan all request headers & cookies across all injection scanners</summary>
+
+- **Header & cookie injection scanning**: All injection scanners now test request headers and cookies as injection points, not just URL/body parameters.
+</details>
 
 <details>
 <summary><b>v1.43 (2026-03-11)</b> — REST API Path Segment Injection for SQLi & Command Injection</summary>

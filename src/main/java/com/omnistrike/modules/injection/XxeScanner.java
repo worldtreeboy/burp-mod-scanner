@@ -2,6 +2,7 @@ package com.omnistrike.modules.injection;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.collaborator.Interaction;
+import burp.api.montoya.collaborator.InteractionType;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
@@ -1208,11 +1209,14 @@ public class XxeScanner implements ScanModule {
      */
     private void reportOobFinding(Interaction interaction, String url, String technique,
                                    HttpRequestResponse requestResponse) {
-        // Mark xml_body as confirmed — skip remaining XXE phases
-        oobConfirmedParams.add("xml_body");
+        // Mark xml_body as confirmed — skip remaining XXE phases (HTTP only, DNS continues scanning)
+        if (interaction.type() == InteractionType.HTTP) {
+            oobConfirmedParams.add("xml_body");
+        }
         Finding.Builder builder = Finding.builder("xxe-scanner",
                         "XXE Confirmed (Out-of-Band): " + technique,
-                        Severity.CRITICAL, Confidence.CERTAIN)
+                        Severity.CRITICAL,
+                        interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
                 .url(url).parameter("xml_body")
                 .evidence("Technique: " + technique
                         + " | Collaborator " + interaction.type().name()
@@ -1651,10 +1655,14 @@ public class XxeScanner implements ScanModule {
             String collabPayload = collaboratorManager.generatePayload(
                     "xxe-scanner", url, target.name, "XInclude OOB callback",
                     interaction -> {
-                        oobConfirmedParams.add(target.name);
+                        // Only stop scanning on HTTP OOB, DNS continues scanning
+                        if (interaction.type() == InteractionType.HTTP) {
+                            oobConfirmedParams.add(target.name);
+                        }
                         findingsStore.addFinding(Finding.builder("xxe-scanner",
                                         "XXE via XInclude Confirmed (Out-of-Band)",
-                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                        Severity.CRITICAL,
+                                        interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
                                 .url(url).parameter(target.name)
                                 .evidence("XInclude OOB | Collaborator " + interaction.type().name()
                                         + " interaction from " + interaction.clientIp()
@@ -1880,10 +1888,14 @@ public class XxeScanner implements ScanModule {
                     "xxe-scanner", url, "Content-Type conversion",
                     "XXE OOB via Content-Type conversion",
                     interaction -> {
-                        oobConfirmedParams.add("Content-Type conversion");
+                        // Only stop scanning on HTTP OOB, DNS continues scanning
+                        if (interaction.type() == InteractionType.HTTP) {
+                            oobConfirmedParams.add("Content-Type conversion");
+                        }
                         findingsStore.addFinding(Finding.builder("xxe-scanner",
                                         "XXE via Content-Type Conversion Confirmed (Out-of-Band)",
-                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                        Severity.CRITICAL,
+                                        interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
                                 .url(url).parameter("Content-Type conversion")
                                 .evidence("JSON-to-XML conversion + OOB | Collaborator "
                                         + interaction.type().name() + " interaction from "
@@ -2120,7 +2132,10 @@ public class XxeScanner implements ScanModule {
                     "xxe-scanner", url, "Content-Type forcing",
                     "XXE OOB via Content-Type forcing (parameter entity)",
                     interaction -> {
-                        oobConfirmedParams.add("Content-Type forcing");
+                        // Only stop scanning on HTTP OOB, DNS continues scanning
+                        if (interaction.type() == InteractionType.HTTP) {
+                            oobConfirmedParams.add("Content-Type forcing");
+                        }
                         reportOobFinding(interaction, url,
                                 "Content-Type forcing parameter entity OOB", sentForceOob1.get());
                     });
@@ -2150,7 +2165,10 @@ public class XxeScanner implements ScanModule {
                     "xxe-scanner", url, "Content-Type forcing",
                     "XXE OOB via Content-Type forcing (direct entity)",
                     interaction -> {
-                        oobConfirmedParams.add("Content-Type forcing");
+                        // Only stop scanning on HTTP OOB, DNS continues scanning
+                        if (interaction.type() == InteractionType.HTTP) {
+                            oobConfirmedParams.add("Content-Type forcing");
+                        }
                         reportOobFinding(interaction, url,
                                 "Content-Type forcing direct entity OOB", sentForceOob2.get());
                     });
