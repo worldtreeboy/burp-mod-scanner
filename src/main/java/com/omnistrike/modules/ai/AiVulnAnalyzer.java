@@ -2420,6 +2420,28 @@ public class AiVulnAnalyzer implements ScanModule {
         }
     }
 
+    /**
+     * Manual scan with a user-supplied custom prompt.
+     * The user's prompt is prepended to the standard JSON output format instructions
+     * and the HTTP exchange, then sent to the LLM for analysis.
+     */
+    public void manualScanCustomPrompt(HttpRequestResponse reqResp, String customPrompt) {
+        cancelled = false;
+
+        try {
+            llmExecutor.submit(() -> {
+                activeScansRunning.incrementAndGet();
+                try {
+                    doCustomPromptScan(reqResp, customPrompt);
+                } finally {
+                    activeScansRunning.decrementAndGet();
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            logError("Custom prompt scan: Queue full, scan rejected for " + reqResp.request().url());
+        }
+    }
+
     private void doManualScan(HttpRequestResponse reqResp, boolean passive,
                                boolean fuzz, boolean wafBypass, boolean adaptive,
                                String targetModuleId) {
@@ -2491,6 +2513,136 @@ public class AiVulnAnalyzer implements ScanModule {
                 });
             } catch (RejectedExecutionException ignored) {}
         }
+    }
+
+    /**
+     * Executes a scan using a user-supplied custom prompt.
+     * Re-fetches the response if needed, builds the prompt from the user's text
+     * plus JSON format instructions and the HTTP exchange, then parses findings.
+     */
+    private void doCustomPromptScan(HttpRequestResponse reqResp, String customPrompt) {
+        boolean needsRefresh = needsFreshResponse(reqResp);
+
+        logInfo("Custom prompt scan: needsRefresh=" + needsRefresh + " url=" + reqResp.request().url());
+
+        HttpRequestResponse effectiveReqResp = reqResp;
+        if (needsRefresh) {
+            logInfo("Custom prompt scan: Sending fresh request to " + reqResp.request().url());
+            try {
+                HttpRequest freshReq = reqResp.request()
+                        .withRemovedHeader("If-Modified-Since")
+                        .withRemovedHeader("If-None-Match")
+                        .withRemovedHeader("If-Unmodified-Since")
+                        .withRemovedHeader("Cache-Control")
+                        .withRemovedHeader("Pragma")
+                        .withAddedHeader("Cache-Control", "no-cache")
+                        .withAddedHeader("Pragma", "no-cache");
+                effectiveReqResp = api.http().sendRequest(freshReq);
+            } catch (Exception e) {
+                logError("Custom prompt scan: Failed to fetch response - " + e.getMessage());
+            }
+        }
+
+        final HttpRequestResponse finalReqResp = effectiveReqResp;
+        CapturedHttpExchange exchange;
+        try {
+            exchange = CapturedHttpExchange.from(finalReqResp, maxBodySize);
+        } catch (Exception e) {
+            logError("Custom prompt scan: Failed to capture exchange - " + e.getMessage());
+            return;
+        }
+
+        analyzeWithCustomPrompt(exchange, finalReqResp, customPrompt);
+    }
+
+    /**
+     * Sends the user's custom prompt + HTTP exchange to the LLM and parses findings.
+     * The custom prompt is wrapped with JSON output format instructions so findings
+     * are reported as structured data (same as standard analysis).
+     */
+    private void analyzeWithCustomPrompt(CapturedHttpExchange exchange, HttpRequestResponse reqResp,
+                                          String customPrompt) {
+        if (cancelled) return;
+        queuedCount.set(getQueueSize());
+        try {
+            StringBuilder promptBuilder = new StringBuilder();
+            promptBuilder.append("You are a senior penetration tester. The user has given you the following instructions:\n\n");
+            promptBuilder.append(customPrompt);
+            promptBuilder.append("\n\n");
+            promptBuilder.append("Analyze the HTTP exchange below according to the user's instructions.\n\n");
+            promptBuilder.append("IMPORTANT: Respond ONLY with valid JSON:\n");
+            promptBuilder.append("{\"findings\": [{\"title\": \"Brief title\", \"severity\": \"HIGH|MEDIUM|LOW|INFO\", ");
+            promptBuilder.append("\"description\": \"What the issue is\", \"evidence\": \"Exact text from the request/response\", ");
+            promptBuilder.append("\"poc\": \"Copy-paste-ready PoC\", ");
+            promptBuilder.append("\"remediation\": \"How to fix\", \"cwe\": \"CWE-XXX\"}]}\n\n");
+            promptBuilder.append("If no issues found, return {\"findings\": []}.\n\n");
+
+            // Enrich with tech stack context
+            String techContext = buildTechStackContext(reqResp);
+            if (!techContext.isEmpty()) promptBuilder.append(techContext);
+
+            String sessionContext = buildSessionFindingsContext();
+            if (!sessionContext.isEmpty()) promptBuilder.append(sessionContext);
+
+            promptBuilder.append("HTTP Exchange:\n");
+            promptBuilder.append(exchange.toPromptText());
+
+            String prompt = promptBuilder.toString();
+            trackInputTokens(prompt);
+            logInfo(">>> Sending custom prompt scan to " + llmClient.getProvider().getDisplayName()
+                    + " (model: " + llmClient.getModel() + ") for " + exchange.getUrl()
+                    + " | prompt size: " + prompt.length() + " chars");
+            long startMs = System.currentTimeMillis();
+
+            String rawResponse = callWithRetry(prompt);
+            long elapsedMs = System.currentTimeMillis() - startMs;
+            logInfo("<<< AI response received in " + elapsedMs + "ms | response size: "
+                    + (rawResponse != null ? rawResponse.length() : 0) + " chars");
+            LlmAnalysisResult result = llmClient.parseResponse(rawResponse);
+
+            logInfo("Parsed " + result.getFindings().size() + " findings from custom prompt scan for " + exchange.getUrl());
+            if (result.getFindings().isEmpty()) {
+                logInfo("AI returned no findings. Raw response (first 500 chars): "
+                        + (rawResponse != null ? rawResponse.substring(0, Math.min(rawResponse.length(), 500)) : "null"));
+            }
+
+            analyzedCount.incrementAndGet();
+
+            for (LlmAnalysisResult.LlmFinding llmFinding : result.getFindings()) {
+                Severity severity = parseSeverity(llmFinding.getSeverity());
+
+                String title = llmFinding.getTitle();
+                if (llmFinding.getCweId() != null && !llmFinding.getCweId().isEmpty()) {
+                    title += " (" + llmFinding.getCweId() + ")";
+                }
+
+                String ev = llmFinding.getEvidence() != null ? llmFinding.getEvidence() : "";
+                if (llmFinding.getPoc() != null && !llmFinding.getPoc().isEmpty()) {
+                    ev = ev + "\n\n--- Proof of Concept ---\n" + llmFinding.getPoc();
+                }
+
+                Finding.Builder fb = Finding.builder("ai-vuln-analyzer", title, severity, Confidence.FIRM)
+                        .url(exchange.getUrl())
+                        .evidence(ev)
+                        .responseEvidence(llmFinding.getEvidence())
+                        .description("[AI Custom Prompt] " + llmFinding.getDescription())
+                        .remediation(llmFinding.getRemediation());
+
+                if (reqResp != null) {
+                    fb.requestResponse(reqResp);
+                }
+
+                findingsStore.addFinding(fb.build());
+                findingsCount.incrementAndGet();
+            }
+        } catch (LlmException e) {
+            errorCount.incrementAndGet();
+            logError(e.getErrorType() + " - " + e.getMessage());
+        } catch (Exception e) {
+            errorCount.incrementAndGet();
+            logError("Custom prompt scan error - " + e.getMessage());
+        }
+        queuedCount.set(getQueueSize());
     }
 
     /**

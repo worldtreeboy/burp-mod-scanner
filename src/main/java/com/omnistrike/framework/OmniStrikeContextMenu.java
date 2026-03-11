@@ -249,6 +249,43 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             }
         }
 
+        // ============ "AI Scan (Custom Prompt)" — user enters their own prompt ============
+        if (aiAvailable) {
+            JMenuItem customPromptItem = new JMenuItem("AI Scan (Custom Prompt)");
+            customPromptItem.setToolTipText("Enter your own prompt for the AI to analyze this request");
+            customPromptItem.addActionListener(e -> {
+                // Build a dialog with a JTextArea for multi-line prompt input
+                JTextArea promptArea = new JTextArea(8, 50);
+                promptArea.setLineWrap(true);
+                promptArea.setWrapStyleWord(true);
+                promptArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
+                promptArea.setText("Look for authentication bypass vulnerabilities and insecure direct object references.");
+                promptArea.selectAll();
+                JScrollPane scrollPane = new JScrollPane(promptArea);
+                scrollPane.setPreferredSize(new java.awt.Dimension(500, 200));
+
+                JPanel panel = new JPanel(new BorderLayout(0, 8));
+                panel.add(new JLabel("<html>Enter your prompt for AI analysis of:<br><b>"
+                        + truncate(reqResp.request().url(), 80) + "</b></html>"), BorderLayout.NORTH);
+                panel.add(scrollPane, BorderLayout.CENTER);
+                panel.add(new JLabel("<html><i>The HTTP request/response will be appended automatically. "
+                        + "Findings appear in Dashboard & OmniStrike tab.</i></html>"), BorderLayout.SOUTH);
+
+                int result = JOptionPane.showConfirmDialog(null, panel,
+                        "OmniStrike — Custom AI Prompt", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+                if (result == JOptionPane.OK_OPTION) {
+                    String userPrompt = promptArea.getText();
+                    if (userPrompt != null && !userPrompt.isBlank()) {
+                        aiAnalyzer.manualScanCustomPrompt(reqResp, userPrompt.trim());
+                        showToast("AI Custom Prompt",
+                                "Custom AI analysis started\n" + url
+                                + "\n\nResults will appear in Dashboard and OmniStrike tab.");
+                    }
+                }
+            });
+            items.add(customPromptItem);
+        }
+
         // ============ "Open WebSocket Scanner" — switch to WS Scanner panel ============
         {
             Supplier<MainPanel> supplier = mainPanelSupplier;
