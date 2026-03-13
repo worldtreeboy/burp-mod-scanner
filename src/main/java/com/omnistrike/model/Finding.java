@@ -60,6 +60,22 @@ public class Finding {
         return new Builder(moduleId, title, severity, confidence);
     }
 
+    /**
+     * Returns a copy of this finding with the given requestResponse attached.
+     * Used by TrafficInterceptor to auto-fill requestResponse on findings
+     * from modules that don't set it themselves.
+     */
+    public Finding withRequestResponse(HttpRequestResponse rr) {
+        if (this.requestResponse != null) return this;
+        return Finding.builder(moduleId, title, severity, confidence)
+                .url(url).description(description).evidence(evidence)
+                .parameter(parameter).remediation(remediation)
+                .requestResponse(rr)
+                .targetModuleId(targetModuleId).timestamp(timestamp)
+                .payload(payload).responseEvidence(responseEvidence)
+                .build();
+    }
+
     @Override
     public String toString() {
         return "[" + severity + "] " + title + " (" + moduleId + ") @ " + url

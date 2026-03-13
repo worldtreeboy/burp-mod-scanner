@@ -47,6 +47,7 @@ public class MainPanel extends JPanel {
     private final CollaboratorManager collaboratorManager;
     private final SessionKeepAlive sessionKeepAlive;
     private final StepperEngine stepperEngine;
+    private final SharedDataBus dataBus;
     private final MontoyaApi api;
     private final LogPanel logPanel;
 
@@ -101,7 +102,7 @@ public class MainPanel extends JPanel {
     public MainPanel(ModuleRegistry registry, FindingsStore findingsStore, ScopeManager scopeManager,
                      ActiveScanExecutor executor, TrafficInterceptor interceptor,
                      CollaboratorManager collaboratorManager, SessionKeepAlive sessionKeepAlive,
-                     StepperEngine stepperEngine, MontoyaApi api) {
+                     StepperEngine stepperEngine, SharedDataBus dataBus, MontoyaApi api) {
         this.registry = registry;
         this.findingsStore = findingsStore;
         this.scopeManager = scopeManager;
@@ -110,6 +111,7 @@ public class MainPanel extends JPanel {
         this.collaboratorManager = collaboratorManager;
         this.sessionKeepAlive = sessionKeepAlive;
         this.stepperEngine = stepperEngine;
+        this.dataBus = dataBus;
         this.api = api;
         this.logPanel = new LogPanel();
 
@@ -700,6 +702,7 @@ public class MainPanel extends JPanel {
         bottomTabs.addTab("Active Findings", activeFindingsPanel);
         bottomTabs.addTab("Passive Findings", passiveFindingsPanel);
         bottomTabs.addTab("Request/Response", requestResponsePanel);
+        bottomTabs.addTab("Attack Surface", new AttackSurfacePanel(findingsStore, scopeManager, dataBus));
         bottomTabs.addTab("Activity Log", logPanel);
 
         JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,

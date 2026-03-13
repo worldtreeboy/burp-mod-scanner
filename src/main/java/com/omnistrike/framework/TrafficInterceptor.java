@@ -248,7 +248,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                 try {
                     List<Finding> findings = module.processHttpFlow(reqResp, api);
                     if (findings != null && !findings.isEmpty()) {
-                        findingsStore.addFindings(findings);
+                        findingsStore.addFindings(autoFillReqResp(findings, reqResp));
                     }
                 } catch (NullPointerException e) {
                     // During extension unload Burp's API proxy becomes null — discard safely.
@@ -270,7 +270,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                     uiLog(module.getId(), "Processing: " + reqResp.request().url());
                     List<Finding> findings = module.processHttpFlow(reqResp, api);
                     if (findings != null && !findings.isEmpty()) {
-                        findingsStore.addFindings(findings);
+                        findingsStore.addFindings(autoFillReqResp(findings, reqResp));
                         uiLog(module.getId(), "Found " + findings.size() + " issue(s)");
                     }
                 } catch (Exception e) {
@@ -296,7 +296,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                     // Passive modules always run full scan (no parameter targeting)
                     List<Finding> findings = module.processHttpFlow(reqResp, api);
                     if (findings != null && !findings.isEmpty()) {
-                        findingsStore.addFindings(findings);
+                        findingsStore.addFindings(autoFillReqResp(findings, reqResp));
                     }
                 } catch (NullPointerException e) {
                     if (running) {
@@ -323,7 +323,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                         findings = module.processHttpFlow(reqResp, api);
                     }
                     if (findings != null && !findings.isEmpty()) {
-                        findingsStore.addFindings(findings);
+                        findingsStore.addFindings(autoFillReqResp(findings, reqResp));
                         uiLog(module.getId(), "Found " + findings.size() + " issue(s)");
                     }
                 } catch (Exception e) {
@@ -335,6 +335,17 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                 manualScanFutures.add(f);
             }
         }
+    }
+
+    /**
+     * Auto-fills requestResponse on findings that don't have it set.
+     * Many passive modules return findings without attaching the original request/response;
+     * this ensures every finding reaching DashboardReporter has the data Burp needs.
+     */
+    private static List<Finding> autoFillReqResp(List<Finding> findings, HttpRequestResponse reqResp) {
+        return findings.stream()
+                .map(f -> f.withRequestResponse(reqResp))
+                .collect(java.util.stream.Collectors.toList());
     }
 
     /**

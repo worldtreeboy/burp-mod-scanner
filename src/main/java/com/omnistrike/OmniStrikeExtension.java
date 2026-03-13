@@ -55,7 +55,9 @@ public class OmniStrikeExtension implements BurpExtension {
         findingsStore = new FindingsStore();
         findingsStore.setErrorLogger(msg -> api.logging().logToError(msg));
         DashboardReporter dashboardReporter = new DashboardReporter(api);
-        findingsStore.addListener(dashboardReporter); // Report all findings to Burp Dashboard
+        // FindingsBundler wraps DashboardReporter — consolidates LOW/INFO findings per host
+        FindingsBundler findingsBundler = new FindingsBundler(dashboardReporter, api);
+        findingsStore.addListener(findingsBundler); // Bundler delegates to DashboardReporter
         DeduplicationStore dedup = new DeduplicationStore();
         executor = new ActiveScanExecutor(5);
         ScopeManager scopeManager = new ScopeManager();
@@ -249,7 +251,7 @@ public class OmniStrikeExtension implements BurpExtension {
             mainPanel = new MainPanel(
                     registry, findingsStore, scopeManager,
                     executor, interceptor, collaboratorManager, sessionKeepAlive,
-                    stepperEngine, api);
+                    stepperEngine, dataBus, api);
             api.userInterface().registerSuiteTab("OmniStrike", mainPanel);
             // Wire Stepper log messages to the Activity Log
             if (stepperEngine != null) {
@@ -276,6 +278,7 @@ public class OmniStrikeExtension implements BurpExtension {
 
         // ==================== CLEANUP ON UNLOAD ====================
         final AiVulnAnalyzer aiRef = aiAnalyzer;
+        final FindingsBundler bundlerRef = findingsBundler;
         api.extension().registerUnloadingHandler(() -> {
             try { api.logging().logToOutput("OmniStrike unloading..."); }
             catch (NullPointerException ignored) {}
@@ -293,6 +296,9 @@ public class OmniStrikeExtension implements BurpExtension {
             executor.shutdown();
             if (collaboratorManager != null) {
                 collaboratorManager.shutdown();
+            }
+            if (bundlerRef != null) {
+                bundlerRef.shutdown();
             }
             if (persistentAudit != null) {
                 try { persistentAudit.delete(); } catch (Exception ignored) {}
