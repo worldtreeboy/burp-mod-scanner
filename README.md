@@ -4,9 +4,9 @@
 
 ### The All-in-One Burp Suite Attack Framework
 
-**27 modules. SQL exploitation engine. AI-powered fuzzing. Prerequisite chain automation. Custom OOB server. One JAR.**
+**26 modules. SQL exploitation engine. AI-powered fuzzing. Prerequisite chain automation. Custom OOB server. One JAR.**
 
-[![Version](https://img.shields.io/badge/v1.45-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
+[![Version](https://img.shields.io/badge/v1.49-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
 [![Java](https://img.shields.io/badge/Java_17+-orange?style=for-the-badge&logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Montoya_API-E8350E?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge)](LICENSE)
@@ -29,7 +29,7 @@
 
 Most Burp extensions do one thing. You end up with 15 extensions loaded, fighting for threads, duplicating requests, and missing the gaps between them.
 
-OmniStrike replaces that entire stack with a **single extension** — 19 active scanners, 6 passive analyzers, an AI fuzzer, a SQL exploitation engine, a prerequisite request chain (Stepper), a wordlist generator, and a built-in OOB callback server. Everything shares one thread pool, one deduplication store, one findings database, and one Collaborator pipeline.
+OmniStrike replaces that entire stack with a **single extension** — 18 active scanners, 6 passive analyzers, an AI fuzzer, a SQL exploitation engine, a prerequisite request chain (Stepper), a wordlist generator, and a built-in OOB callback server. Everything shares one thread pool, one deduplication store, one findings database, and one Collaborator pipeline.
 
 **Drop one JAR. Get everything.**
 
@@ -48,13 +48,12 @@ OmniStrike replaces that entire stack with a **single extension** — 19 active 
 
 ## Modules
 
-### Active Scanners (19)
+### Active Scanners (18)
 
 | Module | Highlights |
 |:---|:---|
 | **SQLi Detector** | Auth bypass, error-based, UNION, time-based blind (3-step verification), boolean-blind (2-round), 64 OOB payloads. ~375 payloads/param across 10 database engines. **REST API path segment injection** (tests `/api/users/12` style endpoints). |
 | **OmniMap Exploiter** | Post-detection SQL exploitation engine — sqlmap-equivalent. 4 techniques (UNION, Error, Boolean blind, Time blind), 5 DBMS dialects, auto boundary/DBMS detection, parallel extraction, WAF bypass tamper engine. [Details below](#-omnimap-exploiter). |
-| **XSS Scanner** | 6 reflection contexts, smart filter probing, adaptive evasion, DOM XSS flow analysis, CSTI, framework-specific payloads (Angular/Vue/React/jQuery), blind XSS via Collaborator. |
 | **SSRF Scanner** | Collaborator OOB, cloud metadata with multi-marker validation (AWS/Azure/GCP/Oracle), DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads. |
 | **SSTI Scanner** | 20 template engines, large-number canaries, template syntax consumption verification, 32 OOB payloads. |
 | **Command Injection** | 3-step time-based, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/`%0a`/backtick/double-encoding bypasses. **REST API path segment injection**. |
@@ -240,6 +239,37 @@ Requires **JDK 17+**. Dependencies: `montoya-api 2026.2`, `gson 2.11.0`.
 ---
 
 ## Changelog
+
+<details>
+<summary><b>v1.49 (2026-03-14)</b> — Fix deser payload generator, UI crash, chain filtering</summary>
+
+- **Fix binary payload corruption**: RAW encoding corrupted Java/Ruby Marshal/Python Pickle v2/v4 payloads via UTF-8 String conversion. Binary chains now use BASE64 only.
+- **Fix UI crash**: `getGeneratableChains()` catches `Throwable` to handle `ExceptionInInitializerError` from ReflectionUtils/Javassist init.
+- **Chain filtering**: Broken chains (Jdk7u21, unsupported Spring/Hibernate/etc) auto-filtered from UI and scanner.
+- **Async chain loading**: SwingWorker prevents EDT blocking during Javassist compilation.
+- **Remove "Copy Base64" button**: Redundant — encoding dropdown already has BASE64. Renamed to "Copy Payload".
+</details>
+
+<details>
+<summary><b>v1.48 (2026-03-13)</b> — Refactor deser OOB to use DeserPayloadGenerator, remove blind spray</summary>
+
+- **Deser OOB refactor**: `activeTestOob` now uses `DeserPayloadGenerator` for dynamic gadget chain payloads instead of hardcoded binary builders. Works with both Burp Collaborator and custom OOB via `CollaboratorManager.resolveTemplate()`.
+- **Remove blind OOB spray**: No longer fires OOB payloads at every parameter — only tests parameters where serialized data was passively detected.
+- **Text-based templates**: Restored Python/Ruby/Node.js text injection templates alongside generator Phase 1.
+</details>
+
+<details>
+<summary><b>v1.47 (2026-03-13)</b> — Remove XSS scanner, remove inaccurate cmdi payloads</summary>
+
+- **Remove XSS Scanner**: Entire module removed.
+- **Remove inaccurate CmdI payloads**: Removed 4 print-only payloads (`perl -e 'print 131337'`, `python3 -c 'print(131337)'`, `ruby -e 'puts 131337'`, `php -r 'echo 131337;'`) that only print static markers. Kept arithmetic-based payloads (`expr 97531 + 33806`) that prove execution.
+</details>
+
+<details>
+<summary><b>v1.46 (2026-03-12)</b> — Path segment injection scans last segment only</summary>
+
+- **Path segment injection**: SQLi and CmdI path segment injection now only scans the last segment of API-style endpoints, reducing noise.
+</details>
 
 <details>
 <summary><b>v1.45 (2026-03-12)</b> — DNS OOB confidence tuning, ViewState cookie detection</summary>
