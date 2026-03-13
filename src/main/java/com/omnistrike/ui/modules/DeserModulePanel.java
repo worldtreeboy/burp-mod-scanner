@@ -119,13 +119,9 @@ public class DeserModulePanel extends JPanel {
         CyberTheme.styleFilledButton(generateBtn, NEON_GREEN);
         generateBtn.setToolTipText("Generate the deserialization payload");
 
-        JButton copyB64Btn = new JButton("Copy Base64");
-        CyberTheme.styleButton(copyB64Btn, NEON_CYAN);
-        copyB64Btn.setToolTipText("Copy base64-encoded payload to clipboard");
-
-        JButton copyRawBtn = new JButton("Copy Raw");
-        CyberTheme.styleButton(copyRawBtn, NEON_CYAN);
-        copyRawBtn.setToolTipText("Copy raw payload text to clipboard");
+        JButton copyBtn = new JButton("Copy Payload");
+        CyberTheme.styleButton(copyBtn, NEON_CYAN);
+        copyBtn.setToolTipText("Copy generated payload to clipboard (use this instead of manual selection)");
 
         JButton clearBtn = new JButton("Clear");
         CyberTheme.styleButton(clearBtn, NEON_RED);
@@ -133,8 +129,7 @@ public class DeserModulePanel extends JPanel {
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         btnPanel.setBackground(BG_DARK);
         btnPanel.add(generateBtn);
-        btnPanel.add(copyB64Btn);
-        btnPanel.add(copyRawBtn);
+        btnPanel.add(copyBtn);
         btnPanel.add(clearBtn);
 
         // ── Top section ─────────────────────────────────────────────────────
@@ -281,14 +276,22 @@ public class DeserModulePanel extends JPanel {
         add(mainSplit, BorderLayout.CENTER);
 
         // ── Wire events ─────────────────────────────────────────────────────
-        populateChains();
-        updateChainDescription();
-        languageCombo.addActionListener(e -> { populateChains(); updateChainDescription(); });
+        try {
+            populateChains();
+            updateChainDescription();
+        } catch (Throwable t) {
+            // Safety net — don't let chain population crash the entire UI tab
+            previewArea.setText("[!] Chain population failed: " + t.getMessage()
+                    + "\nTry selecting a different language.");
+        }
+        languageCombo.addActionListener(e -> {
+            try { populateChains(); updateChainDescription(); }
+            catch (Throwable t) { previewArea.setText("[!] Chain population failed: " + t.getMessage()); }
+        });
         chainCombo.addActionListener(e -> { populateFormatters(); updateChainDescription(); });
 
         generateBtn.addActionListener(e -> generatePayload());
-        copyB64Btn.addActionListener(e -> copyBase64());
-        copyRawBtn.addActionListener(e -> copyRaw());
+        copyBtn.addActionListener(e -> copyPayload());
         clearBtn.addActionListener(e -> previewArea.setText(""));
 
         // Auto-refresh findings every 3 seconds
@@ -324,26 +327,56 @@ public class DeserModulePanel extends JPanel {
             populateFormatters();
         } else if (lang == Language.PHP) {
             chainLabel.setText("Chain:");
-            Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(lang);
-            for (String name : chains.keySet()) {
-                chainCombo.addItem(name);
-            }
-            formatterLabel.setVisible(false);
-            formatterCombo.setVisible(false);
             phpFunctionLabel.setVisible(true);
             phpFunctionCombo.setVisible(true);
+            formatterLabel.setVisible(false);
+            formatterCombo.setVisible(false);
             populatePhpFunctions();
+            // Load chains on background thread to avoid blocking EDT (Javassist init)
+            loadChainsAsync(lang);
         } else {
             chainLabel.setText("Chain:");
-            Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(lang);
-            for (String name : chains.keySet()) {
-                chainCombo.addItem(name);
-            }
             formatterLabel.setVisible(false);
             formatterCombo.setVisible(false);
             phpFunctionLabel.setVisible(false);
             phpFunctionCombo.setVisible(false);
+            // Load chains on background thread to avoid blocking EDT (Javassist init)
+            loadChainsAsync(lang);
         }
+    }
+
+    /**
+     * Load generatable chains on a background thread to avoid blocking the EDT.
+     * Java chain validation involves Javassist compilation which can take 1-2 seconds.
+     */
+    private void loadChainsAsync(Language lang) {
+        chainCombo.addItem("Loading chains...");
+        chainCombo.setEnabled(false);
+        new SwingWorker<Map<String, String>, Void>() {
+            @Override
+            protected Map<String, String> doInBackground() {
+                return DeserPayloadGenerator.getGeneratableChains(lang);
+            }
+            @Override
+            protected void done() {
+                try {
+                    Map<String, String> chains = get();
+                    chainCombo.removeAllItems();
+                    for (String name : chains.keySet()) {
+                        chainCombo.addItem(name);
+                    }
+                } catch (Throwable t) {
+                    // Fallback: show all chains (let errors appear at generation time)
+                    chainCombo.removeAllItems();
+                    Map<String, String> all = DeserPayloadGenerator.getAvailableChains(lang);
+                    for (String name : all.keySet()) {
+                        chainCombo.addItem(name);
+                    }
+                }
+                chainCombo.setEnabled(true);
+                updateChainDescription();
+            }
+        }.execute();
     }
 
     private void populatePhpFunctions() {
@@ -378,7 +411,7 @@ public class DeserModulePanel extends JPanel {
             Map<String, String> gadgets = DeserPayloadGenerator.getDotNetGadgets();
             desc = gadgets.get(chain);
         } else {
-            Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(lang);
+            Map<String, String> chains = DeserPayloadGenerator.getGeneratableChains(lang);
             desc = chains.get(chain);
         }
         chainDescLabel.setText(desc != null ? desc : " ");
@@ -430,25 +463,17 @@ public class DeserModulePanel extends JPanel {
                    .append("═══════════════════════════════════════════════════════════════\n\n");
 
             switch (enc) {
-                case RAW -> {
-                    preview.append("── Payload (raw) ─────────────────────────────────────────────\n")
-                           .append(truncatedText).append("\n\n")
-                           .append("── Base64 (copy-paste ready) ─────────────────────────────────\n")
-                           .append(java.util.Base64.getEncoder().encodeToString(payload)).append("\n\n");
-                }
-                case BASE64 -> {
-                    preview.append("── Payload (base64-encoded) ──────────────────────────────────\n")
-                           .append(truncatedText).append("\n\n");
-                }
-                case URL_ENCODED -> {
-                    preview.append("── Payload (URL-encoded) ─────────────────────────────────────\n")
-                           .append(truncatedText).append("\n\n");
-                }
-                case BASE64_URL_ENCODED -> {
-                    preview.append("── Payload (base64 + URL-encoded) ────────────────────────────\n")
-                           .append(truncatedText).append("\n\n");
-                }
+                case RAW -> preview.append("── Payload (raw) ─────────────────────────────────────────────\n")
+                        .append(truncatedText).append("\n\n");
+                case BASE64 -> preview.append("── Payload (base64-encoded) ──────────────────────────────────\n")
+                        .append(truncatedText).append("\n\n");
+                case URL_ENCODED -> preview.append("── Payload (URL-encoded) ─────────────────────────────────────\n")
+                        .append(truncatedText).append("\n\n");
+                case BASE64_URL_ENCODED -> preview.append("── Payload (base64 + URL-encoded) ────────────────────────────\n")
+                        .append(truncatedText).append("\n\n");
             }
+
+            preview.append("TIP: Use \"Copy Payload\" button — manual text selection may corrupt binary data.\n\n");
 
             preview.append("── Hex Dump ──────────────────────────────────────────────────\n")
                    .append(hexDump);
@@ -461,26 +486,16 @@ public class DeserModulePanel extends JPanel {
         }
     }
 
-    private void copyBase64() {
+    private void copyPayload() {
         if (lastGeneratedPayload == null) {
             JOptionPane.showMessageDialog(this, "Generate a payload first.",
                     "Copy", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
-        String b64 = java.util.Base64.getEncoder().encodeToString(lastGeneratedPayload);
+        // Copy the encoded payload as-is — encoding already applied by generate()
+        String payload = new String(lastGeneratedPayload, StandardCharsets.UTF_8);
         Toolkit.getDefaultToolkit().getSystemClipboard()
-                .setContents(new StringSelection(b64), null);
-    }
-
-    private void copyRaw() {
-        if (lastGeneratedPayload == null) {
-            JOptionPane.showMessageDialog(this, "Generate a payload first.",
-                    "Copy", JOptionPane.INFORMATION_MESSAGE);
-            return;
-        }
-        String raw = new String(lastGeneratedPayload, StandardCharsets.UTF_8);
-        Toolkit.getDefaultToolkit().getSystemClipboard()
-                .setContents(new StringSelection(raw), null);
+                .setContents(new StringSelection(payload), null);
     }
 
     // ── Findings auto-refresh ─────────────────────────────────────────────────

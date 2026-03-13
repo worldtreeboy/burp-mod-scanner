@@ -4,6 +4,7 @@ import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.*;
 
 /**
@@ -35,6 +36,34 @@ public final class DeserPayloadGenerator {
             case RUBY   -> RubyPayloads.getChains();
             case NODEJS -> NodePayloads.getChains();
         };
+    }
+
+    // ── Generatable chain filtering (cached) ──────────────────────────────────
+
+    private static final Map<Language, Map<String, String>> GENERATABLE_CACHE = new ConcurrentHashMap<>();
+
+    /**
+     * Returns only chains that can actually generate payloads on this JVM.
+     * Filters out chains requiring unbundled libraries (Spring, Hibernate, etc.)
+     * and chains that fail on modern JDK versions (e.g., Jdk7u21 on JDK 8u72+).
+     * Results are cached per language — first call tests all chains.
+     */
+    public static Map<String, String> getGeneratableChains(Language language) {
+        return GENERATABLE_CACHE.computeIfAbsent(language, lang -> {
+            Map<String, String> all = getAvailableChains(lang);
+            Map<String, String> working = new LinkedHashMap<>();
+            for (var entry : all.entrySet()) {
+                try {
+                    generate(lang, entry.getKey(), "test", Encoding.RAW);
+                    working.put(entry.getKey(), entry.getValue());
+                } catch (Throwable t) {
+                    // Catch Throwable (not just Exception) — handles Error subclasses like
+                    // ExceptionInInitializerError from ReflectionUtils/Javassist init,
+                    // NoClassDefFoundError from missing deps, AnnotationFormatError, etc.
+                }
+            }
+            return Collections.unmodifiableMap(working);
+        });
     }
 
     // ── .NET gadget/formatter discovery ──────────────────────────────────────
@@ -87,9 +116,13 @@ public final class DeserPayloadGenerator {
         return switch (encoding) {
             case RAW -> raw;
             case BASE64 -> Base64.getEncoder().encode(raw);
-            case URL_ENCODED -> URLEncoder.encode(
-                    new String(raw, StandardCharsets.UTF_8), StandardCharsets.UTF_8)
-                    .getBytes(StandardCharsets.UTF_8);
+            case URL_ENCODED -> {
+                // Use ISO-8859-1 to preserve all byte values (0x00-0xFF) before URL-encoding.
+                // UTF-8 corrupts binary payloads by replacing invalid sequences with U+FFFD.
+                String asLatin1 = new String(raw, StandardCharsets.ISO_8859_1);
+                yield URLEncoder.encode(asLatin1, StandardCharsets.ISO_8859_1)
+                        .getBytes(StandardCharsets.US_ASCII);
+            }
             case BASE64_URL_ENCODED -> URLEncoder.encode(
                     Base64.getEncoder().encodeToString(raw), StandardCharsets.UTF_8)
                     .getBytes(StandardCharsets.UTF_8);
